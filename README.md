@@ -74,7 +74,7 @@ These are not one-off numbers: every PR and push runs the bundled models end to 
 | Menu-bar shell | Swift 6.2 + AppKit (SwiftPM, `LSUIElement`) |
 | Settings / toast surfaces | Tauri 2 + Rust + Svelte |
 | Local inference | Hy-MT2 on MLX, launched through `uv` |
-| Cloud translation & vision | OpenRouter (`deepseek/deepseek-v4-flash` text default, `~google/gemini-flash-lite-latest` screenshot default) |
+| Cloud translation & vision | OpenRouter (`deepseek/deepseek-v4-flash` text default, `google/gemini-3.1-flash-lite` screenshot default) |
 | Auto-update | Sparkle 2, appcast on GitHub Releases |
 | Release pipeline | GitHub Actions: build → Developer ID sign → notarize → DMG |
 

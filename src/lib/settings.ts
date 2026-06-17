@@ -58,6 +58,13 @@ export type PermissionStatus = {
   screen: boolean;
 };
 
+export type LoginItemState = {
+  supported: boolean;
+  enabled: boolean;
+  status: string;
+  message: string;
+};
+
 export type SettingsOptions = {
   providers: SettingOption[];
   localModels: SettingOption[];
@@ -76,6 +83,7 @@ export type SettingsState = {
   overrides: Record<SettingField, boolean>;
   options: SettingsOptions;
   permissions: PermissionStatus;
+  loginItem: LoginItemState;
   storagePath: string;
 };
 
@@ -384,6 +392,12 @@ export const fallbackState: SettingsState = {
     keyboard: false,
     accessibility: false,
     screen: false
+  },
+  loginItem: {
+    supported: false,
+    enabled: false,
+    status: "browserPreview",
+    message: "Login startup is available in the installed macOS app."
   },
   storagePath: "Browser preview"
 };

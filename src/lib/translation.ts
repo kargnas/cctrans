@@ -9,6 +9,7 @@ export type TranslationPreviewState = {
   errorText: string | null;
   providerTitle: string;
   model: string;
+  modelWarning: string | null;
   costCredits: number | null;
   permissionAction?: "screenRecording" | null;
   toastDuration: number;
@@ -29,6 +30,7 @@ export const fallbackTranslationState: TranslationPreviewState = {
   errorText: null,
   providerTitle: "Local Model",
   model: "Hy-MT2 1.8B 4-bit",
+  modelWarning: null,
   costCredits: null,
   toastDuration: 4
 };

@@ -294,6 +294,8 @@ struct SettingsState {
     overrides: BTreeMap<String, bool>,
     options: SettingsOptions,
     permissions: PermissionStatus,
+    #[serde(rename = "loginItem")]
+    login_item: LoginItemState,
     #[serde(rename = "storagePath")]
     storage_path: String,
 }
@@ -354,6 +356,25 @@ struct PermissionStatus {
     keyboard: bool,
     accessibility: bool,
     screen: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct LoginItemState {
+    supported: bool,
+    enabled: bool,
+    status: String,
+    message: String,
+}
+
+impl LoginItemState {
+    fn unsupported(message: impl Into<String>) -> Self {
+        Self {
+            supported: false,
+            enabled: false,
+            status: "unsupported".to_string(),
+            message: message.into(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -453,6 +474,8 @@ struct TranslationPreviewState {
     #[serde(rename = "providerTitle")]
     provider_title: String,
     model: String,
+    #[serde(rename = "modelWarning", default)]
+    model_warning: Option<String>,
     #[serde(rename = "costCredits")]
     cost_credits: Option<f64>,
     #[serde(rename = "permissionAction")]
@@ -537,6 +560,18 @@ fn load_settings(app: AppHandle) -> Result<SettingsState, String> {
 fn save_settings(app: AppHandle, settings: Settings) -> Result<SettingsState, String> {
     write_settings(&app, normalize_settings(settings))?;
     state_from_disk(&app)
+}
+
+#[tauri::command]
+fn login_item_status(app: AppHandle) -> LoginItemState {
+    login_item_state_impl(&app).unwrap_or_else(|error| {
+        LoginItemState::unsupported(format!("Login item status unavailable: {error}"))
+    })
+}
+
+#[tauri::command]
+fn set_launch_at_login(app: AppHandle, enabled: bool) -> Result<LoginItemState, String> {
+    set_launch_at_login_impl(&app, enabled)
 }
 
 #[tauri::command]
@@ -994,8 +1029,7 @@ fn complete_local_model_setup(app: AppHandle, settings: Settings) -> Result<Sett
 fn prepare_custom_local_models(app: AppHandle) -> Result<SettingsState, String> {
     let mut settings = load_effective_settings(&app)?;
     if settings.custom_local_models_path.is_none() {
-        settings.custom_local_models_path =
-            Some("~/.config/cctrans/local-models.json".to_string());
+        settings.custom_local_models_path = Some("~/.config/cctrans/local-models.json".to_string());
         write_settings(&app, settings)?;
     }
     state_from_disk(&app)
@@ -1197,6 +1231,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             load_settings,
             save_settings,
+            login_item_status,
+            set_launch_at_login,
             reset_setting,
             load_openrouter_api_key_state,
             save_openrouter_api_key,
@@ -1423,7 +1459,9 @@ fn translation_preview_request() -> Option<TranslationPreviewRequest> {
 }
 
 fn is_persistent_toast() -> bool {
-    effective_args().iter().any(|arg| arg.as_str() == "--persistent")
+    effective_args()
+        .iter()
+        .any(|arg| arg.as_str() == "--persistent")
 }
 
 fn persistent_translation_url(debug: bool) -> String {
@@ -1748,6 +1786,7 @@ fn sample_translation_preview(settings: &Settings) -> TranslationPreviewState {
         error_text: None,
         provider_title: provider_title(&settings.provider).to_string(),
         model: selected_model_title(settings),
+        model_warning: None,
         cost_credits: None,
         permission_action: None,
         toast_duration: settings.toast_duration,
@@ -1817,6 +1856,7 @@ fn prepare_translation_preview_for_retranslate(
     state.toast_duration = settings.toast_duration;
     state.provider_title = provider_title(&settings.provider).to_string();
     state.model = selected_model_title(settings);
+    state.model_warning = None;
     state.cost_credits = None;
 }
 
@@ -1874,6 +1914,9 @@ fn state_from_disk(app: &AppHandle) -> Result<SettingsState, String> {
         defaults,
         options: settings_options(),
         permissions: permission_status(),
+        login_item: login_item_state_impl(app).unwrap_or_else(|error| {
+            LoginItemState::unsupported(format!("Login item status unavailable: {error}"))
+        }),
         storage_path,
     })
 }
@@ -2139,7 +2182,7 @@ fn default_settings() -> Settings {
         local_hy_mt2_backend_path: None,
         custom_local_models_path: None,
         open_router_text_model: "deepseek/deepseek-v4-flash".to_string(),
-        open_router_vision_model: "~google/gemini-flash-lite-latest".to_string(),
+        open_router_vision_model: "google/gemini-3.1-flash-lite".to_string(),
         favorite_local_model_ids: vec!["hymt2-mlx-1.8b-4bit".to_string()],
         favorite_open_router_models: vec!["deepseek/deepseek-v4-flash".to_string()],
         include_screen_context_for_llm: false,
@@ -2350,8 +2393,8 @@ fn openrouter_models() -> Vec<OpenRouterModelOption> {
             false,
         ),
         openrouter_model(
-            "Google Gemini Flash Lite Latest",
-            "~google/gemini-flash-lite-latest",
+            "Gemini 3.1 Flash Lite",
+            "google/gemini-3.1-flash-lite",
             None,
             0.25,
             1.50,
@@ -2629,6 +2672,37 @@ fn run_legacy_cli(app: &AppHandle, args: Vec<String>, title: &str) -> Result<Act
     Ok(action_result(title, &message, output.status.success()))
 }
 
+fn login_item_state_impl(app: &AppHandle) -> Result<LoginItemState, String> {
+    run_login_item_cli(app, &["--login-item-status"])
+}
+
+fn set_launch_at_login_impl(app: &AppHandle, enabled: bool) -> Result<LoginItemState, String> {
+    run_login_item_cli(
+        app,
+        &[
+            "--set-launch-at-login",
+            if enabled { "true" } else { "false" },
+        ],
+    )
+}
+
+fn run_login_item_cli(app: &AppHandle, args: &[&str]) -> Result<LoginItemState, String> {
+    let binary = legacy_binary_path(app)?;
+    let output = Command::new(&binary)
+        .args(args)
+        .output()
+        .map_err(|error| format!("Could not run {}: {error}", binary.display()))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if !output.status.success() {
+        return Err(first_non_empty(&stderr, &stdout));
+    }
+
+    serde_json::from_str(&stdout)
+        .map_err(|error| format!("Could not parse login item status: {error}. Output: {stdout}"))
+}
+
 fn open_surface_action(
     app: &AppHandle,
     surface: AppSurface,
@@ -2639,6 +2713,15 @@ fn open_surface_action(
 }
 
 fn legacy_binary_path(app: &AppHandle) -> Result<PathBuf, String> {
+    if let Ok(current_exe) = std::env::current_exe() {
+        if let Some(bundle) = app_bundle_ancestor(&current_exe) {
+            let candidate = host_binary_for_app_bundle(&bundle);
+            if candidate.exists() {
+                return Ok(candidate);
+            }
+        }
+    }
+
     let roots = candidate_roots(app);
     for root in roots {
         let candidates = [
@@ -2650,6 +2733,10 @@ fn legacy_binary_path(app: &AppHandle) -> Result<PathBuf, String> {
         }
     }
     Err("CCTrans CLI binary not found. Build the Swift app first.".to_string())
+}
+
+fn host_binary_for_app_bundle(bundle: &Path) -> PathBuf {
+    bundle.join("Contents/MacOS/CCTrans")
 }
 
 fn legacy_working_dir(app: &AppHandle) -> Option<PathBuf> {
@@ -3267,6 +3354,7 @@ mod tests {
         assert_eq!(state.request_sequence, 0);
         assert!(state.caret_x.is_none());
         assert!(state.caret_y.is_none());
+        assert!(state.model_warning.is_none());
         assert!(!state.anchor_bottom);
     }
 
@@ -3276,13 +3364,16 @@ mod tests {
             "mode":"translated","sourceLanguage":"English","targetLanguage":"Korean",
             "originalText":"hi","translatedText":"안녕","errorText":null,
             "providerTitle":"Local Model","model":"m","costCredits":null,"permissionAction":null,
-            "requestSequence":7,"caretX":10.0,"caretY":20.0,"caretW":2.0,"caretH":18.0,"anchorBottom":true
+            "modelWarning":"Vision model used","requestSequence":7,
+            "caretX":10.0,"caretY":20.0,"caretW":2.0,"caretH":18.0,"anchorBottom":true
         }"#;
         let state: TranslationPreviewState = serde_json::from_str(json).unwrap();
         assert_eq!(state.request_sequence, 7);
         assert_eq!(state.caret_x, Some(10.0));
+        assert_eq!(state.model_warning.as_deref(), Some("Vision model used"));
         assert!(state.anchor_bottom);
         let encoded = serde_json::to_string(&state).unwrap();
+        assert!(encoded.contains("\"modelWarning\":\"Vision model used\""));
         assert!(encoded.contains("\"requestSequence\":7"));
         assert!(encoded.contains("\"anchorBottom\":true"));
     }
@@ -3422,12 +3513,14 @@ mod tests {
         let mut state = sample_translation_preview(&default_settings());
         state.target_language = "Japanese".to_string();
         state.cost_credits = Some(0.25);
+        state.model_warning = Some("stale warning".to_string());
 
         prepare_translation_preview_for_retranslate(&mut state, &settings, None);
 
         assert_eq!(state.target_language, "Japanese");
         assert_eq!(state.provider_title, "OpenRouter LLM");
         assert_eq!(state.model, "Claude Opus 4.8");
+        assert_eq!(state.model_warning, None);
         assert_eq!(state.cost_credits, None);
         assert_eq!(state.toast_duration, 8.0);
     }
@@ -3477,6 +3570,16 @@ mod tests {
         assert_eq!(
             app_bundle_ancestor(&path).as_deref(),
             Some(Path::new("/Applications/CCTrans.app"))
+        );
+    }
+
+    #[test]
+    fn host_binary_for_app_bundle_targets_outer_bundle_executable() {
+        let bundle = Path::new("/Applications/CCTrans.app");
+
+        assert_eq!(
+            host_binary_for_app_bundle(bundle),
+            PathBuf::from("/Applications/CCTrans.app/Contents/MacOS/CCTrans")
         );
     }
 

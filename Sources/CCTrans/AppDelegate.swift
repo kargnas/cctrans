@@ -18,6 +18,7 @@ struct TranslationPreviewPayload: Encodable {
     var errorText: String?
     var providerTitle: String
     var model: String
+    var modelWarning: String? = nil
     var costCredits: Double?
     var permissionAction: String? = nil
     var requestSequence: Int = 0
@@ -691,7 +692,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             translatedText: result.text,
             errorText: nil,
             providerTitle: result.providerTitle,
-            model: result.model,
+            model: TranslationPreviewMetadata.modelTitle(for: result, settings: settings),
+            modelWarning: TranslationPreviewMetadata.modelWarning(for: result, inputText: inputText, settings: settings),
             costCredits: result.usage?.costCredits
         ), sourceTitle: result.providerTitle, settings: settings)
     }

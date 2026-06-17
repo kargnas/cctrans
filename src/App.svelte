@@ -27,6 +27,7 @@
   import {
     cloneFallbackState,
     type ActionResult,
+    type LoginItemState,
     type OpenRouterModelOption,
     type SettingField,
     type Settings,
@@ -55,6 +56,7 @@
   let notices = $state<ActionResult[]>([]);
   let openRouterAPIKeyState = $state<OpenRouterAPIKeyState>({ configured: false, path: "~/.config/cctrans/.env" });
   let openRouterAPIKeyInput = $state("");
+  let isUpdatingLoginItem = $state(false);
   let openTranslationModelMenu = $state<"general" | "models" | null>(null);
   let activeTranslationModelProvider = $state<TranslationProvider>("localHyMT2");
   let openRouterSort = $state<{ key: OpenRouterSortKey; direction: SortDirection }>({
@@ -136,6 +138,41 @@
   async function updateNullableField(field: "localHyMT2BackendPath" | "customLocalModelsPath", value: string) {
     const trimmed = value.trim();
     await updateField(field, (trimmed.length > 0 ? trimmed : null) as Settings[typeof field]);
+  }
+
+  async function toggleLaunchAtLogin(enabled: boolean) {
+    if (!settingsState) return;
+
+    isUpdatingLoginItem = true;
+    try {
+      const loginItem = isTauri
+        ? await invoke<LoginItemState>("set_launch_at_login", { enabled })
+        : {
+            ...settingsState.loginItem,
+            enabled,
+            status: enabled ? "enabled" : "notRegistered",
+            message: enabled
+              ? "CCTrans will open automatically when you sign in."
+              : "CCTrans is not set to open at login."
+          };
+      settingsState = { ...settingsState, loginItem };
+    } catch (error) {
+      pushNotice({
+        title: "Login Item",
+        message: formatError(error),
+        ok: false
+      });
+      if (isTauri) {
+        try {
+          const loginItem = await invoke<LoginItemState>("login_item_status");
+          settingsState = { ...settingsState, loginItem };
+        } catch {
+          // Keep the previous state when the status refresh is also unavailable.
+        }
+      }
+    } finally {
+      isUpdatingLoginItem = false;
+    }
   }
 
   async function updateModelField(field: "openRouterTextModel" | "openRouterVisionModel", value: string) {
@@ -760,6 +797,22 @@
                 </div>
               </div>
             {/if}
+
+            <label class="setting-row toggle-row">
+              <span class="setting-copy">
+                <strong>Open at Login</strong>
+                <span class="setting-note">{settingsState.loginItem.message}</span>
+              </span>
+              <input
+                class="switch-input"
+                type="checkbox"
+                role="switch"
+                checked={settingsState.loginItem.enabled}
+                disabled={!settingsState.loginItem.supported || isUpdatingLoginItem}
+                onchange={(event) => toggleLaunchAtLogin(event.currentTarget.checked)}
+              />
+              <span class="reset-row spacer"></span>
+            </label>
 
             <label class="setting-row">
               <span class="setting-copy">

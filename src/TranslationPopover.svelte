@@ -2,7 +2,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { onMount } from "svelte";
-  import { Check, Copy, Cpu, Eye, Languages, ShieldCheck, X } from "@lucide/svelte";
+  import { Check, Copy, Cpu, Eye, Languages, ShieldCheck, TriangleAlert, X } from "@lucide/svelte";
   import { fallbackTranslationState, type ShowToastResult, type TranslationMode, type TranslationPreviewState } from "./lib/translation";
   import { fallbackState, type SettingsState, type TranslationProvider } from "./lib/settings";
 
@@ -73,7 +73,8 @@
     requestPermission: "Request Permission"
   };
   const targetLanguage = $derived(preview.targetLanguage);
-  const modelName = $derived(preview.model.trim());
+  const modelName = $derived(preview.model.trim() || preview.providerTitle.trim() || "Unknown model");
+  const modelWarning = $derived(preview.modelWarning?.trim() ?? "");
   const costLabel = $derived(formatCostCredits(preview.costCredits));
   const modelMetadata = $derived([modelName, costLabel].filter(Boolean).join(" · "));
   const bodyText = $derived(visibleMode === "original" ? preview.originalText : preview.translatedText);
@@ -213,6 +214,7 @@
     void bodyText;
     void visibleMode;
     void modelMetadata;
+    void modelWarning;
     void preview.requestSequence;
     if (!isTauri || !bubbleEl) return;
     const frame = requestAnimationFrame(() => {
@@ -727,6 +729,12 @@
           <span>{uiStrings.error}</span>
         </div>
         <p class="copying">{preview.errorText ?? uiStrings.translationFailed}</p>
+        <div class="model-meta-strip" class:warn={modelWarning.length > 0}>
+          <span class="model-meta-main"><Cpu size={12} /><span>{modelMetadata}</span></span>
+          {#if modelWarning}
+            <span class="model-warning"><TriangleAlert size={11} />{modelWarning}</span>
+          {/if}
+        </div>
         <footer class="bubble-footer error-footer">
           <label class="language-select-shell" aria-label="Target language">
             <Languages size={14} />
@@ -757,6 +765,12 @@
         </footer>
       {:else}
         <p bind:this={translationTextEl} class:original={visibleMode === "original"} class="translation-text">{bodyText}</p>
+        <div class="model-meta-strip" class:warn={modelWarning.length > 0}>
+          <span class="model-meta-main"><Cpu size={12} /><span>{modelMetadata}</span></span>
+          {#if modelWarning}
+            <span class="model-warning"><TriangleAlert size={11} />{modelWarning}</span>
+          {/if}
+        </div>
         <footer class="bubble-footer">
           <label class="language-select-shell" aria-label="Target language">
             <Languages size={14} />

@@ -69,6 +69,32 @@ func oneShotSettings(defaultProvider: TranslationProvider) -> TranslatorSettings
     return settings
 }
 
+func printJSON<T: Encodable>(_ value: T) {
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.sortedKeys]
+    let data = try! encoder.encode(value)
+    print(String(data: data, encoding: .utf8) ?? "{}")
+}
+
+if CommandLine.arguments.contains("--login-item-status") {
+    printJSON(LoginItemController.status())
+    exit(0)
+}
+
+if CommandLine.arguments.contains("--set-launch-at-login") {
+    let enabled = (argumentValue(after: "--set-launch-at-login") ?? "false")
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+        .lowercased()
+    do {
+        let state = try LoginItemController.setEnabled(["1", "true", "yes", "on"].contains(enabled))
+        printJSON(state)
+        exit(0)
+    } catch {
+        FileHandle.standardError.write(Data("ERROR: \(error.localizedDescription)\n".utf8))
+        exit(1)
+    }
+}
+
 if CommandLine.arguments.contains("--list-local-models") {
     let settings = oneShotSettings(defaultProvider: .localHyMT2)
     let models = LocalModelRegistry.models(customModelsPath: settings.customLocalModelsPath)
