@@ -17,6 +17,7 @@ final class KeyboardMonitor {
         }
     }
 
+    private let onCopyPress: () -> Void
     private let onDoubleCopy: () -> Void
     private let onScreenshot: () -> Void
     private var detector = DoublePressDetector()
@@ -25,7 +26,12 @@ final class KeyboardMonitor {
     private var eventTap: CFMachPort?
     private var eventTapRunLoopSource: CFRunLoopSource?
 
-    init(onDoubleCopy: @escaping () -> Void, onScreenshot: @escaping () -> Void) {
+    init(
+        onCopyPress: @escaping () -> Void,
+        onDoubleCopy: @escaping () -> Void,
+        onScreenshot: @escaping () -> Void
+    ) {
+        self.onCopyPress = onCopyPress
         self.onDoubleCopy = onDoubleCopy
         self.onScreenshot = onScreenshot
     }
@@ -167,8 +173,9 @@ final class KeyboardMonitor {
             && !flags.contains(.option)
             && !flags.contains(.control)
 
-        if monitorsCopyShortcut, commandOnly, event.keyCode == 8 {
-            if detector.registerPress(at: event.timestamp) {
+        if commandOnly, event.keyCode == 8 {
+            onCopyPress()
+            if monitorsCopyShortcut, detector.registerPress(at: event.timestamp) {
                 onDoubleCopy()
             }
             return

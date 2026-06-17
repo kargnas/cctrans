@@ -40,6 +40,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var pasteboardMonitor: PasteboardMonitor?
     private var screenshotHotKey: ScreenshotHotKey?
     private var keepAliveWindow: NSWindow?
+    private var statusPulseTask: Task<Void, Never>?
     private var lastClipboardTriggerAt: Date?
     private var lastTranslationCaretBounds: CGRect?
     private var translationRequestSequence = 0
@@ -181,22 +182,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         rebuildMenu()
     }
 
-    private static func menuBarBadgeImage() -> NSImage {
+    private static func menuBarBadgeImage(highlighted: Bool = false) -> NSImage {
         let size = NSSize(width: 32, height: 18)
         let image = NSImage(size: size)
         image.lockFocus()
         defer { image.unlockFocus() }
 
-        NSColor.labelColor.setStroke()
         let badgeRect = NSRect(x: 1.5, y: 1.5, width: size.width - 3, height: size.height - 3)
         let badgePath = NSBezierPath(roundedRect: badgeRect, xRadius: 4, yRadius: 4)
+        if highlighted {
+            NSColor.controlAccentColor.setFill()
+            badgePath.fill()
+        }
+        (highlighted ? NSColor.controlAccentColor : NSColor.labelColor).setStroke()
         badgePath.lineWidth = 1.4
         badgePath.stroke()
 
         let text = "⌘C" as NSString
         let attributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .semibold),
-            .foregroundColor: NSColor.labelColor,
+            .foregroundColor: highlighted ? NSColor.white : NSColor.labelColor,
         ]
         let textSize = text.size(withAttributes: attributes)
         text.draw(
@@ -207,8 +212,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             withAttributes: attributes
         )
 
-        image.isTemplate = true
+        image.isTemplate = !highlighted
         return image
+    }
+
+    private func pulseStatusItem() {
+        statusPulseTask?.cancel()
+        statusItem?.button?.image = Self.menuBarBadgeImage(highlighted: true)
+        statusPulseTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(140))
+            guard !Task.isCancelled else { return }
+            self?.statusItem?.button?.image = Self.menuBarBadgeImage()
+        }
     }
 
     private func configureMainMenu() {
@@ -261,6 +276,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func startKeyboardMonitor() {
         keyboardMonitor = KeyboardMonitor(
+            onCopyPress: { [weak self] in
+                self?.pulseStatusItem()
+            },
             onDoubleCopy: { [weak self] in
                 self?.triggerClipboardTranslation()
             },
