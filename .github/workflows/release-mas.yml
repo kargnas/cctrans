@@ -7,9 +7,9 @@
 # sides meet on the ASC version record, so their order does not matter.
 #
 # Manual-only on purpose: MAS releases go through App Review, so they follow a
-# slower cadence than the auto-released direct channel and the version must be
-# chosen consciously (App Store Connect only accepts monotonically increasing
-# CFBundleVersion values; re-uploading the same version is rejected at ingest).
+# slower cadence than the auto-released direct channel. App Store Connect only
+# accepts unique CFBundleVersion values, so rejected versions can be resubmitted
+# with the same marketing version and a higher build number.
 #
 # Required secrets:
 #   CCTRANS_MAS_APP_CERTIFICATE_BASE64        Apple Distribution .p12 (base64)
@@ -27,8 +27,11 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Marketing version to submit (e.g. 0.3.0, no leading v). Must be higher than any version previously uploaded to App Store Connect.'
+        description: 'Marketing version to submit (e.g. 0.3.1, no leading v).'
         required: true
+      build_number:
+        description: 'Unique CFBundleVersion for this upload. Defaults to version.'
+        required: false
 
 permissions:
   contents: read
@@ -111,6 +114,7 @@ jobs:
       - name: Build, sign and package
         env:
           CCTRANS_VERSION: ${{ inputs.version }}
+          CCTRANS_BUILD_NUMBER: ${{ inputs.build_number || inputs.version }}
           CCTRANS_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           CCTRANS_MAS_SIGN_IDENTITY: ${{ env.MAS_SIGN_IDENTITY }}
           CCTRANS_MAS_INSTALLER_IDENTITY: ${{ env.MAS_INSTALLER_IDENTITY }}

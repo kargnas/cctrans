@@ -31,6 +31,7 @@ CONTENTS_DIR="$APP_DIR/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
 APP_VERSION="${CCTRANS_VERSION:-0.1.0}"
+APP_BUILD_NUMBER="${CCTRANS_BUILD_NUMBER:-$APP_VERSION}"
 SIGN_IDENTITY="${CCTRANS_MAS_SIGN_IDENTITY:-}"
 TEAM_ID="${CCTRANS_TEAM_ID:-}"
 PROFILE_PATH="${CCTRANS_MAS_PROFILE:-}"
@@ -76,7 +77,7 @@ cat > "$CONTENTS_DIR/Info.plist" <<PLIST
   <key>CFBundleShortVersionString</key>
   <string>$APP_VERSION</string>
   <key>CFBundleVersion</key>
-  <string>$APP_VERSION</string>
+  <string>$APP_BUILD_NUMBER</string>
   <key>LSMinimumSystemVersion</key>
   <string>15.0</string>
   <key>LSApplicationCategoryType</key>
