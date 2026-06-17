@@ -4,19 +4,16 @@ import Testing
 
 @Suite(.serialized)
 struct OpenRouterScreenContextTests {
-    @Test func openRouterTextUsesVisionModelWhenScreenContextIsProvided() async throws {
+    @Test func openRouterTextUsesSelectedVisionCapableTextModelWhenScreenContextIsProvided() async throws {
         let settings = TranslatorSettings(
             provider: .openRouter,
-            openRouterTextModel: "openrouter/text-model",
+            openRouterTextModel: "minimax/minimax-m3",
             openRouterVisionModel: "openrouter/vision-model"
         )
         let service = TranslationService(session: stubbedOpenRouterSession { request in
             let body = try #require(request.jsonBody)
-            #expect(body["model"] == nil)
-            let models = try #require(body["models"] as? [String])
-            #expect(models.first == "openrouter/vision-model")
-            #expect(models.contains("~google/gemini-flash-lite-latest"))
-            #expect(models.contains("nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"))
+            #expect(body["model"] as? String == "minimax/minimax-m3")
+            #expect(body["models"] == nil)
 
             let provider = try #require(body["provider"] as? [String: Any])
             let sort = try #require(provider["sort"] as? [String: Any])
@@ -51,7 +48,7 @@ struct OpenRouterScreenContextTests {
         )
 
         #expect(result.text == "화면 컨텍스트 번역")
-        #expect(result.model == "openrouter/vision-model")
+        #expect(result.model == "minimax/minimax-m3")
         #expect(result.usage?.promptTokens == 11)
         #expect(result.usage?.completionTokens == 7)
         #expect(result.usage?.totalTokens == 18)
@@ -61,7 +58,7 @@ struct OpenRouterScreenContextTests {
     @Test func openRouterTextParsesContextDescriptionSeparately() async throws {
         let settings = TranslatorSettings(
             provider: .openRouter,
-            openRouterTextModel: "openrouter/text-model",
+            openRouterTextModel: "minimax/minimax-m3",
             openRouterVisionModel: "openrouter/vision-model"
         )
         let service = TranslationService(session: stubbedOpenRouterSession { request in
@@ -89,6 +86,74 @@ struct OpenRouterScreenContextTests {
 
         #expect(result.text == "그것")
         #expect(result.description == "이 문장에서 '그것'은 복사하려는 문장 전체를 의미합니다.")
+    }
+
+    @Test func openRouterTextRejectsKnownTextOnlyModelWhenScreenContextIsProvided() async throws {
+        let settings = TranslatorSettings(
+            provider: .openRouter,
+            openRouterTextModel: "deepseek/deepseek-v4-flash"
+        )
+        let service = TranslationService(session: stubbedOpenRouterSession { _ in
+            Issue.record("Text-only model should fail before sending an image request.")
+            return Data()
+        })
+
+        await #expect(throws: TranslationError.unsupportedImageModel("deepseek/deepseek-v4-flash")) {
+            try await service.translateText(
+                "Translate this.",
+                settings: settings,
+                credentials: TranslatorCredentials(openRouterAPIKey: "test-key", huggingFaceToken: nil),
+                contextImagePNGData: Data([0x89, 0x50, 0x4E, 0x47])
+            )
+        }
+    }
+
+    @Test func screenshotTranslationUsesDedicatedVisionModelEvenWhenTextModelIsDeepSeek() async throws {
+        let settings = TranslatorSettings(
+            provider: .openRouter,
+            openRouterTextModel: "deepseek/deepseek-v4-flash",
+            openRouterVisionModel: "google/gemini-3.1-flash-lite"
+        )
+        let service = TranslationService(session: stubbedOpenRouterSession { request in
+            let body = try #require(request.jsonBody)
+            #expect(body["model"] as? String == "google/gemini-3.1-flash-lite")
+            #expect(body["models"] == nil)
+
+            let messages = try #require(body["messages"] as? [[String: Any]])
+            let userMessage = try #require(messages.last)
+            let content = try #require(userMessage["content"] as? [[String: Any]])
+            #expect(content.contains { $0["type"] as? String == "image_url" })
+
+            return openRouterResponse("선택 영역 번역")
+        })
+
+        let result = try await service.translateImage(
+            pngData: Data([0x89, 0x50, 0x4E, 0x47]),
+            settings: settings,
+            credentials: TranslatorCredentials(openRouterAPIKey: "test-key", huggingFaceToken: nil)
+        )
+
+        #expect(result.text == "선택 영역 번역")
+        #expect(result.model == "google/gemini-3.1-flash-lite")
+    }
+
+    @Test func screenshotTranslationRejectsKnownTextOnlyVisionModel() async throws {
+        let settings = TranslatorSettings(
+            provider: .openRouter,
+            openRouterVisionModel: "deepseek/deepseek-v4-flash"
+        )
+        let service = TranslationService(session: stubbedOpenRouterSession { _ in
+            Issue.record("Text-only vision model should fail before sending an image request.")
+            return Data()
+        })
+
+        await #expect(throws: TranslationError.unsupportedImageModel("deepseek/deepseek-v4-flash")) {
+            try await service.translateImage(
+                pngData: Data([0x89, 0x50, 0x4E, 0x47]),
+                settings: settings,
+                credentials: TranslatorCredentials(openRouterAPIKey: "test-key", huggingFaceToken: nil)
+            )
+        }
     }
 
     @Test func openRouterTextUsesTextModelWhenNoScreenContextExists() async throws {

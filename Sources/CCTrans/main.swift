@@ -195,7 +195,7 @@ if CommandLine.arguments.contains("--github-star-smoke") {
 if CommandLine.arguments.contains("--screenshot-once") {
     let settings = oneShotSettings(defaultProvider: .openRouter)
     let credentials = CredentialsProvider().credentials()
-    let data = try await ScreenshotCapture.captureMainDisplayPNG()
+    let data = try await ScreenshotCapture.captureSelectedRegionPNG()
     let result = try await TranslationService().translateImage(pngData: data, settings: settings, credentials: credentials)
     print(result.text)
     exit(0)

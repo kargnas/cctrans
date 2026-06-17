@@ -6,6 +6,7 @@ enum ScreenshotCaptureError: LocalizedError {
     case permissionDenied
     case captureFailed
     case encodingFailed
+    case selectionCancelled
     case commandFailed(String)
 
     var errorDescription: String? {
@@ -13,11 +14,13 @@ enum ScreenshotCaptureError: LocalizedError {
         case .permissionDenied:
             "Screen Recording permission is required for screenshot translation."
         case .captureFailed:
-            "Could not capture the main display."
+            "Could not capture the screenshot."
         case .encodingFailed:
             "Could not encode the screenshot as PNG."
+        case .selectionCancelled:
+            "Screenshot selection was cancelled."
         case let .commandFailed(message):
-            "The fallback screencapture command failed: \(message)"
+            "The screencapture command failed: \(message)"
         }
     }
 }
@@ -32,6 +35,18 @@ enum ScreenshotCapture {
 
     static func captureMainDisplayPNG() async throws -> Data {
         try await captureMainDisplayPNG(outputScale: .point1x)
+    }
+
+    static func captureSelectedRegionPNG() async throws -> Data {
+        if !CGPreflightScreenCaptureAccess() {
+            guard CGRequestScreenCaptureAccess() else {
+                throw ScreenshotCaptureError.permissionDenied
+            }
+        }
+
+        return try await Task.detached(priority: .userInitiated) {
+            try captureSelectedRegionWithSystemScreencapture()
+        }.value
     }
 
     static func captureMainDisplayContextPNGIfAvailable() async -> ScreenContextCaptureResult {
@@ -99,7 +114,27 @@ enum ScreenshotCapture {
         return data
     }
 
+    private static func captureSelectedRegionWithSystemScreencapture() throws -> Data {
+        try captureWithSystemScreencapture(
+            arguments: ["-i", "-s", "-x", "-t", "png"],
+            outputScale: .native,
+            treatsMissingOutputAsCancellation: true
+        )
+    }
+
     private static func captureWithSystemScreencapture(outputScale: OutputScale) throws -> Data {
+        try captureWithSystemScreencapture(
+            arguments: ["-x", "-t", "png"],
+            outputScale: outputScale,
+            treatsMissingOutputAsCancellation: false
+        )
+    }
+
+    private static func captureWithSystemScreencapture(
+        arguments: [String],
+        outputScale: OutputScale,
+        treatsMissingOutputAsCancellation: Bool
+    ) throws -> Data {
         let fileURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("cctrans-\(UUID().uuidString).png")
         defer {
@@ -108,7 +143,7 @@ enum ScreenshotCapture {
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
-        process.arguments = ["-x", "-t", "png", fileURL.path]
+        process.arguments = arguments + [fileURL.path]
 
         let errorPipe = Pipe()
         process.standardError = errorPipe
@@ -120,11 +155,17 @@ enum ScreenshotCapture {
             let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
             let message = String(data: errorData, encoding: .utf8)?
                 .trimmingCharacters(in: .whitespacesAndNewlines)
+            if treatsMissingOutputAsCancellation, message?.isEmpty != false {
+                throw ScreenshotCaptureError.selectionCancelled
+            }
             throw ScreenshotCaptureError.commandFailed(message ?? "exit \(process.terminationStatus)")
         }
 
-        let data = try Data(contentsOf: fileURL)
-        guard !data.isEmpty else {
+        guard let data = try? Data(contentsOf: fileURL),
+              !data.isEmpty else {
+            if treatsMissingOutputAsCancellation {
+                throw ScreenshotCaptureError.selectionCancelled
+            }
             throw ScreenshotCaptureError.captureFailed
         }
         return try resizedPNGDataIfNeeded(data, outputScale: outputScale)

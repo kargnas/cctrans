@@ -47,7 +47,7 @@ public struct TranslationUsage: Equatable, Sendable {
     }
 }
 
-public enum TranslationError: LocalizedError, Sendable {
+public enum TranslationError: LocalizedError, Sendable, Equatable {
     case emptyInput
     case missingCredential(String)
     case invalidURL(String)
@@ -55,6 +55,7 @@ public enum TranslationError: LocalizedError, Sendable {
     case missingTranslation(String)
     case invalidImageData
     case localModelUnavailable(String)
+    case unsupportedImageModel(String)
 
     public var errorDescription: String? {
         switch self {
@@ -72,6 +73,8 @@ public enum TranslationError: LocalizedError, Sendable {
             "The screenshot could not be encoded."
         case let .localModelUnavailable(message):
             message
+        case let .unsupportedImageModel(model):
+            "\(OpenRouterModelCatalog.title(for: model)) cannot read images. Choose a Text + Image model for screenshot translation."
         }
     }
 }
@@ -171,6 +174,9 @@ public final class TranslationService: @unchecked Sendable {
     ) async throws -> TranslationResult {
         guard !pngData.isEmpty else {
             throw TranslationError.invalidImageData
+        }
+        guard OpenRouterModelCatalog.model(id: settings.openRouterVisionModel)?.supportsVision != false else {
+            throw TranslationError.unsupportedImageModel(settings.openRouterVisionModel)
         }
 
         let key = try require(credentials.openRouterAPIKey, named: "OPENROUTER_API_KEY")
@@ -281,6 +287,10 @@ public final class TranslationService: @unchecked Sendable {
         // (AppDelegate.contextImagePNGDataIfNeeded), so the chosen model handles the
         // image itself instead of silently switching to a different vision model.
         let model = settings.openRouterTextModel
+        if contextImagePNGData != nil,
+           OpenRouterModelCatalog.model(id: model)?.supportsVision == false {
+            throw TranslationError.unsupportedImageModel(model)
+        }
         // Stream only the plain-text path: a copied selection with no attached screen image, and only
         // when a caller wants incremental output. Vision/disambiguation requests still use structured
         // JSON so the contextual "description" field survives. CLI/preview callers (onPartial == nil)
@@ -356,15 +366,6 @@ public final class TranslationService: @unchecked Sendable {
         } else {
             body["response_format"] = translationSchema
         }
-        if contextImagePNGData != nil {
-            body.removeValue(forKey: "model")
-            body["models"] = [
-                model,
-                "google/gemini-3.1-flash-lite",
-                "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
-            ].uniqued()
-        }
-
         let response: OpenRouterCompletion
         if isStreaming, let onPartial {
             response = try await streamOpenRouter(body: body, apiKey: key, onPartial: onPartial)

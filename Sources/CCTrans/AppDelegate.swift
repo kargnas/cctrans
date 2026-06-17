@@ -359,18 +359,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func translateScreenshot() {
         currentTextTranslationTask?.cancel()
         currentScreenshotTranslationTask?.cancel()
-        showTranslationLoading(originalText: "[screen screenshot]", sourceTitle: "Screenshot")
         let task = Task { [weak self] in
             guard let self else {
                 return
             }
 
             do {
-                let data = try await ScreenshotCapture.captureMainDisplayPNG()
+                let data = try await ScreenshotCapture.captureSelectedRegionPNG()
                 guard !Task.isCancelled else {
                     return
                 }
                 let imageInfo = Self.imageInfo(for: data)
+                showTranslationLoading(originalText: "[selected screenshot]", sourceTitle: "Screenshot")
                 let result = try await translationService.translateImage(
                     pngData: data,
                     settings: settingsStore.settings,
@@ -379,14 +379,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 guard !Task.isCancelled else {
                     return
                 }
-                show(result: result, title: "Screenshot", inputText: "[screen screenshot]", imageInfo: imageInfo)
+                show(result: result, title: "Screenshot", inputText: "[selected screenshot]", imageInfo: imageInfo)
             } catch is CancellationError {
+                return
+            } catch ScreenshotCaptureError.selectionCancelled {
                 return
             } catch {
                 guard !Task.isCancelled else {
                     return
                 }
-                show(error: error, title: "Screenshot", inputText: "[screen screenshot]")
+                show(error: error, title: "Screenshot", inputText: "[selected screenshot]")
             }
         }
         currentScreenshotTranslationTask = task

@@ -61,7 +61,7 @@
   const uiStrings = {
     translating: "Translating...",
     translatingClipboard: "Translating clipboard text.",
-    translatingScreenshot: "Capturing and translating the screenshot.",
+    translatingScreenshot: "Translating selected screenshot.",
     error: "Error",
     translationFailed: "Translation failed.",
     showOriginal: "Original",
@@ -78,7 +78,7 @@
   const modelMetadata = $derived([modelName, costLabel].filter(Boolean).join(" · "));
   const bodyText = $derived(visibleMode === "original" ? preview.originalText : preview.translatedText);
   const loadingMessage = $derived(
-    preview.originalText === "[screen screenshot]"
+    preview.originalText === "[screen screenshot]" || preview.originalText === "[selected screenshot]"
       ? uiStrings.translatingScreenshot
       : uiStrings.translatingClipboard
   );

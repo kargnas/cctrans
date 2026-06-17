@@ -9,7 +9,7 @@ import Testing
     #expect(settings.hyMT2Model == .hyMT2_30B)
     #expect(settings.localModelID == LocalModelRegistry.defaultModelID)
     #expect(settings.openRouterTextModel == "deepseek/deepseek-v4-flash")
-    #expect(settings.openRouterVisionModel == "~google/gemini-flash-lite-latest")
+    #expect(settings.openRouterVisionModel == "google/gemini-3.1-flash-lite")
     #expect(settings.favoriteLocalModelIDs == [LocalModelRegistry.defaultModelID])
     #expect(settings.favoriteOpenRouterModels == ["deepseek/deepseek-v4-flash"])
     #expect(settings.includeScreenContextForLLM == false)
