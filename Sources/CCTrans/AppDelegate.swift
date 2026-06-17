@@ -1085,24 +1085,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func firstAncestorWithPackageManifest(from url: URL) -> URL? {
-        var candidate = url.standardizedFileURL
-        var isDirectory: ObjCBool = false
-        if FileManager.default.fileExists(atPath: candidate.path, isDirectory: &isDirectory),
-           !isDirectory.boolValue {
-            candidate.deleteLastPathComponent()
-        }
-
-        while true {
-            if FileManager.default.fileExists(atPath: candidate.appendingPathComponent("Package.swift").path) {
-                return candidate
-            }
-
-            let parent = candidate.deletingLastPathComponent()
-            if parent.path == candidate.path {
-                return nil
-            }
-            candidate = parent
-        }
+        WorkspaceRootResolver.firstAncestorWithPackageManifest(from: url)
     }
 
     @objc private func showLocalModelSetup() {
