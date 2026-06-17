@@ -171,13 +171,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func configureStatusItem() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        // The app triggers on Cmd+C double press, so the menu bar shows the
-        // shortcut itself. The ⌘ text glyph matches macOS menu shortcut
-        // rendering exactly, so no symbol image is needed.
-        item.button?.title = "⌘C"
-        item.button?.toolTip = "CCTrans"
+        if let button = item.button {
+            button.image = Self.menuBarBadgeImage()
+            button.imagePosition = .imageOnly
+            button.toolTip = "CCTrans"
+            button.setAccessibilityLabel("CCTrans")
+        }
         statusItem = item
         rebuildMenu()
+    }
+
+    private static func menuBarBadgeImage() -> NSImage {
+        let size = NSSize(width: 32, height: 18)
+        let image = NSImage(size: size)
+        image.lockFocus()
+        defer { image.unlockFocus() }
+
+        NSColor.labelColor.setStroke()
+        let badgeRect = NSRect(x: 1.5, y: 1.5, width: size.width - 3, height: size.height - 3)
+        let badgePath = NSBezierPath(roundedRect: badgeRect, xRadius: 4, yRadius: 4)
+        badgePath.lineWidth = 1.4
+        badgePath.stroke()
+
+        let text = "⌘C" as NSString
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .semibold),
+            .foregroundColor: NSColor.labelColor,
+        ]
+        let textSize = text.size(withAttributes: attributes)
+        text.draw(
+            at: NSPoint(
+                x: (size.width - textSize.width) / 2,
+                y: (size.height - textSize.height) / 2 + 0.5
+            ),
+            withAttributes: attributes
+        )
+
+        image.isTemplate = true
+        return image
     }
 
     private func configureMainMenu() {
