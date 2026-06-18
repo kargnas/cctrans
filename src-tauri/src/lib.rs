@@ -154,9 +154,7 @@ mod macos_toast {
                 }
             } else if !hit {
                 // The toast is non-focusable, so we cannot rely on window blur for click-outside
-                // dismissal. Hand the decision to the WebView (which knows mode + how long the
-                // result has been readable) instead of hiding here, so a stray click during loading
-                // or right after the result appears does not yank the toast away before it is seen.
+                // dismissal. The WebView owns close state and timer cleanup.
                 let _ = app.emit_to("translation", "toast-dismiss-request", ());
             }
         });
@@ -919,6 +917,18 @@ fn show_translation_toast_inner(app: &AppHandle) -> Result<ShowToastResult, Stri
     })
 }
 
+fn toast_refresh_should_show(
+    seq: u64,
+    mode: &str,
+    last_shown_sequence: u64,
+    previous_mode: Option<&str>,
+) -> bool {
+    if seq == 0 {
+        return false;
+    }
+    seq != last_shown_sequence || (mode != "loading" && previous_mode == Some("loading"))
+}
+
 #[derive(Clone, Serialize)]
 struct ToastRefreshPayload {
     #[serde(rename = "requestSequence")]
@@ -936,7 +946,8 @@ fn start_translation_toast_watcher(app: AppHandle) {
         .name("translation-toast-watcher".into())
         .spawn(move || {
             use tauri::Emitter;
-            let mut last_sequence: u64 = 0;
+            let mut last_shown_sequence: u64 = 0;
+            let mut last_mode: Option<String> = None;
             let mut last_fingerprint: Option<(
                 u64,
                 String,
@@ -975,9 +986,15 @@ fn start_translation_toast_watcher(app: AppHandle) {
                     continue;
                 }
                 last_fingerprint = Some(fingerprint);
-                let should_show = seq != 0 && seq != last_sequence;
+                let should_show = toast_refresh_should_show(
+                    seq,
+                    &state.mode,
+                    last_shown_sequence,
+                    last_mode.as_deref(),
+                );
+                last_mode = Some(state.mode.clone());
                 if should_show {
-                    last_sequence = seq;
+                    last_shown_sequence = seq;
                 }
                 let main_app = app.clone();
                 let _ = app.run_on_main_thread(move || {
@@ -3341,6 +3358,30 @@ mod tests {
         assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
 
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn toast_refresh_shows_when_result_replaces_loading_for_same_sequence() {
+        assert!(toast_refresh_should_show(3, "loading", 2, None));
+        assert!(toast_refresh_should_show(
+            3,
+            "translated",
+            3,
+            Some("loading")
+        ));
+        assert!(toast_refresh_should_show(3, "error", 3, Some("loading")));
+        assert!(!toast_refresh_should_show(
+            3,
+            "translated",
+            3,
+            Some("translated")
+        ));
+        assert!(!toast_refresh_should_show(
+            0,
+            "translated",
+            0,
+            Some("loading")
+        ));
     }
 
     #[test]

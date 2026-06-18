@@ -77,6 +77,15 @@ After completed development or documentation work is verified and committed, run
   - remove the full settings store when all values equal defaults.
 - GitHub star ask (`GitHubStarPrompter` + `GitHubStarPromptPolicy`) runs once per machine, only on standalone installs (brew cask / DMG / install-app.zsh copies), only after initial setup, and only when an authenticated `gh` CLI reports the repo unstarred. Mac App Store and workspace/dev builds never prompt; `scripts/install-app.zsh` pre-marks the `githubStarPromptHandled` default after its own terminal ask. Headless check: `--github-star-smoke`.
 
+## Translation Toast Contract
+
+- Translation toast glass stays visually stable: do not animate or vary whole-bubble opacity, background alpha, blur, or hover translucency during countdown, hover, or mouse-out. Progress belongs in the countdown bar only.
+- After a result or error appears, auto-dismiss countdown starts immediately.
+- Hovering the toast resets the countdown to the full duration and pauses it; leaving the toast starts counting down from that reset duration.
+- Any click outside the visible toast closes/hides it immediately, including during loading.
+- A loading-to-result update must show the toast again for the same request sequence, so a cold local model warmup cannot finish ready while silently skipping the translated result.
+- Rust owns global pointer hit-testing for the non-activating toast and emits `toast-hover` plus `toast-dismiss-request`; Svelte owns timer state and close decisions.
+
 ## Settings Contract
 
 The settings UI must cover current AppKit behavior before adding new behavior:

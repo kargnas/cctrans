@@ -42,11 +42,6 @@
   let hoverUnlisten: (() => void) | undefined;
   let dismissRequestUnlisten: (() => void) | undefined;
   let refreshUnlisten: (() => void) | undefined;
-  let backdropNudgeTimers: number[] = [];
-  // Outside-click closes the toast, but only after the result has been readable this long, so the
-  // user's normal click right after copying does not dismiss it before they can see the translation.
-  const outsideCloseGraceMs = 1200;
-  let resultShownAt = 0;
   let pendingMovedPosition: WindowPosition | null = null;
   // onMoved fires for programmatic set_position (every show/resize) too, not just user drags.
   // Persist only after a real drag so the app's own repositioning never overwrites toast_position.
@@ -57,7 +52,6 @@
   let countdownRemaining = $state(fallbackTranslationState.toastDuration);
   let countdownPaused = $state(false);
   let pointerOverToast = false;
-  let backdropNudge = $state(0);
 
   const uiStrings = {
     translating: "Translating...",
@@ -90,7 +84,6 @@
   const countdownLabel = $derived(`${countdownRemaining.toFixed(1)}s`);
   const countdownProgressValue = $derived(Math.max(0, Math.min(1, countdownRemaining / countdownDuration)));
   const countdownProgress = $derived(`${countdownProgressValue * 100}%`);
-  const bubbleBlur = $derived(backdropNudge % 2 === 0 ? "28px" : "28.01px");
   const screenRecordingPermissionError = $derived(
     preview.permissionAction === "screenRecording" ||
       (preview.errorText ?? "").toLowerCase().includes("screen recording permission")
@@ -149,12 +142,9 @@
         .catch(() => {
           // Hover pause is best-effort when window events are unavailable.
         });
-      // Rust reports a click outside the toast; we decide whether to dismiss so a stray click
-      // during loading or in the first moment of a result never closes it before it is read.
+      // Rust hit-tests outside clicks globally because the toast is non-activating.
       void getCurrentWindow()
         .listen("toast-dismiss-request", () => {
-          if (visibleMode === "loading") return;
-          if (performance.now() - resultShownAt < outsideCloseGraceMs) return;
           void closePopover();
         })
         .then((unlisten) => {
@@ -199,7 +189,6 @@
       clearAutoDismiss();
       clearCountdown();
       clearCopyReset();
-      clearBackdropNudges();
       stopResultPolling();
       document.removeEventListener("visibilitychange", onVisibilityChange);
       windowMoveUnlisten?.();
@@ -218,7 +207,6 @@
     void preview.requestSequence;
     if (!isTauri || !bubbleEl) return;
     const frame = requestAnimationFrame(() => {
-      rearmBackdropFilter();
       syncWindowHeight();
     });
     return () => cancelAnimationFrame(frame);
@@ -237,25 +225,6 @@
     });
     return () => cancelAnimationFrame(frame);
   });
-
-  function rearmBackdropFilter() {
-    if (!isTauri || !bubbleEl) return;
-    clearBackdropNudges();
-    for (const delay of [0, 50, 120, 250]) {
-      const timer = window.setTimeout(() => {
-        backdropNudge += 1;
-        backdropNudgeTimers = backdropNudgeTimers.filter((value) => value !== timer);
-      }, delay);
-      backdropNudgeTimers = [...backdropNudgeTimers, timer];
-    }
-  }
-
-  function clearBackdropNudges() {
-    for (const timer of backdropNudgeTimers) {
-      window.clearTimeout(timer);
-    }
-    backdropNudgeTimers = [];
-  }
 
   function syncWindowHeight() {
     if (!isTauri || !bubbleEl) return;
@@ -278,7 +247,6 @@
       arrowAbove = result.arrow === "above";
       arrowHidden = result.arrow === "none";
       anchorBottom = result.anchorBottom;
-      rearmBackdropFilter();
     } catch {
       // Show is best-effort; a stale position still surfaces the translation.
     }
@@ -286,7 +254,6 @@
 
   function onVisibilityChange() {
     if (!document.hidden) {
-      rearmBackdropFilter();
       void loadPreview({ allowShow: false });
     }
   }
@@ -313,7 +280,6 @@
     if (isTauri && !debugMode) {
       startResultPolling();
     }
-    rearmBackdropFilter();
   }
 
   // The state file is the single source of truth. Polling never stops while the toast lives, so a
@@ -654,7 +620,6 @@
     clearCountdown();
     if (debugMode || visibleMode === "loading") return;
 
-    resultShownAt = performance.now();
     countdownDuration = dismissDurationForText(bodyText);
     countdownRemaining = countdownDuration;
     countdownStartedRemaining = countdownDuration;
@@ -684,11 +649,10 @@
 
   function pauseAutoDismiss() {
     if (debugMode || visibleMode === "loading") return;
-    if (dismissTimer !== undefined || countdownInterval !== undefined) {
-      updateCountdown();
-    }
     clearAutoDismiss();
     clearCountdown();
+    countdownRemaining = countdownDuration;
+    countdownStartedRemaining = countdownDuration;
     countdownPaused = true;
   }
 
@@ -739,7 +703,7 @@
     tabindex="-1"
     onmousedown={startDragging}
     class:hover-paused={countdownPaused}
-    style={`--countdown-progress: ${countdownProgress}; --bubble-blur: ${bubbleBlur}`}
+    style={`--countdown-progress: ${countdownProgress}`}
   >
     <div class="translation-bubble-inner">
       {#if visibleMode === "loading"}

@@ -919,23 +919,14 @@ kbd {
   border-radius: 14px;
   background: var(--bubble-bg);
   box-shadow: none;
-  backdrop-filter: blur(var(--bubble-blur, 28px)) saturate(160%);
-  -webkit-backdrop-filter: blur(var(--bubble-blur, 28px)) saturate(160%);
+  backdrop-filter: blur(28px) saturate(160%);
+  -webkit-backdrop-filter: blur(28px) saturate(160%);
   transform: translateZ(0);
-  transition:
-    border-color 140ms ease,
-    transform 160ms ease;
-  will-change: transform, backdrop-filter;
   --countdown-progress: 100%;
 }
 
 .translation-bubble.compact {
   min-height: 88px;
-}
-
-.translation-bubble.hover-paused {
-  border-color: var(--bubble-border-hover);
-  transform: translateZ(0) scale(1.012);
 }
 
 .translation-bubble::before {
@@ -1002,12 +993,7 @@ kbd {
   transition: width 100ms linear;
 }
 
-.translation-bubble.hover-paused .countdown-bar-fill {
-  background: var(--accent-bar-strong);
-}
-
 @media (prefers-reduced-motion: reduce) {
-  .translation-bubble,
   .countdown-bar-fill {
     transition: none;
   }
