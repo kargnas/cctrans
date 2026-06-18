@@ -17,6 +17,7 @@
   // Must match `.translation-stage` vertical padding in app.css so the resized window
   // leaves exactly enough room for the bubble plus its caret arrow on either side.
   const stagePadding = 18;
+  const appleTranslationModelID = "apple/translation";
 
   let isTauri = $state(false);
   let bubbleEl = $state<HTMLDivElement | undefined>();
@@ -363,24 +364,39 @@
   }
 
   function applySettingsState(state: SettingsState) {
+    const providerValues = new Set(state.options.providers.map((option) => option.value));
     const favoriteOpenRouterModels = state.options.openRouterModels.filter(
       (option) =>
         option.value === state.settings.openRouterTextModel ||
         state.settings.favoriteOpenRouterModels.includes(option.value)
     );
     modelOptions = [
-      ...state.options.localModels.map((option) => ({
-        label: option.label,
-        value: `localHyMT2:${option.value}`,
-        provider: "localHyMT2" as const,
-        modelId: option.value
-      })),
-      ...favoriteOpenRouterModels.map((option) => ({
-        label: openRouterPreviewModelLabel(option),
-        value: `openRouter:${option.value}`,
-        provider: "openRouter" as const,
-        modelId: option.value
-      }))
+      ...(providerValues.has("localHyMT2")
+        ? state.options.localModels.map((option) => ({
+            label: option.label,
+            value: `localHyMT2:${option.value}`,
+            provider: "localHyMT2" as const,
+            modelId: option.value
+          }))
+        : []),
+      ...(providerValues.has("appleTranslation")
+        ? [
+            {
+              label: "Apple Translation",
+              value: `appleTranslation:${appleTranslationModelID}`,
+              provider: "appleTranslation" as const,
+              modelId: appleTranslationModelID
+            }
+          ]
+        : []),
+      ...(providerValues.has("openRouter")
+        ? favoriteOpenRouterModels.map((option) => ({
+            label: openRouterPreviewModelLabel(option),
+            value: `openRouter:${option.value}`,
+            provider: "openRouter" as const,
+            modelId: option.value
+          }))
+        : [])
     ];
     targetLanguageOptions = state.options.targetLanguages;
     persistedModelValue = modelValueForSettings(state);
@@ -396,11 +412,14 @@
   }
 
   function modelValueForSettings(state: SettingsState) {
-    const modelId =
-      state.settings.provider === "openRouter"
-        ? state.settings.openRouterTextModel
-        : state.settings.localModelID;
+    const modelId = modelIdForSettings(state);
     return `${state.settings.provider}:${modelId}`;
+  }
+
+  function modelIdForSettings(state: SettingsState) {
+    if (state.settings.provider === "openRouter") return state.settings.openRouterTextModel;
+    if (state.settings.provider === "appleTranslation") return appleTranslationModelID;
+    return state.settings.localModelID;
   }
 
   function syncSelectedModel() {
@@ -483,7 +502,7 @@
       } else {
         preview = {
           ...preview,
-          providerTitle: option.provider === "openRouter" ? "OpenRouter LLM" : "Local Model",
+          providerTitle: providerTitleForOption(option),
           model: option.label,
           translatedText: `${preview.originalText} (${option.label})`
         };
@@ -494,7 +513,7 @@
       preview = {
         ...preview,
         mode: "error",
-        providerTitle: option.provider === "openRouter" ? "OpenRouter LLM" : "Local Model",
+        providerTitle: providerTitleForOption(option),
         model: option.label,
         errorText: error instanceof Error ? error.message : String(error)
       };
@@ -551,6 +570,12 @@
       syncSelectedTargetLanguage();
       scheduleAutoDismiss();
     }
+  }
+
+  function providerTitleForOption(option: PreviewModelOption) {
+    if (option.provider === "openRouter") return "OpenRouter LLM";
+    if (option.provider === "appleTranslation") return "Apple Translation";
+    return "Local Model";
   }
 
   async function startDragging(event: MouseEvent) {
