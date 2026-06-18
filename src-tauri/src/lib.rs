@@ -2788,8 +2788,7 @@ fn openrouter_model_from_api(model: OpenRouterAPIModel) -> Option<OpenRouterMode
 
     let prompt_price_per_million = price_per_million(model.pricing.prompt.as_ref());
     let completion_price_per_million = price_per_million(model.pricing.completion.as_ref());
-    let is_free = id.ends_with(":free")
-        || (prompt_price_per_million == 0.0 && completion_price_per_million == 0.0);
+    let is_free = id.ends_with(":free") || id == "openrouter/free";
     let is_recommended = id == default_settings().open_router_text_model
         || id == default_settings().open_router_vision_model;
     let is_reasoning = model.supported_parameters.iter().any(|parameter| {
@@ -2841,7 +2840,7 @@ fn price_per_million(value: Option<&serde_json::Value>) -> f64 {
         serde_json::Value::Number(value) => value.as_f64().unwrap_or(0.0),
         _ => 0.0,
     };
-    if per_token.is_finite() && per_token >= 0.0 {
+    if per_token.is_finite() {
         per_token * 1_000_000.0
     } else {
         0.0
@@ -3865,6 +3864,51 @@ mod tests {
         assert!(model.is_free);
         assert!(model.is_reasoning);
         assert_eq!(model.note.as_deref(), Some("Free event"));
+    }
+
+    #[test]
+    fn openrouter_free_router_is_free_but_auto_router_is_variable_priced() {
+        let free_router = openrouter_model_from_api(OpenRouterAPIModel {
+            id: "openrouter/free".to_string(),
+            name: "Free Models Router".to_string(),
+            created: Some(1_704_067_200),
+            context_length: Some(131_072),
+            pricing: OpenRouterAPIPricing {
+                prompt: Some(serde_json::Value::String("0".to_string())),
+                completion: Some(serde_json::Value::String("0".to_string())),
+            },
+            architecture: OpenRouterAPIArchitecture {
+                input_modalities: vec!["text".to_string(), "image".to_string()],
+                output_modalities: vec!["text".to_string()],
+            },
+            supported_parameters: Vec::new(),
+        })
+        .unwrap();
+
+        assert!(free_router.is_free);
+        assert_eq!(free_router.note.as_deref(), Some("Free event"));
+
+        let auto_router = openrouter_model_from_api(OpenRouterAPIModel {
+            id: "openrouter/auto".to_string(),
+            name: "Auto Router".to_string(),
+            created: Some(1_704_067_200),
+            context_length: None,
+            pricing: OpenRouterAPIPricing {
+                prompt: Some(serde_json::Value::String("-1".to_string())),
+                completion: Some(serde_json::Value::String("-1".to_string())),
+            },
+            architecture: OpenRouterAPIArchitecture {
+                input_modalities: vec!["text".to_string(), "image".to_string()],
+                output_modalities: vec!["text".to_string(), "image".to_string()],
+            },
+            supported_parameters: Vec::new(),
+        })
+        .unwrap();
+
+        assert!(!auto_router.is_free);
+        assert_eq!(auto_router.prompt_price_per_million, -1_000_000.0);
+        assert_eq!(auto_router.completion_price_per_million, -1_000_000.0);
+        assert!(auto_router.note.is_none());
     }
 
     #[test]

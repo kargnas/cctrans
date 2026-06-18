@@ -62,8 +62,8 @@
   let openTranslationModelMenu = $state<"general" | "models" | null>(null);
   let activeTranslationModelProvider = $state<TranslationProvider>("localHyMT2");
   let openRouterSort = $state<{ key: OpenRouterSortKey; direction: SortDirection }>({
-    key: "inputPrice",
-    direction: "asc"
+    key: "releaseDate",
+    direction: "desc"
   });
 
   let isOpenRouterTextOnly = $derived(
@@ -520,10 +520,12 @@
 
   function formatPrice(model: OpenRouterModelOption) {
     if (model.isFree) return "Free";
+    if (model.promptPricePerMillion < 0 || model.completionPricePerMillion < 0) return "Variable price";
     return `$${formatCompactPrice(model.promptPricePerMillion)} in / $${formatCompactPrice(model.completionPricePerMillion)} out per 1M`;
   }
 
   function formatUnitPrice(value: number) {
+    if (value < 0) return "Variable";
     if (value === 0) return "Free";
     return `$${formatCompactPrice(value)}`;
   }
@@ -568,21 +570,25 @@
       }
       if (openRouterSort.key === "inputPrice") {
         return (
-          left.promptPricePerMillion - right.promptPricePerMillion ||
-          left.completionPricePerMillion - right.completionPricePerMillion ||
+          sortablePrice(left.promptPricePerMillion) - sortablePrice(right.promptPricePerMillion) ||
+          sortablePrice(left.completionPricePerMillion) - sortablePrice(right.completionPricePerMillion) ||
           left.label.localeCompare(right.label)
         ) * multiplier;
       }
       if (openRouterSort.key === "outputPrice") {
         return (
-          left.completionPricePerMillion - right.completionPricePerMillion ||
-          left.promptPricePerMillion - right.promptPricePerMillion ||
+          sortablePrice(left.completionPricePerMillion) - sortablePrice(right.completionPricePerMillion) ||
+          sortablePrice(left.promptPricePerMillion) - sortablePrice(right.promptPricePerMillion) ||
           left.label.localeCompare(right.label)
         ) * multiplier;
       }
       return (left.contextWindow - right.contextWindow || left.label.localeCompare(right.label)) * multiplier;
     });
     return sorted;
+  }
+
+  function sortablePrice(value: number) {
+    return value < 0 ? Number.MAX_SAFE_INTEGER : value;
   }
 
   function visibleOpenRouterModels(models: OpenRouterModelOption[]) {
