@@ -81,34 +81,79 @@ def translate(model_id: str, prompt: str) -> str:
 
 def make_prompt(text: str, target_language: str) -> str:
     return (
-        f"Auto -> {target_language}\n"
-        "Preserve paragraph breaks and line breaks.\n\n"
-        "Text:\n"
-        "<<<\n"
-        f"{text}\n"
-        ">>>\n\n"
-        "Translation:"
+        f"Translate to {target_language}. Preserve paragraph breaks and line breaks.\n\n"
+        f"{text}"
     )
 
 
 def clean_translation(text: str) -> str:
-    cleaned = text.strip()
+    cleaned = strip_prompt_wrapper_echo(text.strip())
     for instruction in LEAKED_PROMPT_INSTRUCTIONS:
         cleaned = cleaned.replace(instruction, "")
     lines = [
         line
         for line in cleaned.splitlines()
-        if line.strip().lower() not in LEAKED_PROMPT_INSTRUCTION_LINES
+        if not is_removable_prompt_echo_line(line)
     ]
     cleaned = "\n".join(lines).strip()
-    for label in ("Translation:", "Translated text:", "Translated result:", "Result:"):
-        if cleaned.lower().startswith(label.lower()):
-            remainder = cleaned[len(label) :].strip()
-            if remainder:
-                return remainder
+    cleaned = strip_leading_translation_label(cleaned)
     return cleaned
 
 
+def strip_prompt_wrapper_echo(text: str) -> str:
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        if line.strip() == ">>>":
+            remainder = "\n".join(lines[index + 1 :]).strip()
+            if remainder:
+                return remainder
+            break
+
+    for index, line in enumerate(lines[:6]):
+        label_length = leading_translation_label_length(line.strip())
+        if label_length is not None:
+            same_line = line.strip()[label_length:].strip()
+            following = "\n".join(lines[index + 1 :]).strip()
+            return "\n".join(part for part in (same_line, following) if part).strip()
+
+    return text.strip()
+
+
+def strip_leading_translation_label(text: str) -> str:
+    label_length = leading_translation_label_length(text)
+    if label_length is None:
+        return text
+    remainder = text[label_length:].strip()
+    return remainder or text
+
+
+def leading_translation_label_length(text: str) -> int | None:
+    normalized = text.lower()
+    for label in TRANSLATION_LABELS:
+        if normalized.startswith(label.lower()):
+            return len(label)
+    return None
+
+
+def is_removable_prompt_echo_line(line: str) -> bool:
+    stripped = line.strip()
+    return stripped in PROMPT_ECHO_LINES or stripped.lower() in LEAKED_PROMPT_INSTRUCTION_LINES
+
+
+TRANSLATION_LABELS = (
+    "Translation:",
+    "Translated text:",
+    "Translated result:",
+    "Result:",
+    "번역:",
+    "번역문:",
+    "번역 결과:",
+    "翻訳:",
+    "翻译:",
+    "譯文:",
+    "译文:",
+)
+PROMPT_ECHO_LINES = {"<<<", ">>>", "<selected_text>", "</selected_text>", "Text:"}
 LEAKED_PROMPT_INSTRUCTIONS = [
     "Note that you should only output the translated result without any additional explanation:",
     "Note that you should only output the translated result without any additional explanation.",

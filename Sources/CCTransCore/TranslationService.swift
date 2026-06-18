@@ -695,15 +695,9 @@ public final class TranslationService: @unchecked Sendable {
         targetLanguage: String
     ) -> String {
         """
-        \(sourceLanguage) -> \(targetLanguage)
-        Preserve paragraph breaks and line breaks.
+        Translate \(sourceLanguage) to \(targetLanguage). Preserve paragraph breaks and line breaks.
 
-        Text:
-        <<<
         \(text)
-        >>>
-
-        Translation:
         """
     }
 
@@ -756,13 +750,11 @@ public final class TranslationService: @unchecked Sendable {
     ) -> String {
         return """
         \(sourceLanguage) -> \(targetLanguage)
-        Preserve paragraph breaks and line breaks.
+        Translate <selected_text>. Preserve paragraph breaks and line breaks.
 
         <selected_text>
         \(text)
         </selected_text>
-
-        Translation:
         """
     }
 
@@ -772,12 +764,13 @@ public final class TranslationService: @unchecked Sendable {
 
     private func cleanTranslation(_ text: String) -> String {
         var cleaned = clean(text)
+        cleaned = Self.stripPromptWrapperEcho(from: cleaned)
         for instruction in Self.leakedPromptInstructions {
             cleaned = cleaned.replacingOccurrences(of: instruction, with: "")
         }
         cleaned = cleaned
             .components(separatedBy: .newlines)
-            .filter { !Self.isLeakedPromptInstructionLine($0) }
+            .filter { !Self.isRemovablePromptEchoLine($0) }
             .joined(separator: "\n")
         cleaned = Self.stripLeadingTranslationLabel(from: cleaned)
         return clean(cleaned)
@@ -818,18 +811,71 @@ public final class TranslationService: @unchecked Sendable {
         }
     }
 
+    private static func isRemovablePromptEchoLine(_ line: String) -> Bool {
+        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        if ["<<<", ">>>", "<selected_text>", "</selected_text>", "Text:"].contains(trimmed) {
+            return true
+        }
+        return isLeakedPromptInstructionLine(line)
+    }
+
+    private static func stripPromptWrapperEcho(from text: String) -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lines = trimmed.components(separatedBy: .newlines)
+        if let closingWrapperIndex = lines.firstIndex(where: { $0.trimmingCharacters(in: .whitespacesAndNewlines) == ">>>" }) {
+            let remainder = lines.dropFirst(closingWrapperIndex + 1).joined(separator: "\n")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !remainder.isEmpty {
+                return remainder
+            }
+        }
+
+        for index in lines.indices.prefix(6) {
+            let line = lines[index].trimmingCharacters(in: .whitespacesAndNewlines)
+            if let labelLength = leadingTranslationLabelLength(in: line) {
+                let start = line.index(line.startIndex, offsetBy: labelLength)
+                let sameLineRemainder = line[start...].trimmingCharacters(in: .whitespacesAndNewlines)
+                let followingRemainder = lines.dropFirst(index + 1).joined(separator: "\n")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                return [sameLineRemainder, followingRemainder]
+                    .filter { !$0.isEmpty }
+                    .joined(separator: "\n")
+            }
+        }
+
+        return trimmed
+    }
+
     private static func stripLeadingTranslationLabel(from text: String) -> String {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        for label in ["Translation:", "Translated text:", "Translated result:", "Result:"] {
-            if trimmed.range(of: label, options: [.anchored, .caseInsensitive]) != nil {
-                let start = trimmed.index(trimmed.startIndex, offsetBy: label.count)
-                let remainder = trimmed[start...].trimmingCharacters(in: .whitespacesAndNewlines)
-                if !remainder.isEmpty {
-                    return remainder
-                }
+        if let labelLength = leadingTranslationLabelLength(in: trimmed) {
+            let start = trimmed.index(trimmed.startIndex, offsetBy: labelLength)
+            let remainder = trimmed[start...].trimmingCharacters(in: .whitespacesAndNewlines)
+            if !remainder.isEmpty {
+                return remainder
             }
         }
         return trimmed
+    }
+
+    private static func leadingTranslationLabelLength(in text: String) -> Int? {
+        let labels = [
+            "Translation:",
+            "Translated text:",
+            "Translated result:",
+            "Result:",
+            "번역:",
+            "번역문:",
+            "번역 결과:",
+            "翻訳:",
+            "翻译:",
+            "譯文:",
+            "译文:",
+        ]
+        for label in labels where text.range(of: label, options: [.anchored, .caseInsensitive]) != nil {
+            return label.count
+        }
+        return nil
     }
 
     private var translationSchema: [String: Any] {

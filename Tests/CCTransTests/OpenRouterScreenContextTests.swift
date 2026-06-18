@@ -255,6 +255,82 @@ struct OpenRouterScreenContextTests {
         #expect(result.text == "일반 응답 번역")
     }
 
+    @Test func openRouterTextStripsPromptWrapperLeaksAcrossSampleLengths() async throws {
+        let samples: [(name: String, source: String, leaked: String, expected: String)] = [
+            (
+                name: "short",
+                source: "REMETE",
+                leaked: """
+                <<<
+                REMETE
+                >>>
+
+                번역:
+                원격
+                """,
+                expected: "원격"
+            ),
+            (
+                name: "medium",
+                source: "The deployment failed because the database URL was missing.",
+                leaked: """
+                Text:
+                <<<
+                The deployment failed because the database URL was missing.
+                >>>
+                Translation: 데이터베이스 URL이 누락되어 배포가 실패했습니다.
+                """,
+                expected: "데이터베이스 URL이 누락되어 배포가 실패했습니다."
+            ),
+            (
+                name: "long",
+                source: """
+                The new offline mode keeps a local cache of recent translations.
+                Users can keep working while the network is unstable.
+                Keep separate messages on separate lines.
+                """,
+                leaked: """
+                <<<
+                The new offline mode keeps a local cache of recent translations.
+                Users can keep working while the network is unstable.
+                Keep separate messages on separate lines.
+                >>>
+
+                번역 결과:
+                새로운 오프라인 모드는 최근 번역의 로컬 캐시를 유지합니다.
+                네트워크가 불안정한 동안에도 사용자는 계속 작업할 수 있습니다.
+                별도의 메시지는 별도의 줄로 유지하세요.
+                """,
+                expected: """
+                새로운 오프라인 모드는 최근 번역의 로컬 캐시를 유지합니다.
+                네트워크가 불안정한 동안에도 사용자는 계속 작업할 수 있습니다.
+                별도의 메시지는 별도의 줄로 유지하세요.
+                """
+            ),
+        ]
+
+        for sample in samples {
+            let settings = TranslatorSettings(
+                provider: .openRouter,
+                openRouterTextModel: "openrouter/text-model"
+            )
+            let service = TranslationService(session: stubbedOpenRouterSession { _ in
+                openRouterPlainContentResponse(sample.leaked)
+            })
+
+            let result = try await service.translateText(
+                sample.source,
+                settings: settings,
+                credentials: TranslatorCredentials(openRouterAPIKey: "test-key", huggingFaceToken: nil)
+            )
+
+            #expect(result.text == sample.expected, "Failed cleanup sample: \(sample.name)")
+            #expect(!result.text.contains("<<<"), "Failed cleanup sample: \(sample.name)")
+            #expect(!result.text.contains(">>>"), "Failed cleanup sample: \(sample.name)")
+            #expect(!result.text.contains("번역:"), "Failed cleanup sample: \(sample.name)")
+        }
+    }
+
     @Test func openRouterTextStreamsPlainTextWhenPartialHandlerProvided() async throws {
         let settings = TranslatorSettings(
             provider: .openRouter,
@@ -271,9 +347,10 @@ struct OpenRouterScreenContextTests {
             let messages = try #require(body["messages"] as? [[String: Any]])
             let userMessage = try #require(messages.last)
             let prompt = try #require(userMessage["content"] as? String)
-            #expect(prompt.contains("Translation:"))
+            #expect(prompt.contains("Translate <selected_text>."))
             #expect(!prompt.contains("Only output"))
             #expect(!prompt.contains("additional explanation"))
+            #expect(!prompt.contains("Translation:"))
 
             return openRouterStreamResponse(chunks: ["안녕", "하세요", " 세계"])
         })
