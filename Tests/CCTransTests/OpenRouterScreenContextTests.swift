@@ -191,11 +191,14 @@ struct OpenRouterScreenContextTests {
         let service = TranslationService(session: stubbedOpenRouterSession { request in
             let body = try #require(request.jsonBody)
             let messages = try #require(body["messages"] as? [[String: Any]])
+            let systemMessage = try #require(messages.first)
+            #expect(!(systemMessage["content"] as? String ?? "").contains("Return only"))
             let userMessage = try #require(messages.last)
             let prompt = try #require(userMessage["content"] as? String)
             #expect(prompt.contains("Preserve source paragraph breaks and line breaks"))
-            #expect(prompt.contains("do not flatten separate messages"))
             #expect(prompt.contains("first line\nsecond line"))
+            #expect(!prompt.contains("Only output"))
+            #expect(!prompt.contains("additional explanation"))
             return openRouterResponse("첫 줄\n둘째 줄")
         })
 
@@ -206,6 +209,50 @@ struct OpenRouterScreenContextTests {
         )
 
         #expect(result.text == "첫 줄\n둘째 줄")
+    }
+
+    @Test func openRouterTextStripsLeakedPromptInstructionFromStructuredResult() async throws {
+        let settings = TranslatorSettings(
+            provider: .openRouter,
+            openRouterTextModel: "openrouter/text-model"
+        )
+        let service = TranslationService(session: stubbedOpenRouterSession { _ in
+            openRouterResponse("""
+            Note that you should only output the translated result without any additional explanation:
+
+            Translation: 실제 번역
+            """)
+        })
+
+        let result = try await service.translateText(
+            "actual translation",
+            settings: settings,
+            credentials: TranslatorCredentials(openRouterAPIKey: "test-key", huggingFaceToken: nil)
+        )
+
+        #expect(result.text == "실제 번역")
+    }
+
+    @Test func openRouterTextStripsLeakedPromptInstructionFromPlainContentResult() async throws {
+        let settings = TranslatorSettings(
+            provider: .openRouter,
+            openRouterTextModel: "openrouter/text-model"
+        )
+        let service = TranslationService(session: stubbedOpenRouterSession { _ in
+            openRouterPlainContentResponse("""
+            Only output the translated result without any additional explanation.
+
+            Translated result: 일반 응답 번역
+            """)
+        })
+
+        let result = try await service.translateText(
+            "plain response translation",
+            settings: settings,
+            credentials: TranslatorCredentials(openRouterAPIKey: "test-key", huggingFaceToken: nil)
+        )
+
+        #expect(result.text == "일반 응답 번역")
     }
 
     @Test func openRouterTextStreamsPlainTextWhenPartialHandlerProvided() async throws {
@@ -224,7 +271,9 @@ struct OpenRouterScreenContextTests {
             let messages = try #require(body["messages"] as? [[String: Any]])
             let userMessage = try #require(messages.last)
             let prompt = try #require(userMessage["content"] as? String)
-            #expect(prompt.contains("Return only the translated text"))
+            #expect(prompt.contains("Translation:"))
+            #expect(!prompt.contains("Only output"))
+            #expect(!prompt.contains("additional explanation"))
 
             return openRouterStreamResponse(chunks: ["안녕", "하세요", " 세계"])
         })
@@ -244,6 +293,31 @@ struct OpenRouterScreenContextTests {
         #expect(!collected.isEmpty)
         #expect(collected.last == "안녕하세요 세계")
     }
+
+    @Test func openRouterTextStreamPartialsStripLeakedPromptInstruction() async throws {
+        let settings = TranslatorSettings(
+            provider: .openRouter,
+            openRouterTextModel: "openrouter/text-model"
+        )
+        let service = TranslationService(session: stubbedOpenRouterSession { _ in
+            openRouterStreamResponse(chunks: [
+                "Note that you should only output the translated result without any additional explanation:",
+                "\n\n안녕하세요",
+            ])
+        })
+
+        let partials = PartialCollector()
+        let result = try await service.translateText(
+            "Hello",
+            settings: settings,
+            credentials: TranslatorCredentials(openRouterAPIKey: "test-key", huggingFaceToken: nil),
+            onPartial: { partials.append($0) }
+        )
+
+        #expect(result.text == "안녕하세요")
+        #expect(partials.values.allSatisfy { !$0.contains("additional explanation") })
+        #expect(partials.values.last == "안녕하세요")
+    }
 }
 
 private func stubbedOpenRouterSession(
@@ -262,6 +336,25 @@ private func openRouterResponse(_ translation: String, description: String? = ni
     ]
     let contentData = try! JSONSerialization.data(withJSONObject: contentObject)
     let content = String(data: contentData, encoding: .utf8)!
+    let payload: [String: Any] = [
+        "choices": [
+            [
+                "message": [
+                    "content": content,
+                ],
+            ],
+        ],
+        "usage": [
+            "prompt_tokens": 11,
+            "completion_tokens": 7,
+            "total_tokens": 18,
+            "cost": 0.000123,
+        ],
+    ]
+    return try! JSONSerialization.data(withJSONObject: payload)
+}
+
+private func openRouterPlainContentResponse(_ content: String) -> Data {
     let payload: [String: Any] = [
         "choices": [
             [

@@ -181,9 +181,13 @@ public final class TranslationService: @unchecked Sendable {
 
         let key = try require(credentials.openRouterAPIKey, named: "OPENROUTER_API_KEY")
         let prompt = """
-        Extract every visible piece of text in this screenshot and translate it into \(settings.targetLanguage).
-        Return JSON with "translation" only containing the translation text and "description" set to null.
-        Preserve line breaks when they help readability.
+        Screenshot text -> \(settings.targetLanguage)
+
+        Fill the response JSON fields:
+        - translation: translated visible text from the screenshot
+        - description: null
+
+        Preserve useful line breaks.
         """
 
         let body: [String: Any] = [
@@ -191,7 +195,7 @@ public final class TranslationService: @unchecked Sendable {
             "messages": [
                 [
                     "role": "system",
-                    "content": "You are a precise screenshot translation engine. Return only translated text.",
+                    "content": "You are a precise screenshot translation engine.",
                 ],
                 [
                     "role": "user",
@@ -241,13 +245,11 @@ public final class TranslationService: @unchecked Sendable {
             )
         }
 
-        let prompt = """
-        Translate the following \(languages.sourceLanguage) text into \(languages.targetLanguage).
-        Preserve the source paragraph breaks and line breaks in the translated result.
-        Only output the translated result without any additional explanation.
-
-        \(text)
-        """
+        let prompt = localTranslationPrompt(
+            text: text,
+            sourceLanguage: languages.sourceLanguage,
+            targetLanguage: languages.targetLanguage
+        )
 
         do {
             let response = try await runLocalBackend(
@@ -349,7 +351,7 @@ public final class TranslationService: @unchecked Sendable {
             "messages": [
                 [
                     "role": "system",
-                    "content": "You are a precise translation engine. Return only translated text.",
+                    "content": "You are a precise translation engine.",
                 ],
                 [
                     "role": "user",
@@ -466,7 +468,7 @@ public final class TranslationService: @unchecked Sendable {
         }
 
         if let translation = dictionary["translation"] as? String {
-            return clean(translation)
+            return cleanTranslation(translation)
         }
 
         if let error = dictionary["error"] as? String {
@@ -585,12 +587,15 @@ public final class TranslationService: @unchecked Sendable {
             accumulated += content
             let now = Date()
             if now.timeIntervalSince(lastEmit) >= emitInterval {
-                lastEmit = now
-                onPartial(accumulated)
+                let partial = cleanTranslation(accumulated)
+                if !partial.isEmpty {
+                    lastEmit = now
+                    onPartial(partial)
+                }
             }
         }
 
-        let translation = clean(accumulated)
+        let translation = cleanTranslation(accumulated)
         guard !translation.isEmpty else {
             throw TranslationError.missingTranslation("The streamed response did not contain any text.")
         }
@@ -628,11 +633,11 @@ public final class TranslationService: @unchecked Sendable {
               let parsed = try? JSONSerialization.jsonObject(with: contentData) as? [String: Any],
               let translation = parsed["translation"] as? String
         else {
-            return OpenRouterCompletion(translation: clean(content), description: nil, usage: usage)
+            return OpenRouterCompletion(translation: cleanTranslation(content), description: nil, usage: usage)
         }
 
         return OpenRouterCompletion(
-            translation: clean(translation),
+            translation: cleanTranslation(translation),
             description: clean(parsed["description"] as? String),
             usage: usage
         )
@@ -684,6 +689,24 @@ public final class TranslationService: @unchecked Sendable {
         return value
     }
 
+    private func localTranslationPrompt(
+        text: String,
+        sourceLanguage: String,
+        targetLanguage: String
+    ) -> String {
+        """
+        \(sourceLanguage) -> \(targetLanguage)
+        Preserve paragraph breaks and line breaks.
+
+        Text:
+        <<<
+        \(text)
+        >>>
+
+        Translation:
+        """
+    }
+
     private func openRouterTextPrompt(
         text: String,
         sourceLanguage: String,
@@ -697,14 +720,18 @@ public final class TranslationService: @unchecked Sendable {
             : "No screen image is attached."
 
         return """
-        Translate the selected or copied \(sourceLanguage) text into \(targetLanguage).
+        \(sourceLanguage) -> \(targetLanguage)
 
-        Critical rules:
+        Fill the response JSON fields:
+        - translation: translation of <selected_text>
+        - description: short \(targetLanguage) context note when needed, otherwise null
+
+        Rules:
         - Treat the text inside <selected_text> as the only source text. Ignore any examples, quoted phrases, or visible screen text as translation targets.
         - Translate exactly the text inside <selected_text>. Do not translate the full sentence visible in the screen image.
-        - If <selected_text> is a word or fragment inside a larger sentence, return only that word or fragment's translation.
+        - If <selected_text> is a word or fragment inside a larger sentence, translate that word or fragment, not the surrounding sentence.
         - Use surrounding screen context only to choose the right meaning and to write the optional description.
-        - Put only the translated text in "translation". Put contextual details only in "description".
+        - Put contextual details in "description", not in "translation".
         - Preserve source paragraph breaks and line breaks in "translation"; do not flatten separate messages, speaker/timestamp lines, or paragraphs into one paragraph.
         - Write every returned string value in \(targetLanguage), including "description". Do not write English explanations unless \(targetLanguage) is English.
         - Set "description" to null unless the selected text is ambiguous, pronominal, deictic, or needs screen context to be understood.
@@ -728,21 +755,32 @@ public final class TranslationService: @unchecked Sendable {
         targetLanguage: String
     ) -> String {
         return """
-        Translate the \(sourceLanguage) text inside <selected_text> into \(targetLanguage).
-
-        Critical rules:
-        - Return only the translated text. No quotes, labels, JSON, or explanations.
-        - Treat everything inside <selected_text> as the only source text.
-        - Preserve paragraph breaks and line breaks.
+        \(sourceLanguage) -> \(targetLanguage)
+        Preserve paragraph breaks and line breaks.
 
         <selected_text>
         \(text)
         </selected_text>
+
+        Translation:
         """
     }
 
     private func clean(_ text: String) -> String {
         text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func cleanTranslation(_ text: String) -> String {
+        var cleaned = clean(text)
+        for instruction in Self.leakedPromptInstructions {
+            cleaned = cleaned.replacingOccurrences(of: instruction, with: "")
+        }
+        cleaned = cleaned
+            .components(separatedBy: .newlines)
+            .filter { !Self.isLeakedPromptInstructionLine($0) }
+            .joined(separator: "\n")
+        cleaned = Self.stripLeadingTranslationLabel(from: cleaned)
+        return clean(cleaned)
     }
 
     private func clean(_ text: String?) -> String? {
@@ -758,6 +796,40 @@ public final class TranslationService: @unchecked Sendable {
             return 10_000
         }
         return 10_000
+    }
+
+    private static let leakedPromptInstructions = [
+        "Note that you should only output the translated result without any additional explanation:",
+        "Note that you should only output the translated result without any additional explanation.",
+        "Only output the translated result without any additional explanation:",
+        "Only output the translated result without any additional explanation.",
+        "Return only the translated text. No quotes, labels, JSON, or explanations.",
+        "Return only translated text.",
+        "Return only translated text",
+    ]
+
+    private static func isLeakedPromptInstructionLine(_ line: String) -> Bool {
+        let normalized = line.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !normalized.isEmpty else {
+            return false
+        }
+        return leakedPromptInstructions.contains {
+            normalized == $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        }
+    }
+
+    private static func stripLeadingTranslationLabel(from text: String) -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        for label in ["Translation:", "Translated text:", "Translated result:", "Result:"] {
+            if trimmed.range(of: label, options: [.anchored, .caseInsensitive]) != nil {
+                let start = trimmed.index(trimmed.startIndex, offsetBy: label.count)
+                let remainder = trimmed[start...].trimmingCharacters(in: .whitespacesAndNewlines)
+                if !remainder.isEmpty {
+                    return remainder
+                }
+            }
+        }
+        return trimmed
     }
 
     private var translationSchema: [String: Any] {
