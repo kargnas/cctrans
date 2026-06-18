@@ -19,7 +19,7 @@ final class KeyboardMonitor {
 
     private let onCopyPress: () -> Void
     private let onDoubleCopy: () -> Void
-    private let onScreenshot: () -> Void
+    private let onScreenshot: (() -> Void)?
     private var detector = DoublePressDetector()
     private var globalMonitor: Any?
     private var localMonitor: Any?
@@ -29,7 +29,7 @@ final class KeyboardMonitor {
     init(
         onCopyPress: @escaping () -> Void,
         onDoubleCopy: @escaping () -> Void,
-        onScreenshot: @escaping () -> Void
+        onScreenshot: (() -> Void)?
     ) {
         self.onCopyPress = onCopyPress
         self.onDoubleCopy = onDoubleCopy
@@ -187,7 +187,7 @@ final class KeyboardMonitor {
             && !flags.contains(.control)
 
         if screenshotShortcut, event.keyCode == 19 {
-            onScreenshot()
+            onScreenshot?()
         }
     }
 }

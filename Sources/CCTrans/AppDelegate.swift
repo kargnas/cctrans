@@ -48,6 +48,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var lastPartialTranslatedLength = 0
     private var currentTextTranslationTask: Task<Void, Never>?
     private var currentScreenshotTranslationTask: Task<Void, Never>?
+    private var isScreenshotSelectionActive = false
+    private var didRegisterScreenshotHotKey = false
     private var currentTextTranslationUsesLocalBackend = false
     private var lastReadyLocalModelID: String?
     private var isUserQuitting = false
@@ -96,8 +98,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         configureStatusItem()
         localModelWarmupNotifier.requestAuthorization()
-        startKeyboardMonitor()
         startScreenshotHotKey()
+        startKeyboardMonitor()
         startPasteboardMonitor()
         resetPersistedToastSequence()
         startPersistentToastProcess()
@@ -275,6 +277,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func startKeyboardMonitor() {
+        let onScreenshot: (() -> Void)?
+        if didRegisterScreenshotHotKey {
+            onScreenshot = nil
+        } else {
+            onScreenshot = { [weak self] in
+                self?.translateScreenshot()
+            }
+        }
+
         keyboardMonitor = KeyboardMonitor(
             onCopyPress: { [weak self] in
                 self?.pulseStatusItem()
@@ -282,9 +293,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             onDoubleCopy: { [weak self] in
                 self?.triggerClipboardTranslation()
             },
-            onScreenshot: { [weak self] in
-                self?.translateScreenshot()
-            }
+            onScreenshot: onScreenshot
         )
         keyboardMonitor?.start()
     }
@@ -294,6 +303,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.translateScreenshot()
         }
         let status = screenshotHotKey?.start() ?? OSStatus(-1)
+        didRegisterScreenshotHotKey = status == noErr
         if status != noErr {
             print("Could not register Shift+Cmd+2. Carbon status: \(status)")
         }
@@ -407,18 +417,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func translateScreenshot() {
+        guard !isScreenshotSelectionActive else {
+            return
+        }
+
         currentTextTranslationTask?.cancel()
         currentScreenshotTranslationTask?.cancel()
+        isScreenshotSelectionActive = true
         let task = Task { [weak self] in
             guard let self else {
                 return
             }
 
+            let data: Data
             do {
-                let data = try await ScreenshotCapture.captureSelectedRegionPNG()
+                data = try await ScreenshotCapture.captureSelectedRegionPNG()
+                isScreenshotSelectionActive = false
+            } catch is CancellationError {
+                isScreenshotSelectionActive = false
+                return
+            } catch ScreenshotCaptureError.selectionCancelled {
+                isScreenshotSelectionActive = false
+                return
+            } catch ScreenshotCaptureError.selectionInProgress {
+                isScreenshotSelectionActive = false
+                return
+            } catch {
+                isScreenshotSelectionActive = false
                 guard !Task.isCancelled else {
                     return
                 }
+                show(error: error, title: "Screenshot", inputText: "[selected screenshot]")
+                return
+            }
+
+            guard !Task.isCancelled else {
+                return
+            }
+
+            do {
                 let imageInfo = Self.imageInfo(for: data)
                 showTranslationLoading(originalText: "[selected screenshot]", sourceTitle: "Screenshot")
                 let result = try await translationService.translateImage(
@@ -431,8 +468,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
                 show(result: result, title: "Screenshot", inputText: "[selected screenshot]", imageInfo: imageInfo)
             } catch is CancellationError {
-                return
-            } catch ScreenshotCaptureError.selectionCancelled {
                 return
             } catch {
                 guard !Task.isCancelled else {

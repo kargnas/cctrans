@@ -7,6 +7,7 @@ enum ScreenshotCaptureError: LocalizedError {
     case captureFailed
     case encodingFailed
     case selectionCancelled
+    case selectionInProgress
     case commandFailed(String)
 
     var errorDescription: String? {
@@ -19,6 +20,8 @@ enum ScreenshotCaptureError: LocalizedError {
             "Could not encode the screenshot as PNG."
         case .selectionCancelled:
             "Screenshot selection was cancelled."
+        case .selectionInProgress:
+            "A screenshot selection is already in progress."
         case let .commandFailed(message):
             "The screencapture command failed: \(message)"
         }
@@ -155,6 +158,9 @@ enum ScreenshotCapture {
             let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
             let message = String(data: errorData, encoding: .utf8)?
                 .trimmingCharacters(in: .whitespacesAndNewlines)
+            if message?.localizedCaseInsensitiveContains("cannot run two interactive screen captures") == true {
+                throw ScreenshotCaptureError.selectionInProgress
+            }
             if treatsMissingOutputAsCancellation, message?.isEmpty != false {
                 throw ScreenshotCaptureError.selectionCancelled
             }
