@@ -9,6 +9,7 @@ use std::fs;
 use std::os::raw::{c_char, c_void};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 use surfaces::{open_surface_window, AppSurface};
 #[cfg(target_os = "macos")]
 use tauri::ActivationPolicy;
@@ -189,6 +190,8 @@ struct Settings {
     favorite_local_model_ids: Vec<String>,
     #[serde(rename = "favoriteOpenRouterModels")]
     favorite_open_router_models: Vec<String>,
+    #[serde(rename = "openRouterModelFilter")]
+    open_router_model_filter: OpenRouterModelFilter,
     #[serde(rename = "includeScreenContextForLLM")]
     include_screen_context_for_llm: bool,
     #[serde(rename = "sourceLanguage")]
@@ -231,6 +234,28 @@ enum ToastPosition {
     Custom,
 }
 
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+struct OpenRouterModelFilter {
+    #[serde(rename = "modalityMode")]
+    modality_mode: OpenRouterModalityMode,
+    #[serde(rename = "minPromptPricePerMillion")]
+    min_prompt_price_per_million: f64,
+    #[serde(rename = "maxPromptPricePerMillion")]
+    max_prompt_price_per_million: f64,
+    #[serde(rename = "minCompletionPricePerMillion")]
+    min_completion_price_per_million: f64,
+    #[serde(rename = "maxCompletionPricePerMillion")]
+    max_completion_price_per_million: f64,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+enum OpenRouterModalityMode {
+    #[serde(rename = "textOrVision")]
+    TextOrVision,
+    #[serde(rename = "all")]
+    All,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
 struct ToastCustomPosition {
     x: f64,
@@ -264,6 +289,8 @@ struct StoredSettings {
     favorite_local_model_ids: Option<Vec<String>>,
     #[serde(rename = "favoriteOpenRouterModels")]
     favorite_open_router_models: Option<Vec<String>>,
+    #[serde(rename = "openRouterModelFilter")]
+    open_router_model_filter: Option<OpenRouterModelFilter>,
     #[serde(rename = "includeScreenContextForLLM")]
     include_screen_context_for_llm: Option<bool>,
     #[serde(rename = "sourceLanguage")]
@@ -321,7 +348,7 @@ struct SettingOption {
     note: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 struct OpenRouterModelOption {
     label: String,
     value: String,
@@ -341,6 +368,43 @@ struct OpenRouterModelOption {
     is_free: bool,
     #[serde(rename = "isRecommended")]
     is_recommended: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenRouterModelsResponse {
+    data: Vec<OpenRouterAPIModel>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenRouterAPIModel {
+    id: String,
+    name: String,
+    #[serde(default)]
+    created: Option<i64>,
+    #[serde(default)]
+    context_length: Option<i64>,
+    #[serde(default)]
+    pricing: OpenRouterAPIPricing,
+    #[serde(default)]
+    architecture: OpenRouterAPIArchitecture,
+    #[serde(default)]
+    supported_parameters: Vec<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct OpenRouterAPIPricing {
+    #[serde(default)]
+    prompt: Option<serde_json::Value>,
+    #[serde(default)]
+    completion: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct OpenRouterAPIArchitecture {
+    #[serde(default)]
+    input_modalities: Vec<String>,
+    #[serde(default)]
+    output_modalities: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -555,6 +619,13 @@ fn load_settings(app: AppHandle) -> Result<SettingsState, String> {
 }
 
 #[tauri::command]
+fn refresh_openrouter_models(app: AppHandle) -> Result<SettingsState, String> {
+    let models = fetch_openrouter_models()?;
+    write_openrouter_models_cache(&app, &models)?;
+    state_from_disk(&app)
+}
+
+#[tauri::command]
 fn save_settings(app: AppHandle, settings: Settings) -> Result<SettingsState, String> {
     write_settings(&app, normalize_settings(settings))?;
     state_from_disk(&app)
@@ -601,6 +672,9 @@ fn reset_setting(app: AppHandle, field: String) -> Result<SettingsState, String>
         }
         "favoriteOpenRouterModels" => {
             settings.favorite_open_router_models = defaults.favorite_open_router_models
+        }
+        "openRouterModelFilter" => {
+            settings.open_router_model_filter = defaults.open_router_model_filter
         }
         _ => return Err(format!("Unknown setting field: {field}")),
     }
@@ -1247,6 +1321,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             load_settings,
+            refresh_openrouter_models,
             save_settings,
             login_item_status,
             set_launch_at_login,
@@ -1929,7 +2004,7 @@ fn state_from_disk(app: &AppHandle) -> Result<SettingsState, String> {
         overrides: override_map(&settings, &defaults),
         settings,
         defaults,
-        options: settings_options(),
+        options: settings_options(app),
         permissions: permission_status(),
         login_item: login_item_state_impl(app).unwrap_or_else(|error| {
             LoginItemState::unsupported(format!("Login item status unavailable: {error}"))
@@ -1991,6 +2066,9 @@ fn apply_stored_settings(stored: StoredSettings) -> Settings {
     }
     if let Some(value) = stored.favorite_open_router_models {
         settings.favorite_open_router_models = value;
+    }
+    if let Some(value) = stored.open_router_model_filter {
+        settings.open_router_model_filter = value;
     }
     if let Some(value) = stored.include_screen_context_for_llm {
         settings.include_screen_context_for_llm = value;
@@ -2086,6 +2164,9 @@ impl StoredSettings {
             favorite_open_router_models: (settings.favorite_open_router_models
                 != defaults.favorite_open_router_models)
                 .then(|| settings.favorite_open_router_models.clone()),
+            open_router_model_filter: (settings.open_router_model_filter
+                != defaults.open_router_model_filter)
+                .then(|| settings.open_router_model_filter.clone()),
             include_screen_context_for_llm: (settings.include_screen_context_for_llm
                 != defaults.include_screen_context_for_llm)
                 .then_some(settings.include_screen_context_for_llm),
@@ -2118,6 +2199,7 @@ impl StoredSettings {
             && self.open_router_vision_model.is_none()
             && self.favorite_local_model_ids.is_none()
             && self.favorite_open_router_models.is_none()
+            && self.open_router_model_filter.is_none()
             && self.include_screen_context_for_llm.is_none()
             && self.source_language.is_none()
             && self.target_language.is_none()
@@ -2202,6 +2284,13 @@ fn default_settings() -> Settings {
         open_router_vision_model: "google/gemini-3.1-flash-lite".to_string(),
         favorite_local_model_ids: vec!["hymt2-mlx-1.8b-4bit".to_string()],
         favorite_open_router_models: vec!["deepseek/deepseek-v4-flash".to_string()],
+        open_router_model_filter: OpenRouterModelFilter {
+            modality_mode: OpenRouterModalityMode::TextOrVision,
+            min_prompt_price_per_million: 0.0,
+            max_prompt_price_per_million: 2.0,
+            min_completion_price_per_million: 0.0,
+            max_completion_price_per_million: 10.0,
+        },
         include_screen_context_for_llm: false,
         source_language: "Auto".to_string(),
         target_language: "Korean".to_string(),
@@ -2220,6 +2309,8 @@ fn normalize_settings(mut settings: Settings) -> Settings {
     settings.favorite_local_model_ids = normalized_string_list(settings.favorite_local_model_ids);
     settings.favorite_open_router_models =
         normalized_string_list(settings.favorite_open_router_models);
+    settings.open_router_model_filter =
+        normalized_openrouter_model_filter(settings.open_router_model_filter);
     settings.source_language = settings.source_language.trim().to_string();
     settings.target_language = settings.target_language.trim().to_string();
     if !settings.toast_duration.is_finite() || settings.toast_duration <= 0.0 {
@@ -2238,6 +2329,47 @@ fn normalize_settings(mut settings: Settings) -> Settings {
         _ => None,
     };
     settings
+}
+
+fn normalized_openrouter_model_filter(mut filter: OpenRouterModelFilter) -> OpenRouterModelFilter {
+    let defaults = default_settings().open_router_model_filter;
+    filter.min_prompt_price_per_million = normalized_price_filter_value(
+        filter.min_prompt_price_per_million,
+        defaults.min_prompt_price_per_million,
+    );
+    filter.max_prompt_price_per_million = normalized_price_filter_value(
+        filter.max_prompt_price_per_million,
+        defaults.max_prompt_price_per_million,
+    );
+    filter.min_completion_price_per_million = normalized_price_filter_value(
+        filter.min_completion_price_per_million,
+        defaults.min_completion_price_per_million,
+    );
+    filter.max_completion_price_per_million = normalized_price_filter_value(
+        filter.max_completion_price_per_million,
+        defaults.max_completion_price_per_million,
+    );
+    if filter.min_prompt_price_per_million > filter.max_prompt_price_per_million {
+        std::mem::swap(
+            &mut filter.min_prompt_price_per_million,
+            &mut filter.max_prompt_price_per_million,
+        );
+    }
+    if filter.min_completion_price_per_million > filter.max_completion_price_per_million {
+        std::mem::swap(
+            &mut filter.min_completion_price_per_million,
+            &mut filter.max_completion_price_per_million,
+        );
+    }
+    filter
+}
+
+fn normalized_price_filter_value(value: f64, fallback: f64) -> f64 {
+    if value.is_finite() && value >= 0.0 {
+        value
+    } else {
+        fallback
+    }
 }
 
 fn normalized_string_list(values: Vec<String>) -> Vec<String> {
@@ -2304,10 +2436,14 @@ fn override_map(settings: &Settings, defaults: &Settings) -> BTreeMap<String, bo
             "favoriteOpenRouterModels".to_string(),
             settings.favorite_open_router_models != defaults.favorite_open_router_models,
         ),
+        (
+            "openRouterModelFilter".to_string(),
+            settings.open_router_model_filter != defaults.open_router_model_filter,
+        ),
     ])
 }
 
-fn settings_options() -> SettingsOptions {
+fn settings_options(app: &AppHandle) -> SettingsOptions {
     let mut providers = vec![
         option("Local Model", "localHyMT2", None),
         option("Apple Translation", "appleTranslation", Some("On-device")),
@@ -2342,7 +2478,7 @@ fn settings_options() -> SettingsOptions {
             option("Kanana 1.5 2.1B AIHub Ko-En LoRA", "kanana-lora-koen", None),
             option("MADLAD-400 Swift int4", "madlad-swift-int4", None),
         ],
-        open_router_models: openrouter_models(),
+        open_router_models: openrouter_models_for_settings(app),
         source_languages: language_options(true),
         target_languages: language_options(false),
         toast_positions: vec![
@@ -2566,6 +2702,170 @@ fn openrouter_models() -> Vec<OpenRouterModelOption> {
             false,
         ),
     ]
+}
+
+fn openrouter_models_for_settings(app: &AppHandle) -> Vec<OpenRouterModelOption> {
+    read_openrouter_models_cache(app).unwrap_or_else(|_| openrouter_models())
+}
+
+fn openrouter_models_cache_path(app: &AppHandle) -> Result<PathBuf, String> {
+    shared_data_dir(app).map(|dir| dir.join("openrouter-models-cache.json"))
+}
+
+fn read_openrouter_models_cache(app: &AppHandle) -> Result<Vec<OpenRouterModelOption>, String> {
+    let path = openrouter_models_cache_path(app)?;
+    if !path.exists() {
+        return Err("OpenRouter model cache does not exist.".to_string());
+    }
+    let data = fs::read_to_string(&path)
+        .map_err(|error| format!("Could not read {}: {error}", path.display()))?;
+    let models: Vec<OpenRouterModelOption> = serde_json::from_str(&data)
+        .map_err(|error| format!("Could not parse {}: {error}", path.display()))?;
+    if models.is_empty() {
+        return Err("OpenRouter model cache is empty.".to_string());
+    }
+    Ok(models)
+}
+
+fn write_openrouter_models_cache(
+    app: &AppHandle,
+    models: &[OpenRouterModelOption],
+) -> Result<(), String> {
+    let path = openrouter_models_cache_path(app)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("Could not create {}: {error}", parent.display()))?;
+    }
+    let data = serde_json::to_string_pretty(models)
+        .map_err(|error| format!("Could not encode OpenRouter model cache: {error}"))?;
+    replace_file_contents(&path, &data)
+}
+
+fn fetch_openrouter_models() -> Result<Vec<OpenRouterModelOption>, String> {
+    let agent = ureq::AgentBuilder::new()
+        .timeout_read(Duration::from_secs(15))
+        .timeout_write(Duration::from_secs(15))
+        .build();
+    let response = agent
+        .get("https://openrouter.ai/api/v1/models?sort=newest")
+        .set("User-Agent", "CCTrans/0.1")
+        .call()
+        .map_err(|error| format!("Could not refresh OpenRouter models: {error}"))?;
+    let payload: OpenRouterModelsResponse = response
+        .into_json()
+        .map_err(|error| format!("Could not decode OpenRouter models: {error}"))?;
+    let mut models = payload
+        .data
+        .into_iter()
+        .filter_map(openrouter_model_from_api)
+        .collect::<Vec<_>>();
+    if models.is_empty() {
+        return Err("OpenRouter returned no usable text models.".to_string());
+    }
+    models.sort_by(|left, right| {
+        right
+            .release_date
+            .cmp(&left.release_date)
+            .then_with(|| left.label.cmp(&right.label))
+    });
+    Ok(models)
+}
+
+fn openrouter_model_from_api(model: OpenRouterAPIModel) -> Option<OpenRouterModelOption> {
+    let id = model.id.trim().to_string();
+    let name = model.name.trim().to_string();
+    if id.is_empty() || name.is_empty() {
+        return None;
+    }
+    if !model
+        .architecture
+        .output_modalities
+        .iter()
+        .any(|value| value.eq_ignore_ascii_case("text"))
+    {
+        return None;
+    }
+
+    let prompt_price_per_million = price_per_million(model.pricing.prompt.as_ref());
+    let completion_price_per_million = price_per_million(model.pricing.completion.as_ref());
+    let is_free = id.ends_with(":free")
+        || (prompt_price_per_million == 0.0 && completion_price_per_million == 0.0);
+    let is_recommended = id == default_settings().open_router_text_model
+        || id == default_settings().open_router_vision_model;
+    let is_reasoning = model.supported_parameters.iter().any(|parameter| {
+        parameter.eq_ignore_ascii_case("reasoning")
+            || parameter.eq_ignore_ascii_case("include_reasoning")
+    });
+
+    Some(OpenRouterModelOption {
+        label: name,
+        value: id,
+        note: if is_free {
+            Some("Free event".to_string())
+        } else if is_recommended {
+            Some("Recommended".to_string())
+        } else {
+            None
+        },
+        prompt_price_per_million,
+        completion_price_per_million,
+        modalities: normalized_modalities(model.architecture.input_modalities),
+        release_date: model
+            .created
+            .map(unix_seconds_to_ymd)
+            .unwrap_or_else(|| "1970-01-01".to_string()),
+        context_window: model.context_length.unwrap_or_default(),
+        is_reasoning,
+        is_free,
+        is_recommended,
+    })
+}
+
+fn normalized_modalities(values: Vec<String>) -> Vec<String> {
+    let mut normalized = values
+        .into_iter()
+        .map(|value| value.trim().to_lowercase())
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+    normalized.sort();
+    normalized.dedup();
+    normalized
+}
+
+fn price_per_million(value: Option<&serde_json::Value>) -> f64 {
+    let Some(value) = value else {
+        return 0.0;
+    };
+    let per_token = match value {
+        serde_json::Value::String(value) => value.parse::<f64>().unwrap_or(0.0),
+        serde_json::Value::Number(value) => value.as_f64().unwrap_or(0.0),
+        _ => 0.0,
+    };
+    if per_token.is_finite() && per_token >= 0.0 {
+        per_token * 1_000_000.0
+    } else {
+        0.0
+    }
+}
+
+fn unix_seconds_to_ymd(seconds: i64) -> String {
+    let days = seconds.div_euclid(86_400);
+    let (year, month, day) = civil_from_days(days);
+    format!("{year:04}-{month:02}-{day:02}")
+}
+
+fn civil_from_days(days_since_unix_epoch: i64) -> (i32, u32, u32) {
+    let z = days_since_unix_epoch + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let day_of_era = z - era * 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let year_day = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_prime = (5 * year_day + 2) / 153;
+    let day = year_day - (153 * month_prime + 2) / 5 + 1;
+    let month = month_prime + if month_prime < 10 { 3 } else { -9 };
+    let year = year_of_era + era * 400 + if month <= 2 { 1 } else { 0 };
+    (year as i32, month as u32, day as u32)
 }
 
 fn openrouter_model(
@@ -3457,6 +3757,114 @@ mod tests {
             stored.toast_custom_position,
             Some(ToastCustomPosition { x: 128.0, y: 256.0 })
         );
+    }
+
+    #[test]
+    fn stored_settings_keeps_openrouter_filter_override() {
+        let defaults = default_settings();
+        let mut settings = defaults.clone();
+        settings
+            .open_router_model_filter
+            .max_prompt_price_per_million = 1.25;
+        settings
+            .open_router_model_filter
+            .max_completion_price_per_million = 6.5;
+        settings.open_router_model_filter.modality_mode = OpenRouterModalityMode::All;
+
+        let stored = StoredSettings::from_effective(&settings, &defaults);
+        let reloaded = apply_stored_settings(stored);
+
+        assert_eq!(
+            reloaded
+                .open_router_model_filter
+                .max_prompt_price_per_million,
+            1.25
+        );
+        assert_eq!(
+            reloaded
+                .open_router_model_filter
+                .max_completion_price_per_million,
+            6.5
+        );
+        assert_eq!(
+            reloaded.open_router_model_filter.modality_mode,
+            OpenRouterModalityMode::All
+        );
+    }
+
+    #[test]
+    fn normalize_swaps_openrouter_filter_price_ranges() {
+        let mut settings = default_settings();
+        settings
+            .open_router_model_filter
+            .min_prompt_price_per_million = 8.0;
+        settings
+            .open_router_model_filter
+            .max_prompt_price_per_million = 2.0;
+        settings
+            .open_router_model_filter
+            .min_completion_price_per_million = 12.0;
+        settings
+            .open_router_model_filter
+            .max_completion_price_per_million = 1.0;
+
+        let settings = normalize_settings(settings);
+
+        assert_eq!(
+            settings
+                .open_router_model_filter
+                .min_prompt_price_per_million,
+            2.0
+        );
+        assert_eq!(
+            settings
+                .open_router_model_filter
+                .max_prompt_price_per_million,
+            8.0
+        );
+        assert_eq!(
+            settings
+                .open_router_model_filter
+                .min_completion_price_per_million,
+            1.0
+        );
+        assert_eq!(
+            settings
+                .open_router_model_filter
+                .max_completion_price_per_million,
+            12.0
+        );
+    }
+
+    #[test]
+    fn openrouter_api_model_maps_pricing_modalities_and_release_date() {
+        let model = openrouter_model_from_api(OpenRouterAPIModel {
+            id: "example/model:free".to_string(),
+            name: "Example Model".to_string(),
+            created: Some(1_704_067_200),
+            context_length: Some(131_072),
+            pricing: OpenRouterAPIPricing {
+                prompt: Some(serde_json::Value::String("0".to_string())),
+                completion: Some(serde_json::Value::String("0".to_string())),
+            },
+            architecture: OpenRouterAPIArchitecture {
+                input_modalities: vec!["text".to_string(), "image".to_string()],
+                output_modalities: vec!["text".to_string()],
+            },
+            supported_parameters: vec!["reasoning".to_string()],
+        })
+        .unwrap();
+
+        assert_eq!(model.value, "example/model:free");
+        assert_eq!(model.release_date, "2024-01-01");
+        assert_eq!(model.context_window, 131_072);
+        assert_eq!(
+            model.modalities,
+            vec!["image".to_string(), "text".to_string()]
+        );
+        assert!(model.is_free);
+        assert!(model.is_reasoning);
+        assert_eq!(model.note.as_deref(), Some("Free event"));
     }
 
     #[test]

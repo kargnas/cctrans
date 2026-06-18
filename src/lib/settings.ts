@@ -11,8 +11,17 @@ export type SettingField =
   | "customLocalModelsPath"
   | "openRouterTextModel"
   | "openRouterVisionModel"
+  | "openRouterModelFilter"
   | "favoriteLocalModelIDs"
   | "favoriteOpenRouterModels";
+
+export type OpenRouterModelFilter = {
+  modalityMode: "textOrVision" | "all";
+  minPromptPricePerMillion: number;
+  maxPromptPricePerMillion: number;
+  minCompletionPricePerMillion: number;
+  maxCompletionPricePerMillion: number;
+};
 
 export type Settings = {
   provider: TranslationProvider;
@@ -21,6 +30,7 @@ export type Settings = {
   customLocalModelsPath: string | null;
   openRouterTextModel: string;
   openRouterVisionModel: string;
+  openRouterModelFilter: OpenRouterModelFilter;
   favoriteLocalModelIDs: string[];
   favoriteOpenRouterModels: string[];
   includeScreenContextForLLM: boolean;
@@ -102,6 +112,13 @@ export const fallbackState: SettingsState = {
     customLocalModelsPath: null,
     openRouterTextModel: "deepseek/deepseek-v4-flash",
     openRouterVisionModel: "google/gemini-3.1-flash-lite",
+    openRouterModelFilter: {
+      modalityMode: "textOrVision",
+      minPromptPricePerMillion: 0,
+      maxPromptPricePerMillion: 2,
+      minCompletionPricePerMillion: 0,
+      maxCompletionPricePerMillion: 10
+    },
     favoriteLocalModelIDs: ["hymt2-mlx-1.8b-4bit"],
     favoriteOpenRouterModels: ["deepseek/deepseek-v4-flash"],
     includeScreenContextForLLM: false,
@@ -119,6 +136,13 @@ export const fallbackState: SettingsState = {
     customLocalModelsPath: null,
     openRouterTextModel: "deepseek/deepseek-v4-flash",
     openRouterVisionModel: "google/gemini-3.1-flash-lite",
+    openRouterModelFilter: {
+      modalityMode: "textOrVision",
+      minPromptPricePerMillion: 0,
+      maxPromptPricePerMillion: 2,
+      minCompletionPricePerMillion: 0,
+      maxCompletionPricePerMillion: 10
+    },
     favoriteLocalModelIDs: ["hymt2-mlx-1.8b-4bit"],
     favoriteOpenRouterModels: ["deepseek/deepseek-v4-flash"],
     includeScreenContextForLLM: false,
@@ -139,6 +163,7 @@ export const fallbackState: SettingsState = {
     customLocalModelsPath: false,
     openRouterTextModel: false,
     openRouterVisionModel: false,
+    openRouterModelFilter: false,
     favoriteLocalModelIDs: false,
     favoriteOpenRouterModels: false
   },

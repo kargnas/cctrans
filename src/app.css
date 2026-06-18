@@ -723,13 +723,49 @@ input {
   padding: 0 9px;
 }
 
+.catalog-refresh {
+  justify-self: end;
+  padding: 0 10px;
+}
+
+.openrouter-filter-panel {
+  display: grid;
+  grid-template-columns: minmax(104px, 1.1fr) repeat(4, minmax(72px, 0.8fr)) auto;
+  gap: 8px;
+  align-items: end;
+  padding: 9px 11px;
+  border-bottom: 1px solid var(--border);
+}
+
+.openrouter-filter-panel label {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.openrouter-filter-panel label span {
+  overflow: hidden;
+  color: var(--secondary);
+  font-size: 9px;
+  font-weight: 560;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.openrouter-filter-panel select,
+.openrouter-filter-panel input {
+  height: 26px;
+  font-size: 10px;
+}
+
 /* The OpenRouter catalog reuses the model-row list language instead of a wide
    table: a fixed-min-width table forced a horizontal scroll inside the card and
    clipped half the columns at narrow window widths. */
 .openrouter-sort-bar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 12px;
+  gap: 6px 12px;
   padding: 7px 11px;
   border-bottom: 1px solid var(--border);
   color: var(--secondary);
@@ -770,6 +806,10 @@ input {
   background: var(--accent-soft);
 }
 
+.model-row.free-model {
+  background: color-mix(in srgb, var(--green-text) 7%, transparent);
+}
+
 .openrouter-row .model-id {
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
   font-size: 9px;
@@ -790,6 +830,12 @@ input {
   font-weight: 650;
 }
 
+.free-model .openrouter-price strong {
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--green-text) 12%, transparent);
+}
+
 .model-badges {
   display: flex;
   flex-wrap: wrap;
@@ -806,6 +852,12 @@ input {
   font-size: 9px;
   font-style: normal;
   font-weight: 560;
+}
+
+.model-badges em.free-event {
+  border-color: color-mix(in srgb, var(--green-text) 24%, transparent);
+  background: color-mix(in srgb, var(--green-text) 13%, transparent);
+  color: var(--green-text);
 }
 
 .api-key-row {

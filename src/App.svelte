@@ -28,6 +28,7 @@
     cloneFallbackState,
     type ActionResult,
     type LoginItemState,
+    type OpenRouterModelFilter,
     type OpenRouterModelOption,
     type SettingField,
     type Settings,
@@ -37,7 +38,7 @@
   } from "./lib/settings";
 
   type Section = "general" | "models" | "shortcuts" | "excluded" | "advanced" | "info";
-  type OpenRouterSortKey = "model" | "inputPrice" | "outputPrice" | "context";
+  type OpenRouterSortKey = "model" | "releaseDate" | "inputPrice" | "outputPrice" | "context";
   type SortDirection = "asc" | "desc";
   type OpenRouterAPIKeyState = {
     configured: boolean;
@@ -56,6 +57,7 @@
   let notices = $state<ActionResult[]>([]);
   let openRouterAPIKeyState = $state<OpenRouterAPIKeyState>({ configured: false, path: "~/.config/cctrans/.env" });
   let openRouterAPIKeyInput = $state("");
+  let isRefreshingOpenRouterModels = $state(false);
   let isUpdatingLoginItem = $state(false);
   let openTranslationModelMenu = $state<"general" | "models" | null>(null);
   let activeTranslationModelProvider = $state<TranslationProvider>("localHyMT2");
@@ -90,6 +92,7 @@
     isTauri = "__TAURI_INTERNALS__" in window;
     await loadSettings();
     await loadOpenRouterAPIKeyState();
+    void refreshOpenRouterModels(true);
   });
 
   async function loadSettings() {
@@ -313,6 +316,23 @@
     }
   }
 
+  async function refreshOpenRouterModels(silent = false) {
+    if (!isTauri) return;
+
+    isRefreshingOpenRouterModels = true;
+    try {
+      settingsState = await invoke<SettingsState>("refresh_openrouter_models");
+    } catch (error) {
+      if (!silent) {
+        pushNotice({ title: "OpenRouter Models", message: formatError(error), ok: false });
+      } else {
+        console.warn("OpenRouter model refresh failed", error);
+      }
+    } finally {
+      isRefreshingOpenRouterModels = false;
+    }
+  }
+
   async function saveOpenRouterAPIKey() {
     if (!openRouterAPIKeyInput.trim()) {
       pushNotice({ title: "OpenRouter API Key", message: "Enter a key before saving.", ok: false });
@@ -455,6 +475,8 @@
     const defaultValue = defaults[field];
     return Array.isArray(value) && Array.isArray(defaultValue)
       ? JSON.stringify(value) !== JSON.stringify(defaultValue)
+      : typeof value === "object" && typeof defaultValue === "object"
+        ? JSON.stringify(value) !== JSON.stringify(defaultValue)
       : value !== defaultValue;
   }
 
@@ -538,6 +560,12 @@
       if (openRouterSort.key === "model") {
         return left.label.localeCompare(right.label) * multiplier;
       }
+      if (openRouterSort.key === "releaseDate") {
+        return (
+          left.releaseDate.localeCompare(right.releaseDate) ||
+          left.label.localeCompare(right.label)
+        ) * multiplier;
+      }
       if (openRouterSort.key === "inputPrice") {
         return (
           left.promptPricePerMillion - right.promptPricePerMillion ||
@@ -557,16 +585,66 @@
     return sorted;
   }
 
+  function visibleOpenRouterModels(models: OpenRouterModelOption[]) {
+    const filter = settingsState?.settings.openRouterModelFilter ?? settingsState?.defaults.openRouterModelFilter;
+    if (!filter) return sortOpenRouterModels(models);
+    return sortOpenRouterModels(models).filter((model) => openRouterModelMatchesFilter(model, filter));
+  }
+
+  function openRouterModelMatchesFilter(model: OpenRouterModelOption, filter: OpenRouterModelFilter) {
+    const modalities = model.modalities.map((value) => value.toLowerCase());
+    if (filter.modalityMode === "textOrVision") {
+      const hasText = modalities.includes("text");
+      const hasVision = modalities.includes("image");
+      if (!hasText || (modalities.length > 1 && !hasVision)) return false;
+    }
+
+    return model.promptPricePerMillion >= filter.minPromptPricePerMillion &&
+      model.promptPricePerMillion <= filter.maxPromptPricePerMillion &&
+      model.completionPricePerMillion >= filter.minCompletionPricePerMillion &&
+      model.completionPricePerMillion <= filter.maxCompletionPricePerMillion;
+  }
+
+  async function updateOpenRouterModelFilter(patch: Partial<OpenRouterModelFilter>) {
+    if (!settingsState) return;
+    await updateField("openRouterModelFilter", {
+      ...settingsState.settings.openRouterModelFilter,
+      ...patch
+    });
+  }
+
+  function numericFilterValue(value: string, fallback: number) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+  }
+
+  function defaultOpenRouterModelFilter(): OpenRouterModelFilter {
+    return settingsState?.defaults.openRouterModelFilter ?? {
+      modalityMode: "textOrVision",
+      minPromptPricePerMillion: 0,
+      maxPromptPricePerMillion: 2,
+      minCompletionPricePerMillion: 0,
+      maxCompletionPricePerMillion: 10
+    };
+  }
+
   function updateOpenRouterSort(key: OpenRouterSortKey) {
     openRouterSort = {
       key,
-      direction: openRouterSort.key === key && openRouterSort.direction === "asc" ? "desc" : "asc"
+      direction: openRouterSort.key === key
+        ? openRouterSort.direction === "asc" ? "desc" : "asc"
+        : defaultOpenRouterSortDirection(key)
     };
   }
 
   function sortLabel(key: OpenRouterSortKey) {
     if (openRouterSort.key !== key) return "Sort";
+    if (key === "releaseDate") return openRouterSort.direction === "desc" ? "Newest" : "Oldest";
     return openRouterSort.direction === "asc" ? "Asc" : "Desc";
+  }
+
+  function defaultOpenRouterSortDirection(key: OpenRouterSortKey): SortDirection {
+    return key === "releaseDate" ? "desc" : "asc";
   }
 
 </script>
@@ -681,7 +759,7 @@
               </span>
               {#if translationModelValue(state.settings, state.defaults) === "openRouter:default"}<Check size={14} />{/if}
             </button>
-            {#each state.options.openRouterModels as option}
+            {#each visibleOpenRouterModels(state.options.openRouterModels) as option}
               <button
                 type="button"
                 class:selected={translationModelValue(state.settings, state.defaults) === `openRouter:${option.value}`}
@@ -977,6 +1055,20 @@
 
           <h2>OpenRouter Models</h2>
           <div class="setting-group">
+            <div class="setting-row text-row">
+              <span class="setting-copy">
+                <strong>Catalog</strong>
+                <span>{visibleOpenRouterModels(settingsState.options.openRouterModels).length} shown / {settingsState.options.openRouterModels.length} available</span>
+              </span>
+              <button
+                class="inline-action catalog-refresh"
+                disabled={isRefreshingOpenRouterModels}
+                onclick={() => refreshOpenRouterModels(false)}
+              >
+                <Cloud size={13} />{isRefreshingOpenRouterModels ? "Refreshing" : "Refresh"}
+              </button>
+              <span class="reset-row spacer"></span>
+            </div>
             <label class="setting-row">
               <span class="setting-copy">
                 <strong>Text Model</strong>
@@ -986,7 +1078,7 @@
                 onchange={(event) => updateModelField("openRouterTextModel", event.currentTarget.value)}
               >
                 <option value="default">Default ({openRouterModelLabel(settingsState.defaults.openRouterTextModel)})</option>
-                {#each settingsState.options.openRouterModels as option}
+                {#each visibleOpenRouterModels(settingsState.options.openRouterModels) as option}
                   <option value={option.value}>{option.label}</option>
                 {/each}
               </select>
@@ -1009,7 +1101,7 @@
                 onchange={(event) => updateModelField("openRouterVisionModel", event.currentTarget.value)}
               >
                 <option value="default">Default ({openRouterModelLabel(settingsState.defaults.openRouterVisionModel)})</option>
-                {#each settingsState.options.openRouterModels.filter((option) => option.modalities.includes("image")) as option}
+                {#each visibleOpenRouterModels(settingsState.options.openRouterModels).filter((option) => option.modalities.includes("image")) as option}
                   <option value={option.value}>{option.label}</option>
                 {/each}
               </select>
@@ -1023,10 +1115,92 @@
                 <RotateCcw size={13} />
               </button>
             </label>
+            <div class="openrouter-filter-panel" aria-label="OpenRouter model filters">
+              <label>
+                <span>Mode</span>
+                <select
+                  value={settingsState.settings.openRouterModelFilter.modalityMode}
+                  onchange={(event) => updateOpenRouterModelFilter({ modalityMode: event.currentTarget.value as OpenRouterModelFilter["modalityMode"] })}
+                >
+                  <option value="textOrVision">Text / Vision</option>
+                  <option value="all">All text-output</option>
+                </select>
+              </label>
+              <label>
+                <span>Input min</span>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={settingsState.settings.openRouterModelFilter.minPromptPricePerMillion}
+                  onchange={(event) => updateOpenRouterModelFilter({
+                    minPromptPricePerMillion: numericFilterValue(
+                      event.currentTarget.value,
+                      defaultOpenRouterModelFilter().minPromptPricePerMillion
+                    )
+                  })}
+                />
+              </label>
+              <label>
+                <span>Input max</span>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={settingsState.settings.openRouterModelFilter.maxPromptPricePerMillion}
+                  onchange={(event) => updateOpenRouterModelFilter({
+                    maxPromptPricePerMillion: numericFilterValue(
+                      event.currentTarget.value,
+                      defaultOpenRouterModelFilter().maxPromptPricePerMillion
+                    )
+                  })}
+                />
+              </label>
+              <label>
+                <span>Output min</span>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={settingsState.settings.openRouterModelFilter.minCompletionPricePerMillion}
+                  onchange={(event) => updateOpenRouterModelFilter({
+                    minCompletionPricePerMillion: numericFilterValue(
+                      event.currentTarget.value,
+                      defaultOpenRouterModelFilter().minCompletionPricePerMillion
+                    )
+                  })}
+                />
+              </label>
+              <label>
+                <span>Output max</span>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={settingsState.settings.openRouterModelFilter.maxCompletionPricePerMillion}
+                  onchange={(event) => updateOpenRouterModelFilter({
+                    maxCompletionPricePerMillion: numericFilterValue(
+                      event.currentTarget.value,
+                      defaultOpenRouterModelFilter().maxCompletionPricePerMillion
+                    )
+                  })}
+                />
+              </label>
+              <button
+                class="inline-action"
+                disabled={!settingsState.overrides.openRouterModelFilter}
+                onclick={() => resetField("openRouterModelFilter")}
+              >
+                <RotateCcw size={13} />Reset
+              </button>
+            </div>
             <div class="openrouter-sort-bar" role="group" aria-label="Sort models">
               <span class="sort-caption">Sort by</span>
               <button type="button" class:active={openRouterSort.key === "model"} onclick={() => updateOpenRouterSort("model")}>
                 Model <ArrowUpDown size={11} /><span class="sort-state">{sortLabel("model")}</span>
+              </button>
+              <button type="button" class:active={openRouterSort.key === "releaseDate"} onclick={() => updateOpenRouterSort("releaseDate")}>
+                Release <ArrowUpDown size={11} /><span class="sort-state">{sortLabel("releaseDate")}</span>
               </button>
               <button type="button" class:active={openRouterSort.key === "inputPrice"} onclick={() => updateOpenRouterSort("inputPrice")}>
                 Input <ArrowUpDown size={11} /><span class="sort-state">{sortLabel("inputPrice")}</span>
@@ -1038,10 +1212,11 @@
                 Context <ArrowUpDown size={11} /><span class="sort-state">{sortLabel("context")}</span>
               </button>
             </div>
-            {#each sortOpenRouterModels(settingsState.options.openRouterModels) as model}
+            {#each visibleOpenRouterModels(settingsState.options.openRouterModels) as model}
               <div
                 class="model-row openrouter-row"
                 class:selected-model={settingsState.settings.provider === "openRouter" && settingsState.settings.openRouterTextModel === model.value}
+                class:free-model={model.isFree}
               >
                 <button
                   class="favorite-button"
@@ -1058,14 +1233,14 @@
                   {#if model.isRecommended || model.isFree || model.isReasoning}
                     <div class="model-badges">
                       {#if model.isRecommended}<em>Recommended</em>{/if}
-                      {#if model.isFree}<em>Free</em>{/if}
+                      {#if model.isFree}<em class="free-event">Free event</em>{/if}
                       {#if model.isReasoning}<em>Reasoning</em>{/if}
                     </div>
                   {/if}
                 </div>
                 <div class="openrouter-price">
                   {#if model.isFree}
-                    <strong>Free</strong>
+                    <strong>Free event</strong>
                   {:else}
                     <span>In {formatUnitPrice(model.promptPricePerMillion)}</span>
                     <span>Out {formatUnitPrice(model.completionPricePerMillion)}</span>
