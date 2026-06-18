@@ -84,6 +84,7 @@ After completed development or documentation work is verified and committed, run
 - Hovering the toast resets the countdown to the full duration and pauses it; leaving the toast starts counting down from that reset duration.
 - Any click outside the visible toast closes/hides it immediately, including during loading.
 - A loading-to-result update must show the toast again for the same request sequence, so a cold local model warmup cannot finish ready while silently skipping the translated result.
+- Do not bind hover or countdown state to `.translation-bubble` classes, inline styles, opacity, background, blur, transform, or transition. Keep countdown state on the countdown fill element so WebKit does not recompose the backdrop-filter layer on hover.
 - Rust owns global pointer hit-testing for the non-activating toast and emits `toast-hover` plus `toast-dismiss-request`; Svelte owns timer state and close decisions.
 
 ## Settings Contract

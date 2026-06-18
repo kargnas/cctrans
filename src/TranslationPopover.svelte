@@ -702,8 +702,6 @@
     aria-label="Translation result"
     tabindex="-1"
     onmousedown={startDragging}
-    class:hover-paused={countdownPaused}
-    style={`--countdown-progress: ${countdownProgress}`}
   >
     <div class="translation-bubble-inner">
       {#if visibleMode === "loading"}
@@ -802,7 +800,7 @@
       {/if}
       {#if showCountdown}
         <div class="countdown-bar" aria-label={`Auto hide in ${countdownLabel}`}>
-          <span class="countdown-bar-fill"></span>
+          <span class="countdown-bar-fill" style={`--countdown-progress: ${countdownProgress}`}></span>
         </div>
       {/if}
     </div>
