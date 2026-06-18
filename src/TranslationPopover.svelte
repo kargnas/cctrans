@@ -4,7 +4,7 @@
   import { onMount } from "svelte";
   import { Check, Copy, Cpu, Eye, Languages, ShieldCheck, TriangleAlert, X } from "@lucide/svelte";
   import { fallbackTranslationState, type ShowToastResult, type TranslationMode, type TranslationPreviewState } from "./lib/translation";
-  import { fallbackState, type SettingsState, type TranslationProvider } from "./lib/settings";
+  import { fallbackState, type OpenRouterModelOption, type SettingsState, type TranslationProvider } from "./lib/settings";
 
   const params = new URLSearchParams(window.location.search);
   const debugMode = params.get("debug") === "1";
@@ -89,7 +89,7 @@
   const countdownLabel = $derived(`${countdownRemaining.toFixed(1)}s`);
   const countdownProgressValue = $derived(Math.max(0, Math.min(1, countdownRemaining / countdownDuration)));
   const countdownProgress = $derived(`${countdownProgressValue * 100}%`);
-  const dismissOpacity = $derived((0.62 + countdownProgressValue * 0.38).toFixed(3));
+  const dismissOpacity = $derived(showCountdown ? (0.62 + countdownProgressValue * 0.38).toFixed(3) : "1");
   const bubbleBlur = $derived(backdropNudge % 2 === 0 ? "28px" : "28.01px");
   const screenRecordingPermissionError = $derived(
     preview.permissionAction === "screenRecording" ||
@@ -377,7 +377,7 @@
         modelId: option.value
       })),
       ...favoriteOpenRouterModels.map((option) => ({
-        label: option.label,
+        label: openRouterPreviewModelLabel(option),
         value: `openRouter:${option.value}`,
         provider: "openRouter" as const,
         modelId: option.value
@@ -387,6 +387,13 @@
     persistedModelValue = modelValueForSettings(state);
     syncSelectedModel();
     syncSelectedTargetLanguage();
+  }
+
+  function openRouterPreviewModelLabel(option: OpenRouterModelOption) {
+    if (!option.modalities.includes("image") || /\bvision\b/i.test(option.label)) {
+      return option.label;
+    }
+    return `${option.label} (Vision)`;
   }
 
   function modelValueForSettings(state: SettingsState) {
@@ -400,9 +407,13 @@
   function syncSelectedModel() {
     selectedModelValue =
       modelOptions.find((option) => option.value === persistedModelValue)?.value ??
-      modelOptions.find((option) => option.label === preview.model || option.modelId === preview.model)?.value ??
+      modelOptions.find((option) => previewModelMatchesOption(option, preview.model))?.value ??
       modelOptions[0]?.value ??
       "";
+  }
+
+  function previewModelMatchesOption(option: PreviewModelOption, model: string) {
+    return option.label === model || option.label.replace(/ \(Vision\)$/, "") === model || option.modelId === model;
   }
 
   function syncSelectedTargetLanguage() {
