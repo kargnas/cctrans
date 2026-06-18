@@ -1177,20 +1177,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func autoShowPermissionHelperIfNeeded() {
         // macOS relaunches the app without our CLI flags after each privacy grant,
-        // so re-open the helper on every launch while a required keyboard permission
-        // is still missing. This carries the user through the multi-permission grant
+        // so re-open the helper on every launch while a required permission is
+        // still missing. This carries the user through the multi-permission grant
         // flow instead of the helper vanishing after the first toggle.
-        guard requiredKeyboardPermissionsMissing() else {
+        guard requiredPermissionsMissing() else {
             return
         }
         showPermissionHelper()
     }
 
-    private func requiredKeyboardPermissionsMissing() -> Bool {
+    private func requiredPermissionsMissing() -> Bool {
         #if MAS_BUILD
-        return !CGPreflightListenEventAccess()
+        return !CGPreflightListenEventAccess() || !CGPreflightScreenCaptureAccess()
         #else
-        return !CGPreflightListenEventAccess() || !AXIsProcessTrusted()
+        return !CGPreflightListenEventAccess() || !AXIsProcessTrusted() || !CGPreflightScreenCaptureAccess()
         #endif
     }
 
