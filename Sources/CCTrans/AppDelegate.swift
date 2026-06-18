@@ -352,6 +352,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let menu = NSMenu()
 
         menu.addItem(disabledTitle("CCTrans"))
+        if let installLocationTitle = AppInstallLocationNotice.menuTitle(forBundleURL: Bundle.main.bundleURL) {
+            menu.addItem(disabledTitle(installLocationTitle))
+        }
         menu.addItem(NSMenuItem.separator())
 
         menu.addItem(submenuItem(title: "Translation Model", submenu: translationModelMenu()))
