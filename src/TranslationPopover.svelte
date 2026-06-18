@@ -89,7 +89,6 @@
   const countdownLabel = $derived(`${countdownRemaining.toFixed(1)}s`);
   const countdownProgressValue = $derived(Math.max(0, Math.min(1, countdownRemaining / countdownDuration)));
   const countdownProgress = $derived(`${countdownProgressValue * 100}%`);
-  const dismissOpacity = $derived(showCountdown ? (0.62 + countdownProgressValue * 0.38).toFixed(3) : "1");
   const bubbleBlur = $derived(backdropNudge % 2 === 0 ? "28px" : "28.01px");
   const screenRecordingPermissionError = $derived(
     preview.permissionAction === "screenRecording" ||
@@ -715,7 +714,7 @@
     tabindex="-1"
     onmousedown={startDragging}
     class:hover-paused={countdownPaused}
-    style={`--countdown-progress: ${countdownProgress}; --dismiss-opacity: ${dismissOpacity}; --bubble-blur: ${bubbleBlur}`}
+    style={`--countdown-progress: ${countdownProgress}; --bubble-blur: ${bubbleBlur}`}
   >
     <div class="translation-bubble-inner">
       {#if visibleMode === "loading"}
