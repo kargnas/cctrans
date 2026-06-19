@@ -5,10 +5,11 @@ use std::collections::BTreeMap;
 #[cfg(target_os = "macos")]
 use std::ffi::CString;
 use std::fs;
+use std::io::{BufRead, BufReader};
 #[cfg(target_os = "macos")]
 use std::os::raw::{c_char, c_void};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::time::Duration;
 use surfaces::{open_surface_window, AppSurface};
 #[cfg(target_os = "macos")]
@@ -837,7 +838,7 @@ fn load_translation_preview(app: AppHandle) -> Result<TranslationPreviewState, S
 }
 
 #[tauri::command]
-fn translate_preview_to_language(
+async fn translate_preview_to_language(
     app: AppHandle,
     target_language: String,
 ) -> Result<TranslationPreviewState, String> {
@@ -845,11 +846,11 @@ fn translate_preview_to_language(
     write_settings(&app, settings)?;
     let settings = load_effective_settings(&app)?;
     let target_language = settings.target_language.clone();
-    retranslate_preview(&app, settings, Some(target_language))
+    run_retranslate_off_main_thread(app, settings, Some(target_language)).await
 }
 
 #[tauri::command]
-fn translate_preview_to_model(
+async fn translate_preview_to_model(
     app: AppHandle,
     provider: TranslationProvider,
     model_id: String,
@@ -858,7 +859,32 @@ fn translate_preview_to_model(
         apply_preview_model_selection(load_effective_settings(&app)?, provider, &model_id)?;
     write_settings(&app, settings)?;
     let settings = load_effective_settings(&app)?;
-    retranslate_preview(&app, settings, None)
+    run_retranslate_off_main_thread(app, settings, None).await
+}
+
+// The commands are async so Tauri runs them off the main thread, and the blocking subprocess +
+// streaming reads go to the blocking pool. This is what un-freezes the toast: the main thread keeps
+// painting, so it can show the "translating" view and stream partials while the new model runs.
+async fn run_retranslate_off_main_thread(
+    app: AppHandle,
+    settings: Settings,
+    target_language: Option<String>,
+) -> Result<TranslationPreviewState, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        retranslate_preview(&app, settings, target_language)
+    })
+    .await
+    .map_err(|error| format!("Retranslation task failed: {error}"))?
+}
+
+// One NDJSON event from the streaming retranslate CLI (`--emit-partials`): `partial` carries the
+// cumulative text-so-far for live rendering, `final` the cleaned result. Unknown lines are ignored.
+#[derive(Deserialize)]
+struct PreviewStreamEvent {
+    #[serde(default)]
+    partial: Option<String>,
+    #[serde(default, rename = "final")]
+    final_text: Option<String>,
 }
 
 fn retranslate_preview(
@@ -876,6 +902,14 @@ fn retranslate_preview(
         return Ok(state);
     }
 
+    // Flip the live toast to its "translating" view right away — same window, same requestSequence so
+    // it stays in place (no reposition/reshow, so no extra window) — instead of leaving the stale
+    // result frozen until the new model finishes. The watcher + JS poll pick this up within ~200ms.
+    state.mode = "loading".to_string();
+    state.translated_text = String::new();
+    state.error_text = None;
+    write_translation_preview_state(app, &state)?;
+
     let mut translation_settings = settings;
     translation_settings.source_language = state.source_language.clone();
     translation_settings.target_language = state.target_language.clone();
@@ -883,30 +917,78 @@ fn retranslate_preview(
     let original_text = state.original_text.clone();
     let args = legacy_cli_args(
         &translation_settings,
-        &["--translate-text-once", original_text.as_str()],
+        &[
+            "--translate-text-once",
+            original_text.as_str(),
+            "--emit-partials",
+        ],
     );
     let binary = legacy_binary_path(app)?;
     let mut command = Command::new(&binary);
-    command.args(&args);
+    command
+        .args(&args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     // NSWorkspace launches this Tauri helper with cwd `/`, but the spawned Swift CLI
     // resolves `scripts/runtimes/<backend>.py` relative to its cwd. Pin the workspace
     // root so local-model retranslation does not fail with localModelUnavailable.
     if let Some(dir) = legacy_working_dir(app) {
         command.current_dir(dir);
     }
-    let output = command
-        .output()
+    let mut child = command
+        .spawn()
         .map_err(|error| format!("Could not run {}: {error}", binary.display()))?;
 
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    // Stream each cumulative partial into the shared state file as it arrives so the toast grows the
+    // translation in place (matching the Cmd+C flow), instead of the text popping in fully formed.
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "Could not capture retranslation output.".to_string())?;
+    let mut final_text: Option<String> = None;
+    for line in BufReader::new(stdout).lines() {
+        let line = match line {
+            Ok(line) => line,
+            Err(_) => break,
+        };
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        // Non-JSON noise (e.g. a local backend's diagnostics) is skipped, not fatal.
+        let event: PreviewStreamEvent = match serde_json::from_str(trimmed) {
+            Ok(event) => event,
+            Err(_) => continue,
+        };
+        if let Some(partial) = event.partial {
+            state.mode = "translated".to_string();
+            state.translated_text = partial;
+            state.error_text = None;
+            let _ = write_translation_preview_state(app, &state);
+        } else if let Some(text) = event.final_text {
+            final_text = Some(text);
+        }
+    }
+
+    let output = child
+        .wait_with_output()
+        .map_err(|error| format!("Could not run {}: {error}", binary.display()))?;
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    if output.status.success() && !stdout.is_empty() {
-        state.mode = "translated".to_string();
-        state.translated_text = stdout;
-        state.error_text = None;
+
+    if output.status.success() {
+        // Prefer the explicit final line; fall back to the last streamed partial if it never arrived.
+        let text = final_text.unwrap_or_else(|| state.translated_text.clone());
+        if text.trim().is_empty() {
+            state.mode = "error".to_string();
+            state.error_text = Some(first_non_empty(&stderr, "Translation produced no text."));
+        } else {
+            state.mode = "translated".to_string();
+            state.translated_text = text;
+            state.error_text = None;
+        }
     } else {
         state.mode = "error".to_string();
-        state.error_text = Some(first_non_empty(&stderr, &stdout));
+        state.error_text = Some(first_non_empty(&stderr, "Translation failed."));
     }
     write_translation_preview_state(app, &state)?;
     Ok(state)
@@ -3758,6 +3840,24 @@ mod tests {
         assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
 
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn parses_retranslate_stream_events() {
+        let partial: PreviewStreamEvent = serde_json::from_str(r#"{"partial":"안녕"}"#).unwrap();
+        assert_eq!(partial.partial.as_deref(), Some("안녕"));
+        assert!(partial.final_text.is_none());
+
+        let final_event: PreviewStreamEvent =
+            serde_json::from_str(r#"{"final":"안녕하세요"}"#).unwrap();
+        assert_eq!(final_event.final_text.as_deref(), Some("안녕하세요"));
+        assert!(final_event.partial.is_none());
+
+        // A newline inside a partial survives encoding as a single JSON line, so line-based reading
+        // never splits one chunk into two malformed events.
+        let multiline: PreviewStreamEvent =
+            serde_json::from_str("{\"partial\":\"a\\nb\"}").unwrap();
+        assert_eq!(multiline.partial.as_deref(), Some("a\nb"));
     }
 
     #[test]

@@ -76,6 +76,17 @@ func printJSON<T: Encodable>(_ value: T) {
     print(String(data: data, encoding: .utf8) ?? "{}")
 }
 
+// Emit one NDJSON line to stdout and flush immediately. The Tauri toast's retranslate path pipes this
+// process's stdout and parses each line as it lands, so partials must not sit in the block buffer a
+// piped (non-TTY) stdout uses — fflush forces each chunk out so the toast streams instead of waiting
+// for the whole translation. JSON encoding keeps any newlines inside the text on a single line.
+func emitPreviewStreamLine(_ object: [String: String]) {
+    guard let data = try? JSONSerialization.data(withJSONObject: object),
+          let line = String(data: data, encoding: .utf8) else { return }
+    print(line)
+    fflush(stdout)
+}
+
 if CommandLine.arguments.contains("--login-item-status") {
     printJSON(LoginItemController.status())
     exit(0)
@@ -153,7 +164,7 @@ if CommandLine.arguments.contains("--benchmark-local-models") {
 // invisible NSApplication around AppleTranslationHost, translates, prints, and
 // exits. Used by the Tauri toast's retranslate path and as the E2E smoke.
 @MainActor
-func runAppleTranslationOneShot(text: String, settings: TranslatorSettings) -> Never {
+func runAppleTranslationOneShot(text: String, settings: TranslatorSettings, emitPartials: Bool) -> Never {
     let app = NSApplication.shared
     app.setActivationPolicy(.prohibited)
     let window = NSWindow(
@@ -173,7 +184,13 @@ func runAppleTranslationOneShot(text: String, settings: TranslatorSettings) -> N
     Task { @MainActor in
         do {
             let result = try await service.translateText(text, settings: settings, credentials: credentials)
-            print(result.text)
+            // Apple Translation has no token stream, so there are no partials — emit the result as a
+            // single final line when streaming so Rust parses it the same way as the other providers.
+            if emitPartials {
+                emitPreviewStreamLine(["final": result.text])
+            } else {
+                print(result.text)
+            }
             exit(0)
         } catch {
             FileHandle.standardError.write(Data("ERROR: \(error.localizedDescription)\n".utf8))
@@ -187,8 +204,12 @@ func runAppleTranslationOneShot(text: String, settings: TranslatorSettings) -> N
 if CommandLine.arguments.contains("--translate-text-once") {
     let text = argumentValue(after: "--translate-text-once") ?? ""
     let settings = oneShotSettings(defaultProvider: .localHyMT2)
+    // The Tauri toast's retranslate path passes --emit-partials so it can stream the new translation
+    // into the popover in place (same as the Cmd+C flow), instead of blocking until the full text is
+    // ready. Without the flag, output stays byte-for-byte identical for the existing CLI/test callers.
+    let emitPartials = CommandLine.arguments.contains("--emit-partials")
     if settings.provider == .appleTranslation {
-        runAppleTranslationOneShot(text: text, settings: settings)
+        runAppleTranslationOneShot(text: text, settings: settings, emitPartials: emitPartials)
     }
     let credentials = CredentialsProvider().credentials()
     let contextImagePNGData: Data? = if CommandLine.arguments.contains("--with-screen-context") {
@@ -196,15 +217,26 @@ if CommandLine.arguments.contains("--translate-text-once") {
     } else {
         nil
     }
+    // Each partial carries the cumulative text-so-far (TranslationService coalesces token deltas), so
+    // forwarding it verbatim lets the toast grow the text. nil when not streaming keeps the structured
+    // path (with its description field) unchanged for the plain CLI callers.
+    let onPartial: (@Sendable (String) -> Void)? = emitPartials
+        ? { @Sendable partial in emitPreviewStreamLine(["partial": partial]) }
+        : nil
     let result = try await TranslationService().translateText(
         text,
         settings: settings,
         credentials: credentials,
-        contextImagePNGData: contextImagePNGData
+        contextImagePNGData: contextImagePNGData,
+        onPartial: onPartial
     )
-    print(result.text)
-    if let description = result.description {
-        print(description)
+    if emitPartials {
+        emitPreviewStreamLine(["final": result.text])
+    } else {
+        print(result.text)
+        if let description = result.description {
+            print(description)
+        }
     }
     exit(0)
 }

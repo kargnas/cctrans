@@ -547,6 +547,13 @@
   async function startDragging(event: MouseEvent) {
     const target = event.target instanceof Element ? event.target : null;
     if (!isTauri || event.button !== 0 || target?.closest("button, select")) return;
+    // A scrollable result area owns its own scrollbar and text selection. Starting a window drag from
+    // it hijacks the scrollbar thumb (the whole window moves instead of scrolling), so let those clicks
+    // through — the window still drags from the surrounding chrome. Only skip when it actually overflows:
+    // short results stay draggable from the text, and macOS overlay scrollbars give no usable hit-test
+    // (they float over the content), so element-level detection is the reliable signal.
+    const scrollable = target?.closest(".translation-text");
+    if (scrollable instanceof HTMLElement && scrollable.scrollHeight > scrollable.clientHeight) return;
     try {
       userInitiatedMove = true;
       await getCurrentWindow().startDragging();

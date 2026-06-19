@@ -38,7 +38,7 @@
   } from "./lib/settings";
 
   type Section = "general" | "models" | "shortcuts" | "excluded" | "advanced" | "info";
-  type OpenRouterSortKey = "model" | "releaseDate" | "inputPrice" | "outputPrice" | "context";
+  type OpenRouterSortKey = "model" | "releaseDate" | "dailyRank" | "inputPrice" | "outputPrice" | "context";
   type SortDirection = "asc" | "desc";
   type OpenRouterAPIKeyState = {
     configured: boolean;
@@ -569,6 +569,9 @@
           left.label.localeCompare(right.label)
         ) * multiplier;
       }
+      if (openRouterSort.key === "dailyRank") {
+        return compareOptionalDailyRank(left, right, openRouterSort.direction);
+      }
       if (openRouterSort.key === "inputPrice") {
         return (
           sortablePrice(left.promptPricePerMillion) - sortablePrice(right.promptPricePerMillion) ||
@@ -590,6 +593,20 @@
 
   function sortablePrice(value: number) {
     return value < 0 ? Number.MAX_SAFE_INTEGER : value;
+  }
+
+  function compareOptionalDailyRank(left: OpenRouterModelOption, right: OpenRouterModelOption, direction: SortDirection) {
+    const leftRank = sortableDailyRank(left);
+    const rightRank = sortableDailyRank(right);
+    const leftMissing = leftRank === Number.MAX_SAFE_INTEGER;
+    const rightMissing = rightRank === Number.MAX_SAFE_INTEGER;
+    if (leftMissing !== rightMissing) return leftMissing ? 1 : -1;
+    const multiplier = direction === "asc" ? 1 : -1;
+    return (leftRank - rightRank || left.label.localeCompare(right.label)) * multiplier;
+  }
+
+  function sortableDailyRank(model: OpenRouterModelOption) {
+    return isDailyTopModel(model) ? model.dailyTokenRank ?? Number.MAX_SAFE_INTEGER : Number.MAX_SAFE_INTEGER;
   }
 
   function isDailyTopModel(model: OpenRouterModelOption) {
@@ -653,6 +670,7 @@
   function sortLabel(key: OpenRouterSortKey) {
     if (openRouterSort.key !== key) return "Sort";
     if (key === "releaseDate") return openRouterSort.direction === "desc" ? "Newest" : "Oldest";
+    if (key === "dailyRank") return openRouterSort.direction === "asc" ? "#1 First" : "#20 First";
     return openRouterSort.direction === "asc" ? "Asc" : "Desc";
   }
 
@@ -1140,7 +1158,7 @@
                 </select>
               </label>
               <label>
-                <span>Input min</span>
+                <span>Input min $/1M</span>
                 <input
                   type="number"
                   min="0"
@@ -1155,7 +1173,7 @@
                 />
               </label>
               <label>
-                <span>Input max</span>
+                <span>Input max $/1M</span>
                 <input
                   type="number"
                   min="0"
@@ -1170,7 +1188,7 @@
                 />
               </label>
               <label>
-                <span>Output min</span>
+                <span>Output min $/1M</span>
                 <input
                   type="number"
                   min="0"
@@ -1185,7 +1203,7 @@
                 />
               </label>
               <label>
-                <span>Output max</span>
+                <span>Output max $/1M</span>
                 <input
                   type="number"
                   min="0"
@@ -1214,6 +1232,9 @@
               </button>
               <button type="button" class:active={openRouterSort.key === "releaseDate"} onclick={() => updateOpenRouterSort("releaseDate")}>
                 Release <ArrowUpDown size={11} /><span class="sort-state">{sortLabel("releaseDate")}</span>
+              </button>
+              <button type="button" class:active={openRouterSort.key === "dailyRank"} onclick={() => updateOpenRouterSort("dailyRank")}>
+                Top <ArrowUpDown size={11} /><span class="sort-state">{sortLabel("dailyRank")}</span>
               </button>
               <button type="button" class:active={openRouterSort.key === "inputPrice"} onclick={() => updateOpenRouterSort("inputPrice")}>
                 Input <ArrowUpDown size={11} /><span class="sort-state">{sortLabel("inputPrice")}</span>
