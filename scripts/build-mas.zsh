@@ -39,8 +39,14 @@ HELPER_PROFILE_PATH="${CCTRANS_MAS_HELPER_PROFILE:-}"
 INSTALLER_IDENTITY="${CCTRANS_MAS_INSTALLER_IDENTITY:-}"
 ENTITLEMENTS_SRC="$ROOT/scripts/mas/CCTrans.entitlements"
 HELPER_ENTITLEMENTS_SRC="$ROOT/scripts/mas/CCTransTauri.entitlements"
+# Inherited-sandbox CLI helper: a copy of the main binary the Tauri helper
+# fork-execs. Signed with app-sandbox + inherit only (see the file's comment and
+# §3.6 of docs/mac-app-store.md) so it does not trap in _libsecinit_appsandbox.
+CLI_ENTITLEMENTS_SRC="$ROOT/scripts/mas/cctrans-cli.entitlements"
 TAURI_HELPER_SOURCE="$ROOT/src-tauri/target/release/bundle/macos/CCTrans.app"
 TAURI_HELPER_DEST="$RESOURCES_DIR/CCTransTauri.app"
+# cctrans-cli lives next to cctrans-tauri so the helper resolves it as a sibling.
+CLI_HELPER_DEST="$TAURI_HELPER_DEST/Contents/MacOS/cctrans-cli"
 
 cd "$ROOT"
 CCTRANS_MAS_BUILD=1 swift build -c release --scratch-path .build-mas
@@ -111,6 +117,9 @@ WORK_DIR="$(mktemp -d)"
 trap 'rm -rf "$WORK_DIR"' EXIT
 APP_ENTITLEMENTS="$WORK_DIR/CCTrans.entitlements"
 HELPER_ENTITLEMENTS="$WORK_DIR/CCTransTauri.entitlements"
+# No work copy / identifier keys for the CLI: an inherited-sandbox helper must
+# carry neither application-identifier nor application-groups (it inherits them).
+CLI_ENTITLEMENTS="$CLI_ENTITLEMENTS_SRC"
 cp "$ENTITLEMENTS_SRC" "$APP_ENTITLEMENTS"
 cp "$HELPER_ENTITLEMENTS_SRC" "$HELPER_ENTITLEMENTS"
 if [[ -n "$TEAM_ID" ]]; then
@@ -134,12 +143,31 @@ if [[ -z "$SIGN_IDENTITY" ]]; then
   SIGN_IDENTITY="-"
 fi
 
-# Inside-out: helper first, then the outer app, each with its own sandbox
-# entitlements. No hardened runtime here — that is a Developer ID concept;
-# MAS ingest cares about the sandbox entitlement instead.
+# Bundle the inherited-sandbox CLI helper next to cctrans-tauri. It is the same
+# binary as the main app but signed to inherit the Tauri helper's sandbox, so the
+# helper can fork-exec it without the _libsecinit_appsandbox launch trap.
+cp "$MACOS_DIR/$APP_NAME" "$CLI_HELPER_DEST"
+
+# Inside-out signing. The helper is signed --deep first; that pass would strip
+# cctrans-cli's inherit entitlements, so re-sign it explicitly and then re-seal
+# the helper bundle (a plain re-sign, NOT --deep, preserves cctrans-cli's
+# signature while refreshing the bundle's CodeResources). Then the outer app.
+# No hardened runtime here — that is a Developer ID concept; MAS ingest cares
+# about the sandbox entitlement instead.
 codesign --force --deep --entitlements "$HELPER_ENTITLEMENTS" --sign "$SIGN_IDENTITY" "$TAURI_HELPER_DEST"
+codesign --force --entitlements "$CLI_ENTITLEMENTS" --sign "$SIGN_IDENTITY" "$CLI_HELPER_DEST"
+codesign --force --entitlements "$HELPER_ENTITLEMENTS" --sign "$SIGN_IDENTITY" "$TAURI_HELPER_DEST"
 codesign --force --entitlements "$APP_ENTITLEMENTS" --sign "$SIGN_IDENTITY" "$APP_DIR"
 codesign --verify --deep --strict "$APP_DIR"
+
+# Fail the build if the CLI helper did not end up with the inherit entitlement —
+# without it the helper would crash on first fork-exec under the App Sandbox.
+if ! codesign -d --entitlements - --xml "$CLI_HELPER_DEST" 2>/dev/null \
+    | plutil -convert xml1 -o - - 2>/dev/null \
+    | grep -q "com.apple.security.inherit"; then
+  echo "ERROR: cctrans-cli is missing com.apple.security.inherit after signing." >&2
+  exit 1
+fi
 
 echo "Signed with: $SIGN_IDENTITY"
 echo "$APP_DIR"

@@ -3323,6 +3323,16 @@ fn open_surface_action(
 
 fn legacy_binary_path(app: &AppHandle) -> Result<PathBuf, String> {
     if let Ok(current_exe) = std::env::current_exe() {
+        // Prefer the inherited-sandbox CLI helper bundled next to this Tauri
+        // helper (MAS builds only). Spawning the main app's own sandboxed binary
+        // from here traps in _libsecinit_appsandbox at launch; cctrans-cli is
+        // signed with com.apple.security.inherit so it runs in our sandbox.
+        // Falls through to the main binary in dev builds, where it does not exist.
+        if let Some(sibling_cli) = current_exe.parent().map(|dir| dir.join("cctrans-cli")) {
+            if sibling_cli.exists() {
+                return Ok(sibling_cli);
+            }
+        }
         if let Some(bundle) = app_bundle_ancestor(&current_exe) {
             let candidate = host_binary_for_app_bundle(&bundle);
             if candidate.exists() {

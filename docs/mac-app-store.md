@@ -143,7 +143,31 @@ Notes:
    ID); ad-hoc signing makes macOS 15 prompt "access data from other apps"
    on every group-container file access, and re-signing in place requires
    deleting `~/Library/Containers/as.kargn.cctrans*` (container identity is
-   bound to the code signature).
+   bound to the code signature). This same code-signature/container binding is
+   why the App Store reviewer saw the "CCTrans differs from previously opened
+   versions" dialog on a machine that had already run an earlier review build.
+7. **CLI fork-exec sandbox trap** (discovered post-rejection, 2026-06-18):
+   the Tauri helper (`cctrans-tauri`, itself sandboxed) fork-execs the main
+   `CCTrans` Swift binary for retranslation, local-model benchmarks, and
+   login-item changes (`Command::new(legacy_binary_path(..))` in
+   `src-tauri/src/lib.rs`). Because that binary carries its own
+   `com.apple.security.app-sandbox`, the child re-initializes its own sandbox
+   container at launch and traps in `_libsecinit_appsandbox`
+   (`EXC_BREAKPOINT`/`SIGTRAP`, before `main()`). Invisible in dev builds
+   (unsandboxed); this is what crashed 0.3.2 on review (Guideline 2.1 App
+   Completeness, "crashed on launch"). It is the opposite of the Python backend
+   (item 3): a binary with NO sandbox entitlement implicitly inherits the
+   parent's sandbox, but a binary WITH the entitlement must not be fork-exec'd
+   by a sandboxed parent.
+
+   Fix: `build-mas.zsh` bundles `cctrans-cli`, a byte-for-byte copy of the main
+   binary signed with `com.apple.security.app-sandbox` +
+   `com.apple.security.inherit` only (`scripts/mas/cctrans-cli.entitlements`),
+   next to `cctrans-tauri`. `legacy_binary_path()` prefers that sibling, so the
+   helper spawns an inherited-sandbox copy that runs inside the helper's own
+   sandbox (App Group + `network.client` included) without re-init. Unlike the
+   NSWorkspace-launched helper — which cannot inherit and must be a full
+   sandboxed app — a fork-exec'd child can and must inherit.
 
 ## 4. Build + package pipeline (`scripts/build-mas.zsh`, new)
 

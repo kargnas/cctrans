@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "https://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- cctrans-cli is a byte-for-byte copy of the main CCTrans binary, bundled
+       inside the Tauri helper (CCTransTauri.app) and fork-exec'd by it for
+       translation / benchmarks / login-item changes.
+
+       Why this exists: the Tauri helper (cctrans-tauri) is itself sandboxed. A
+       sandboxed process MUST NOT fork-exec another binary that initializes its
+       OWN App Sandbox container — the child traps in _libsecinit_appsandbox at
+       launch (EXC_BREAKPOINT / SIGTRAP), before main(). That is exactly the
+       crash Apple hit on 0.3.2 (Guideline 2.1 App Completeness).
+
+       com.apple.security.inherit makes this copy run INSIDE the parent's
+       sandbox instead of creating its own, so libsecinit does not re-init a
+       container. An inherited helper therefore MUST NOT declare its own
+       application-groups, application-identifier, or network entitlements — it
+       receives all of them (App Group + network.client) from cctrans-tauri.
+       build-mas.zsh deliberately does not append identifier keys to this file. -->
+  <key>com.apple.security.app-sandbox</key>
+  <true/>
+  <key>com.apple.security.inherit</key>
+  <true/>
+</dict>
+</plist>
