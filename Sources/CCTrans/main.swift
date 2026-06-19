@@ -87,6 +87,35 @@ func emitPreviewStreamLine(_ object: [String: String]) {
     fflush(stdout)
 }
 
+struct ScreenshotSmokeResult: Encodable {
+    var text: String
+    var model: String
+    var hasImageURL: Bool
+    var imageURLPrefix: String?
+    var imageOutputPath: String?
+    var promptTokens: Int?
+    var completionTokens: Int?
+    var totalTokens: Int?
+    var costCredits: Double?
+}
+
+func writeImageResult(_ imageURL: String, to outputPath: String) throws {
+    let data: Data
+    if let comma = imageURL.firstIndex(of: ","),
+       imageURL[..<comma].lowercased().contains(";base64") {
+        let encoded = String(imageURL[imageURL.index(after: comma)...])
+        guard let decoded = Data(base64Encoded: encoded) else {
+            throw TranslationError.missingTranslation("Image result data URL was not valid base64.")
+        }
+        data = decoded
+    } else if let url = URL(string: imageURL), url.scheme != nil {
+        data = try Data(contentsOf: url)
+    } else {
+        throw TranslationError.missingTranslation("Image result was not a data URL or downloadable URL.")
+    }
+    try data.write(to: URL(fileURLWithPath: outputPath), options: [.atomic])
+}
+
 if CommandLine.arguments.contains("--login-item-status") {
     printJSON(LoginItemController.status())
     exit(0)
@@ -265,6 +294,41 @@ if CommandLine.arguments.contains("--screenshot-once") {
         openRouterModelCapabilities: SharedOpenRouterModelCache.capabilities(for:)
     ).translateImage(pngData: data, settings: settings, credentials: credentials)
     print(result.text)
+    exit(0)
+}
+
+if let imagePath = argumentValue(after: "--screenshot-image") {
+    let settings = oneShotSettings(defaultProvider: .openRouter)
+    let credentials = CredentialsProvider().credentials()
+    let data = try Data(contentsOf: URL(fileURLWithPath: imagePath))
+    let result = try await TranslationService(
+        openRouterModelCapabilities: SharedOpenRouterModelCache.capabilities(for:)
+    ).translateImage(pngData: data, settings: settings, credentials: credentials)
+    var imageOutputPath: String?
+    if let outputPath = argumentValue(after: "--output-image"),
+       let imageURL = result.imageURL {
+        try writeImageResult(imageURL, to: outputPath)
+        imageOutputPath = outputPath
+    }
+
+    if CommandLine.arguments.contains("--json") {
+        printJSON(ScreenshotSmokeResult(
+            text: result.text,
+            model: result.model,
+            hasImageURL: result.imageURL != nil,
+            imageURLPrefix: result.imageURL.map { String($0.prefix(30)) },
+            imageOutputPath: imageOutputPath,
+            promptTokens: result.usage?.promptTokens,
+            completionTokens: result.usage?.completionTokens,
+            totalTokens: result.usage?.totalTokens,
+            costCredits: result.usage?.costCredits
+        ))
+    } else {
+        print(result.text)
+        if let imageURL = result.imageURL {
+            print(imageURL)
+        }
+    }
     exit(0)
 }
 
