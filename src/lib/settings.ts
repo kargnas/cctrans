@@ -60,6 +60,7 @@ export type OpenRouterModelOption = {
   isReasoning: boolean;
   isFree: boolean;
   isRecommended: boolean;
+  dailyTokenRank?: number | null;
 };
 
 export type PermissionStatus = {

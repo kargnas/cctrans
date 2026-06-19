@@ -368,6 +368,12 @@ struct OpenRouterModelOption {
     is_free: bool,
     #[serde(rename = "isRecommended")]
     is_recommended: bool,
+    #[serde(
+        default,
+        rename = "dailyTokenRank",
+        skip_serializing_if = "Option::is_none"
+    )]
+    daily_token_rank: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -405,6 +411,18 @@ struct OpenRouterAPIArchitecture {
     input_modalities: Vec<String>,
     #[serde(default)]
     output_modalities: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenRouterRankingsDailyResponse {
+    data: Vec<OpenRouterRankingDailyRow>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenRouterRankingDailyRow {
+    date: String,
+    model_permaslug: String,
+    total_tokens: serde_json::Value,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -620,7 +638,8 @@ fn load_settings(app: AppHandle) -> Result<SettingsState, String> {
 
 #[tauri::command]
 fn refresh_openrouter_models(app: AppHandle) -> Result<SettingsState, String> {
-    let models = fetch_openrouter_models()?;
+    let api_key = openrouter_api_key().unwrap_or(None);
+    let models = fetch_openrouter_models(api_key.as_deref())?;
     write_openrouter_models_cache(&app, &models)?;
     state_from_disk(&app)
 }
@@ -2741,7 +2760,7 @@ fn write_openrouter_models_cache(
     replace_file_contents(&path, &data)
 }
 
-fn fetch_openrouter_models() -> Result<Vec<OpenRouterModelOption>, String> {
+fn fetch_openrouter_models(api_key: Option<&str>) -> Result<Vec<OpenRouterModelOption>, String> {
     let agent = ureq::AgentBuilder::new()
         .timeout_read(Duration::from_secs(15))
         .timeout_write(Duration::from_secs(15))
@@ -2759,6 +2778,11 @@ fn fetch_openrouter_models() -> Result<Vec<OpenRouterModelOption>, String> {
         .into_iter()
         .filter_map(openrouter_model_from_api)
         .collect::<Vec<_>>();
+    if let Some(api_key) = api_key {
+        if let Ok(rankings) = fetch_openrouter_daily_top_rankings(&agent, api_key) {
+            apply_openrouter_daily_rankings(&mut models, &rankings);
+        }
+    }
     if models.is_empty() {
         return Err("OpenRouter returned no usable text models.".to_string());
     }
@@ -2769,6 +2793,71 @@ fn fetch_openrouter_models() -> Result<Vec<OpenRouterModelOption>, String> {
             .then_with(|| left.label.cmp(&right.label))
     });
     Ok(models)
+}
+
+fn fetch_openrouter_daily_top_rankings(
+    agent: &ureq::Agent,
+    api_key: &str,
+) -> Result<BTreeMap<String, i64>, String> {
+    let authorization = format!("Bearer {api_key}");
+    let response = agent
+        .get("https://openrouter.ai/api/v1/datasets/rankings-daily")
+        .set("Authorization", &authorization)
+        .set("User-Agent", "CCTrans/0.1")
+        .call()
+        .map_err(|error| format!("Could not refresh OpenRouter rankings: {error}"))?;
+    let payload: OpenRouterRankingsDailyResponse = response
+        .into_json()
+        .map_err(|error| format!("Could not decode OpenRouter rankings: {error}"))?;
+    Ok(openrouter_daily_top_rankings(payload.data, 20))
+}
+
+fn openrouter_daily_top_rankings(
+    rows: Vec<OpenRouterRankingDailyRow>,
+    limit: usize,
+) -> BTreeMap<String, i64> {
+    let Some(latest_date) = rows
+        .iter()
+        .filter(|row| row.model_permaslug != "other")
+        .map(|row| row.date.as_str())
+        .max()
+        .map(str::to_string)
+    else {
+        return BTreeMap::new();
+    };
+
+    let mut latest_rows = rows
+        .into_iter()
+        .filter(|row| row.date == latest_date && row.model_permaslug != "other")
+        .collect::<Vec<_>>();
+    latest_rows.sort_by(|left, right| {
+        ranking_total_tokens(&right.total_tokens)
+            .cmp(&ranking_total_tokens(&left.total_tokens))
+            .then_with(|| left.model_permaslug.cmp(&right.model_permaslug))
+    });
+    latest_rows
+        .into_iter()
+        .take(limit)
+        .enumerate()
+        .map(|(index, row)| (row.model_permaslug, (index + 1) as i64))
+        .collect()
+}
+
+fn apply_openrouter_daily_rankings(
+    models: &mut [OpenRouterModelOption],
+    rankings: &BTreeMap<String, i64>,
+) {
+    for model in models {
+        model.daily_token_rank = rankings.get(&model.value).copied();
+    }
+}
+
+fn ranking_total_tokens(value: &serde_json::Value) -> u128 {
+    match value {
+        serde_json::Value::String(value) => value.parse::<u128>().unwrap_or(0),
+        serde_json::Value::Number(value) => value.as_u64().unwrap_or(0) as u128,
+        _ => 0,
+    }
 }
 
 fn openrouter_model_from_api(model: OpenRouterAPIModel) -> Option<OpenRouterModelOption> {
@@ -2817,6 +2906,7 @@ fn openrouter_model_from_api(model: OpenRouterAPIModel) -> Option<OpenRouterMode
         is_reasoning,
         is_free,
         is_recommended,
+        daily_token_rank: None,
     })
 }
 
@@ -2895,6 +2985,7 @@ fn openrouter_model(
         is_reasoning,
         is_free,
         is_recommended,
+        daily_token_rank: None,
     }
 }
 
@@ -3272,6 +3363,16 @@ fn openrouter_api_key_state() -> Result<OpenRouterAPIKeyState, String> {
         configured,
         path: path.display().to_string(),
     })
+}
+
+fn openrouter_api_key() -> Result<Option<String>, String> {
+    if let Ok(value) = std::env::var("OPENROUTER_API_KEY") {
+        let value = value.trim().to_string();
+        if !value.is_empty() {
+            return Ok(Some(value));
+        }
+    }
+    read_env_key(&credential_env_path()?, "OPENROUTER_API_KEY")
 }
 
 fn credential_env_path() -> Result<PathBuf, String> {
@@ -3861,6 +3962,7 @@ mod tests {
             model.modalities,
             vec!["image".to_string(), "text".to_string()]
         );
+        assert_eq!(model.daily_token_rank, None);
         assert!(model.is_free);
         assert!(model.is_reasoning);
         assert_eq!(model.note.as_deref(), Some("Free event"));
@@ -3909,6 +4011,52 @@ mod tests {
         assert_eq!(auto_router.prompt_price_per_million, -1_000_000.0);
         assert_eq!(auto_router.completion_price_per_million, -1_000_000.0);
         assert!(auto_router.note.is_none());
+    }
+
+    #[test]
+    fn daily_rankings_keep_latest_top_twenty_and_apply_to_models() {
+        let mut rows = vec![
+            OpenRouterRankingDailyRow {
+                date: "2026-05-10".to_string(),
+                model_permaslug: "old/model".to_string(),
+                total_tokens: serde_json::Value::String("999999".to_string()),
+            },
+            OpenRouterRankingDailyRow {
+                date: "2026-05-11".to_string(),
+                model_permaslug: "other".to_string(),
+                total_tokens: serde_json::Value::String("999999999".to_string()),
+            },
+        ];
+        for index in 0..21 {
+            rows.push(OpenRouterRankingDailyRow {
+                date: "2026-05-11".to_string(),
+                model_permaslug: format!("provider/model-{index:02}"),
+                total_tokens: serde_json::Value::String((10_000 - index).to_string()),
+            });
+        }
+
+        let rankings = openrouter_daily_top_rankings(rows, 20);
+        assert_eq!(rankings.get("provider/model-00"), Some(&1));
+        assert_eq!(rankings.get("provider/model-19"), Some(&20));
+        assert!(!rankings.contains_key("provider/model-20"));
+        assert!(!rankings.contains_key("other"));
+        assert!(!rankings.contains_key("old/model"));
+
+        let mut models = vec![openrouter_model(
+            "Ranked",
+            "provider/model-00",
+            None,
+            0.1,
+            0.2,
+            &["text"],
+            "2026-05-11",
+            1000,
+            false,
+            false,
+            false,
+        )];
+        apply_openrouter_daily_rankings(&mut models, &rankings);
+        assert_eq!(models[0].daily_token_rank, Some(1));
     }
 
     #[test]

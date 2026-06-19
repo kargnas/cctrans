@@ -544,6 +544,7 @@
       model.releaseDate,
       `${formatContextWindow(model.contextWindow)} context`
     ];
+    if (isDailyTopModel(model)) parts.push(`Top #${model.dailyTokenRank}`);
     if (model.isReasoning) parts.push("Reasoning");
     if (model.isRecommended) parts.push("Recommended");
     return parts.join(" · ");
@@ -589,6 +590,12 @@
 
   function sortablePrice(value: number) {
     return value < 0 ? Number.MAX_SAFE_INTEGER : value;
+  }
+
+  function isDailyTopModel(model: OpenRouterModelOption) {
+    return typeof model.dailyTokenRank === "number" &&
+      model.dailyTokenRank >= 1 &&
+      model.dailyTokenRank <= 20;
   }
 
   function visibleOpenRouterModels(models: OpenRouterModelOption[]) {
@@ -1222,7 +1229,7 @@
               <div
                 class="model-row openrouter-row"
                 class:selected-model={settingsState.settings.provider === "openRouter" && settingsState.settings.openRouterTextModel === model.value}
-                class:free-model={model.isFree}
+                class:top-ranked={isDailyTopModel(model)}
               >
                 <button
                   class="favorite-button"
@@ -1236,8 +1243,9 @@
                   <strong>{model.label}</strong>
                   <span class="model-id">{model.value}</span>
                   <span>{modalityText(model)} · {formatContextWindow(model.contextWindow)} context · {model.releaseDate}</span>
-                  {#if model.isRecommended || model.isFree || model.isReasoning}
+                  {#if model.isRecommended || model.isFree || model.isReasoning || isDailyTopModel(model)}
                     <div class="model-badges">
+                      {#if isDailyTopModel(model)}<em class="top-rank">Top #{model.dailyTokenRank}</em>{/if}
                       {#if model.isRecommended}<em>Recommended</em>{/if}
                       {#if model.isFree}<em class="free-event">Free event</em>{/if}
                       {#if model.isReasoning}<em>Reasoning</em>{/if}
@@ -1245,15 +1253,11 @@
                   {/if}
                 </div>
                 <div class="openrouter-price">
-                  {#if model.isFree}
-                    <strong>Free event</strong>
-                  {:else}
-                    <span>In {formatUnitPrice(model.promptPricePerMillion)}</span>
-                    <span>Out {formatUnitPrice(model.completionPricePerMillion)}</span>
-                  {/if}
+                  <span>In {formatUnitPrice(model.promptPricePerMillion)}</span>
+                  <span>Out {formatUnitPrice(model.completionPricePerMillion)}</span>
                 </div>
                 <div class="model-actions">
-                  <button class="inline-action" onclick={() => useOpenRouterTextModel(model.value)}><Cloud size={13} />Text</button>
+                  <button class="inline-action primary-use" onclick={() => useOpenRouterTextModel(model.value)}><Cloud size={13} />Use this</button>
                   {#if model.modalities.includes("image")}
                     <button class="inline-action" onclick={() => useOpenRouterVisionModel(model.value)}>Vision</button>
                   {/if}

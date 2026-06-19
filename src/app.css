@@ -806,8 +806,12 @@ input {
   background: var(--accent-soft);
 }
 
-.model-row.free-model {
-  background: color-mix(in srgb, var(--green-text) 7%, transparent);
+.model-row.top-ranked {
+  border-color: color-mix(in srgb, var(--favorite-ink) 34%, var(--border));
+}
+
+.model-row.top-ranked .model-copy > strong {
+  color: var(--favorite-ink);
 }
 
 .openrouter-row .model-id {
@@ -823,17 +827,6 @@ input {
   font-variant-numeric: tabular-nums;
   text-align: right;
   white-space: nowrap;
-}
-
-.openrouter-price strong {
-  color: var(--green-text);
-  font-weight: 650;
-}
-
-.free-model .openrouter-price strong {
-  padding: 2px 6px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--green-text) 12%, transparent);
 }
 
 .model-badges {
@@ -858,6 +851,18 @@ input {
   border-color: color-mix(in srgb, var(--green-text) 24%, transparent);
   background: color-mix(in srgb, var(--green-text) 13%, transparent);
   color: var(--green-text);
+}
+
+.model-badges em.top-rank {
+  border-color: color-mix(in srgb, var(--favorite-ink) 32%, transparent);
+  background: color-mix(in srgb, var(--favorite-ink) 13%, transparent);
+  color: var(--favorite-ink);
+  font-weight: 650;
+}
+
+.model-actions .primary-use {
+  color: var(--blue);
+  font-weight: 650;
 }
 
 .api-key-row {
