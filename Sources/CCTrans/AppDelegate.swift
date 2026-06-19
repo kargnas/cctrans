@@ -44,6 +44,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var pasteboardMonitor: PasteboardMonitor?
     private var screenshotHotKey: ScreenshotHotKey?
     private var keepAliveWindow: NSWindow?
+    private var onboardingController: OnboardingWindowController?
     private var statusPulseTask: Task<Void, Never>?
     private var lastClipboardTriggerAt: Date?
     private var lastTranslationCaretBounds: CGRect?
@@ -106,6 +107,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         startKeyboardMonitor()
         startPasteboardMonitor()
         resetPersistedToastSequence()
+        // Clear any persistent toast helper orphaned by a previous main process
+        // that exited without cleanup (e.g. a crash). Otherwise each relaunch
+        // stacks another helper, and an orphaned helper lingers as a zombie that
+        // owns no menu-bar item — exactly the "no icon, nothing happens" state.
+        terminateTauriHelper(matching: "--translation-preview")
         startPersistentToastProcess()
         print("CCTrans ready. Press Cmd+C twice to translate clipboard text.")
         reportKeyboardPermissionStatus(requestIfMissing: false)
@@ -116,6 +122,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let runsPopoverSmoke = CommandLine.arguments.contains("--show-popover-smoke")
         if CommandLine.arguments.contains("--show-settings") {
             showSettingsWindow()
+        }
+        if CommandLine.arguments.contains("--show-onboarding") {
+            showOnboardingWindow()
         }
         if CommandLine.arguments.contains("--show-permission-helper") {
             showPermissionHelper()
@@ -138,12 +147,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             #endif
         }
         if !runsPopoverSmoke, !CommandLine.arguments.contains("--show-permission-helper") {
-            autoShowPermissionHelperIfNeeded()
+            showOnboardingOnLaunchIfNeeded()
         }
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         isUserQuitting ? .terminateNow : .terminateCancel
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        // An accessory app has no Dock icon, so a Finder / Launchpad / TestFlight
+        // "Open" on the already-running instance would otherwise do nothing
+        // visible. Re-show the onboarding/status window so reopening always
+        // surfaces the app instead of appearing dead.
+        showOnboardingWindow()
+        return true
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -399,6 +417,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(NSMenuItem.separator())
         // Cmd+, is the platform-standard settings shortcut; surfacing it in the menu
         // also teaches the binding even though status menus only fire it while open.
+        menu.addItem(actionItem(title: "Getting Started...", action: #selector(showOnboardingWindow)))
         menu.addItem(menuItem(title: "Settings...", action: #selector(showSettingsWindow), key: ",", target: self))
         menu.addItem(actionItem(title: "Permission Helper...", action: #selector(showPermissionHelper)))
         #if !MAS_BUILD
@@ -1218,15 +1237,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         _ = openTauriSurface("permission-helper")
     }
 
-    private func autoShowPermissionHelperIfNeeded() {
-        // macOS relaunches the app without our CLI flags after each privacy grant,
-        // so re-open the helper on every launch while a required permission is
-        // still missing. This carries the user through the multi-permission grant
-        // flow instead of the helper vanishing after the first toggle.
-        guard requiredPermissionsMissing() else {
+    // First-run flag kept in UserDefaults (not SettingsStore) so this window's
+    // logic stays self-contained. The suite default works inside the sandbox.
+    private var hasSeenOnboarding: Bool {
+        get { UserDefaults.standard.bool(forKey: "as.kargn.cctrans.hasSeenOnboarding") }
+        set { UserDefaults.standard.set(newValue, forKey: "as.kargn.cctrans.hasSeenOnboarding") }
+    }
+
+    @objc private func showOnboardingWindow() {
+        if onboardingController == nil {
+            let isMAS: Bool = {
+                #if MAS_BUILD
+                return true
+                #else
+                return false
+                #endif
+            }()
+            let model = OnboardingModel(
+                isMAS: isMAS,
+                onOpenSettings: { [weak self] in self?.showSettingsWindow() },
+                onQuit: { [weak self] in self?.quit() }
+            )
+            onboardingController = OnboardingWindowController(model: model)
+        }
+        onboardingController?.show()
+    }
+
+    private func showOnboardingOnLaunchIfNeeded() {
+        // App Review needs a visible, interactive window to verify the app (a
+        // menu-bar-only accessory reads as "nothing happened" and gets rejected
+        // under Guideline 2.1). Show it on the first launch and whenever a
+        // required permission is still missing; once everything is granted we
+        // stop nagging on every login-item launch. Reopen always re-shows it.
+        guard requiredPermissionsMissing() || !hasSeenOnboarding else {
             return
         }
-        showPermissionHelper()
+        hasSeenOnboarding = true
+        showOnboardingWindow()
     }
 
     private func requiredPermissionsMissing() -> Bool {
