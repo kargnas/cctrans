@@ -2,7 +2,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { onMount } from "svelte";
-  import { Check, Copy, Cpu, Eye, Languages, ShieldCheck, TriangleAlert, X } from "@lucide/svelte";
+  import { Check, Copy, Cpu, ExternalLink, Eye, Languages, ShieldCheck, TriangleAlert, X } from "@lucide/svelte";
   import { fallbackTranslationState, type ShowToastResult, type TranslationMode, type TranslationPreviewState } from "./lib/translation";
   import { fallbackState, type OpenRouterModelOption, type SettingsState, type TranslationProvider } from "./lib/settings";
 
@@ -18,6 +18,13 @@
   // leaves exactly enough room for the bubble plus its caret arrow on either side.
   const stagePadding = 18;
   const appleTranslationModelID = "apple/translation";
+  const imageSizeStorageKey = "cctrans.translationPopover.imageSize";
+  const imageSizeOptions = [
+    { value: "small", label: "S", width: 560 },
+    { value: "medium", label: "M", width: 680 },
+    { value: "large", label: "L", width: 820 }
+  ] as const;
+  type ImageSize = (typeof imageSizeOptions)[number]["value"];
 
   let isTauri = $state(false);
   let bubbleEl = $state<HTMLDivElement | undefined>();
@@ -51,6 +58,8 @@
   let countdownDuration = $state(fallbackTranslationState.toastDuration);
   let countdownRemaining = $state(fallbackTranslationState.toastDuration);
   let countdownPaused = $state(false);
+  let imageSize = $state<ImageSize>(readStoredImageSize());
+  let isOpeningPreview = $state(false);
   let pointerOverToast = false;
 
   const uiStrings = {
@@ -65,7 +74,8 @@
     close: "Close",
     copyCurrent: "Copy",
     copied: "Copied",
-    requestPermission: "Request Permission"
+    requestPermission: "Request Permission",
+    openInPreview: "Preview로 열기"
   };
   const targetLanguage = $derived(preview.targetLanguage);
   const modelName = $derived(preview.model.trim() || preview.providerTitle.trim() || "Unknown model");
@@ -74,6 +84,7 @@
   const modelMetadata = $derived([modelName, costLabel].filter(Boolean).join(" · "));
   const bodyText = $derived(visibleMode === "original" ? preview.originalText : preview.translatedText);
   const resultImageURL = $derived(visibleMode === "translated" ? preview.translatedImageURL?.trim() ?? "" : "");
+  const imageWindowWidth = $derived(resultImageURL ? imageSizeOptions.find((option) => option.value === imageSize)?.width ?? imageSizeOptions[0].width : 396);
   const loadingMessage = $derived(
     preview.originalText === "[screen screenshot]" || preview.originalText === "[selected screenshot]"
       ? uiStrings.translatingScreenshot
@@ -203,6 +214,7 @@
   $effect(() => {
     void bodyText;
     void resultImageURL;
+    void imageWindowWidth;
     void visibleMode;
     void modelMetadata;
     void modelWarning;
@@ -231,7 +243,7 @@
   function syncWindowHeight() {
     if (!isTauri || !bubbleEl) return;
     const height = bubbleEl.offsetHeight + stagePadding * 2;
-    void invoke("resize_translation_preview", { height, anchorBottom }).catch(() => {
+    void invoke("resize_translation_preview", { height, width: imageWindowWidth, anchorBottom }).catch(() => {
       // Window resize is best-effort; a stale fixed size still shows the translation.
     });
   }
@@ -548,6 +560,39 @@
     return "Local Model";
   }
 
+  function readStoredImageSize(): ImageSize {
+    try {
+      const stored = window.localStorage?.getItem(imageSizeStorageKey);
+      if (stored === "small" || stored === "medium" || stored === "large") return stored;
+    } catch {
+      // Local storage is best-effort in the Tauri WebView.
+    }
+    return "medium";
+  }
+
+  function setImageSize(next: ImageSize) {
+    imageSize = next;
+    try {
+      window.localStorage?.setItem(imageSizeStorageKey, next);
+    } catch {
+      // Persisting the size preference should not block resizing this toast.
+    }
+  }
+
+  async function openImageInPreview() {
+    if (!resultImageURL || isOpeningPreview) return;
+    isOpeningPreview = true;
+    try {
+      const response = await fetch(resultImageURL);
+      const buffer = await response.arrayBuffer();
+      await invoke("open_translation_image_in_preview", {
+        imageData: Array.from(new Uint8Array(buffer))
+      });
+    } finally {
+      isOpeningPreview = false;
+    }
+  }
+
   async function startDragging(event: MouseEvent) {
     const target = event.target instanceof Element ? event.target : null;
     if (!isTauri || event.button !== 0 || target?.closest("button, select")) return;
@@ -701,7 +746,15 @@
 
 </script>
 
-<main class="translation-stage" class:debug={debugMode} class:tall={tallMode} aria-label="Translation popup">
+<main
+  class="translation-stage"
+  class:debug={debugMode}
+  class:tall={tallMode}
+  class:image-small={resultImageURL && imageSize === "small"}
+  class:image-medium={resultImageURL && imageSize === "medium"}
+  class:image-large={resultImageURL && imageSize === "large"}
+  aria-label="Translation popup"
+>
   <div
     bind:this={bubbleEl}
     class="translation-bubble"
@@ -798,6 +851,27 @@
             </select>
           </label>
           <div class="action-row">
+            {#if resultImageURL}
+              <div class="image-size-control" role="group" aria-label="Image size">
+                {#each imageSizeOptions as option}
+                  <button
+                    type="button"
+                    class:active={imageSize === option.value}
+                    aria-label={`Show ${option.value} image`}
+                    onclick={() => setImageSize(option.value)}
+                  >
+                    {option.label}
+                  </button>
+                {/each}
+              </div>
+              <button
+                class="small-button preview-open-button"
+                disabled={isOpeningPreview}
+                onclick={openImageInPreview}
+              >
+                <ExternalLink size={13} />{uiStrings.openInPreview}
+              </button>
+            {/if}
             {#if modelOptions.length > 1}
               <label class="model-select-shell" aria-label="Model">
                 <Cpu size={16} />

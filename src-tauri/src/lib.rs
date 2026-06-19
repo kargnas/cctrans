@@ -10,7 +10,7 @@ use std::io::{BufRead, BufReader};
 use std::os::raw::{c_char, c_void};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use surfaces::{open_surface_window, AppSurface};
 #[cfg(target_os = "macos")]
 use tauri::ActivationPolicy;
@@ -1069,16 +1069,18 @@ fn close_translation_preview(app: AppHandle) -> Result<(), String> {
 fn resize_translation_preview(
     app: AppHandle,
     height: f64,
+    width: f64,
     anchor_bottom: bool,
 ) -> Result<(), String> {
     let window = app
         .get_webview_window("translation")
         .ok_or("Translation window is not available.")?;
     let clamped = height.clamp(TRANSLATION_WINDOW_HEIGHT, 720.0);
+    let width = width.clamp(TRANSLATION_WINDOW_WIDTH, 820.0);
     let scale = window.scale_factor().map_err(|error| error.to_string())?;
     let previous = window.outer_size().map_err(|error| error.to_string())?;
     window
-        .set_size(LogicalSize::new(TRANSLATION_WINDOW_WIDTH, clamped))
+        .set_size(LogicalSize::new(width, clamped))
         .map_err(|error| error.to_string())?;
     if anchor_bottom {
         // Keep the bottom edge (which points at the caret) fixed by moving the top up
@@ -1088,6 +1090,40 @@ fn resize_translation_preview(
         window
             .set_position(PhysicalPosition::new(position.x, position.y - grown))
             .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn open_translation_image_in_preview(app: AppHandle, image_data: Vec<u8>) -> Result<(), String> {
+    if image_data.len() < 8 || &image_data[..8] != b"\x89PNG\r\n\x1a\n" {
+        return Err("Translated image is not a PNG.".to_string());
+    }
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let dir = shared_data_dir(&app)?.join("image-preview");
+    fs::create_dir_all(&dir)
+        .map_err(|error| format!("Could not create {}: {error}", dir.display()))?;
+    let path = dir.join(format!("translated-{timestamp}.png"));
+    fs::write(&path, image_data)
+        .map_err(|error| format!("Could not write {}: {error}", path.display()))?;
+
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("/usr/bin/open")
+            .args(["-a", "Preview"])
+            .arg(&path)
+            .spawn()
+            .map_err(|error| format!("Could not open Preview: {error}"))?;
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Command::new("xdg-open")
+            .arg(&path)
+            .spawn()
+            .map_err(|error| format!("Could not open image viewer: {error}"))?;
     }
     Ok(())
 }
@@ -1504,6 +1540,7 @@ pub fn run() {
             open_screen_recording_settings,
             close_translation_preview,
             resize_translation_preview,
+            open_translation_image_in_preview,
             show_translation_toast,
             close_settings_window
         ])

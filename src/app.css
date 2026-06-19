@@ -1015,6 +1015,18 @@ kbd {
   min-height: 230px;
 }
 
+.translation-stage.image-small {
+  min-width: 560px;
+}
+
+.translation-stage.image-medium {
+  min-width: 680px;
+}
+
+.translation-stage.image-large {
+  min-width: 820px;
+}
+
 .translation-bubble {
   position: relative;
   width: 348px;
@@ -1027,6 +1039,18 @@ kbd {
   -webkit-backdrop-filter: blur(28px) saturate(160%);
   transform: translateZ(0);
   --countdown-progress: 100%;
+}
+
+.translation-stage.image-small .translation-bubble {
+  width: 512px;
+}
+
+.translation-stage.image-medium .translation-bubble {
+  width: 632px;
+}
+
+.translation-stage.image-large .translation-bubble {
+  width: 772px;
 }
 
 .translation-bubble.compact {
@@ -1310,7 +1334,7 @@ kbd {
 .translation-image-result img {
   display: block;
   width: 100%;
-  max-height: 560px;
+  max-height: 600px;
   object-fit: contain;
   border: 0.5px solid var(--bubble-border);
   border-radius: 8px;
@@ -1359,6 +1383,38 @@ kbd {
   align-items: center;
   gap: 6px;
   flex: 0 0 auto;
+}
+
+.image-size-control {
+  display: inline-flex;
+  height: 28px;
+  padding: 2px;
+  border: 1px solid var(--glass-border);
+  border-radius: 8px;
+  background: rgba(120, 120, 128, 0.1);
+}
+
+.image-size-control button {
+  min-width: 24px;
+  height: 22px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--secondary);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.image-size-control button.active {
+  background: var(--surface-solid);
+  color: var(--text);
+}
+
+.preview-open-button {
+  gap: 6px;
+  min-width: 112px;
+  padding: 0 10px;
 }
 
 .small-button,
