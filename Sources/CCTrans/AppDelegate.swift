@@ -73,6 +73,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // app itself; it drops a request file in the shared app-group dir and this
     // watcher serves it. See serveLoginRequests() / src-tauri request_login_item().
     private var loginRequestWatcher: DispatchSourceFileSystemObject?
+    // The toast's "Translate Screenshot" action drops a trigger file here; the host
+    // runs the capture as the outer app (correct Screen Recording attribution).
+    private var screenshotRequestWatcher: DispatchSourceFileSystemObject?
     #endif
     #if !MAS_BUILD
     // Sparkle needs a strong reference for the whole app lifetime; menu-bar apps
@@ -119,6 +122,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Serve "Open at Login" toggles from the sandboxed toast here, so
         // SMAppService registers the outer CCTrans.app rather than the inner helper.
         startLoginRequestWatcher()
+        // Route the toast's screenshot-translate action to THIS process so the
+        // capture is attributed to the outer CCTrans.app, not the inner helper.
+        startScreenshotRequestWatcher()
         // Seed the status cache before the toast can read it, so its first
         // settings load is a plain file read, not an IPC round-trip.
         writeLoginStateCache(LoginItemController.status())
@@ -198,6 +204,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         permissionStatusTimer?.invalidate()
         #if MAS_BUILD
         loginRequestWatcher?.cancel()
+        screenshotRequestWatcher?.cancel()
         #endif
     }
 
@@ -312,6 +319,69 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // the next settings load reflects the toggle without a round-trip.
             writeLoginStateCache(state)
             try? FileManager.default.removeItem(at: url)
+        }
+    }
+
+    private struct ScreenshotRequest: Decodable {
+        let createdAt: Double
+    }
+
+    private static var screenshotRequestsDirectoryURL: URL {
+        SharedAppStorage.directoryURL.appendingPathComponent("screenshot-requests", isDirectory: true)
+    }
+
+    // Mirrors startLoginRequestWatcher: the toast publishes a trigger via atomic
+    // rename, so watch the directory (a file-level descriptor would be invalidated).
+    private func startScreenshotRequestWatcher() {
+        let dir = AppDelegate.screenshotRequestsDirectoryURL
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        // Serve a trigger that landed before the watcher armed.
+        serveScreenshotRequests()
+        let descriptor = open(dir.path, O_EVTONLY)
+        guard descriptor >= 0 else { return }
+        let source = DispatchSource.makeFileSystemObjectSource(
+            fileDescriptor: descriptor,
+            eventMask: [.write, .delete, .rename],
+            queue: .main
+        )
+        source.setEventHandler { [weak self] in
+            self?.serveScreenshotRequests()
+        }
+        source.setCancelHandler {
+            close(descriptor)
+        }
+        source.resume()
+        screenshotRequestWatcher = source
+    }
+
+    // Drains screenshot triggers and runs the capture HERE, where ScreenCaptureKit
+    // is attributed to the outer CCTrans.app. translateScreenshot() ignores re-entry
+    // while a selection is on screen, so collapsing several triggers into one call
+    // is safe.
+    private func serveScreenshotRequests() {
+        let dir = AppDelegate.screenshotRequestsDirectoryURL
+        guard let entries = try? FileManager.default.contentsOfDirectory(
+            at: dir,
+            includingPropertiesForKeys: nil
+        ) else {
+            return
+        }
+        let now = Date().timeIntervalSince1970
+        var shouldCapture = false
+        for url in entries
+        where url.lastPathComponent.hasPrefix("req-") && url.pathExtension == "json" {
+            defer { try? FileManager.default.removeItem(at: url) }
+            // Mirror the Rust 30s stale guard: a trigger left by a crashed/timed-out
+            // run must not fire a capture on a later, unrelated launch.
+            guard let data = try? Data(contentsOf: url),
+                  let request = try? JSONDecoder().decode(ScreenshotRequest.self, from: data),
+                  now - request.createdAt <= 30 else {
+                continue
+            }
+            shouldCapture = true
+        }
+        if shouldCapture {
+            translateScreenshot()
         }
     }
     #endif

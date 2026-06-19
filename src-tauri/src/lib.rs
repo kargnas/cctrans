@@ -794,11 +794,7 @@ fn perform_settings_action(
             ),
             "Text Test",
         ),
-        "translateScreenshot" => run_legacy_cli(
-            &app,
-            legacy_cli_args(&settings, &["--screenshot-once"]),
-            "Screenshot Translation",
-        ),
+        "translateScreenshot" => request_screenshot_translation(&app, &settings),
         "showRequestLogs" => open_surface_action(&app, AppSurface::RequestLogs, "Request Logs"),
         "showLocalModelSetup" => {
             open_surface_action(&app, AppSurface::LocalModelSetup, "Model Setup")
@@ -1627,6 +1623,13 @@ fn helper_launches_dir() -> Option<PathBuf> {
 // request_login_item().
 fn login_requests_dir() -> Option<PathBuf> {
     mas_shared_data_dir().map(|dir| dir.join("login-requests"))
+}
+
+// Screenshot-translate triggers get their own subdir. Only present in the MAS
+// sandbox, where the capture cannot run in-helper without registering the wrong
+// bundle in Screen Recording; off-sandbox this is None and the CLI path runs.
+fn screenshot_requests_dir() -> Option<PathBuf> {
+    mas_shared_data_dir().map(|dir| dir.join("screenshot-requests"))
 }
 
 static CLAIMED_LEASE: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
@@ -3430,6 +3433,57 @@ fn request_login_item(
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ScreenshotRequest {
+    created_at: f64,
+}
+
+// Screenshot translation must capture the screen as the OUTER CCTrans.app for TCC
+// to attribute Screen Recording to the right bundle. In the MAS sandbox the only
+// spawnable capture binary (cctrans-cli) lives inside the inner CCTransTauri.app,
+// so a capture there registers the wrong app. Hand the intent to the resident
+// Swift host instead — it runs ScreenCaptureKit as the outer app and shows the
+// toast. Fire-and-forget: the host owns the selection UI and result, so no
+// response is awaited. Off-sandbox legacy_binary_path resolves the OUTER binary
+// directly, so the CLI path already attributes correctly.
+fn request_screenshot_translation(
+    app: &AppHandle,
+    settings: &Settings,
+) -> Result<ActionResult, String> {
+    let Some(dir) = screenshot_requests_dir() else {
+        return run_legacy_cli(
+            app,
+            legacy_cli_args(settings, &["--screenshot-once"]),
+            "Screenshot Translation",
+        );
+    };
+
+    fs::create_dir_all(&dir)
+        .map_err(|error| format!("Could not create screenshot-requests dir: {error}"))?;
+    let created_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|error| format!("Clock error: {error}"))?
+        .as_secs_f64();
+    let nonce = login_request_nonce();
+    let body = serde_json::to_string_pretty(&ScreenshotRequest { created_at })
+        .map_err(|error| format!("Could not encode screenshot request: {error}"))?;
+
+    // Atomic temp + rename so the host watcher never reads a half-written trigger.
+    let tmp_path = dir.join(format!(".tmp-req-{nonce}.json"));
+    let request_path = dir.join(format!("req-{nonce}.json"));
+    fs::write(&tmp_path, &body)
+        .map_err(|error| format!("Could not write screenshot request: {error}"))?;
+    fs::rename(&tmp_path, &request_path)
+        .map_err(|error| format!("Could not publish screenshot request: {error}"))?;
+
+    Ok(action_result(
+        "Screenshot Translation",
+        "Screenshot translation started in CCTrans.",
+        true,
+    ))
 }
 
 fn run_login_item_cli(app: &AppHandle, args: &[&str]) -> Result<LoginItemState, String> {
