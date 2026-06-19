@@ -69,6 +69,13 @@ After completed development or documentation work is verified and committed, run
   window). It is the only local provider in the MAS variant; the direct build
   offers it alongside Hy-MT2.
 - OpenRouter handles non-local LLM translation and screenshot translation.
+- Image-output screenshot translation is best-effort on image-generation
+  models. Prompts must ask for exact sharp UI text, valid Unicode Hangul
+  syllables, native Korean system fonts (`Apple SD Gothic Neo` / `Noto Sans KR`),
+  and rasterized text-layer-like compositing instead of hand-painted/model-painted
+  Hangul strokes. If Korean glyph smearing remains unacceptable, stop doing
+  prompt-only retries and implement a real OCR + Korean font text-layer
+  rendering pipeline.
 - Preserve `Cmd+C` double press and `Shift+Cmd+2` shortcuts.
 - Every persisted setting is code-default plus user override:
   - persist only values different from `TranslatorSettings()`;
