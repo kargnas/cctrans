@@ -375,6 +375,38 @@ struct OpenRouterModelOption {
         skip_serializing_if = "Option::is_none"
     )]
     daily_token_rank: Option<i64>,
+    #[serde(
+        default,
+        rename = "throughputRank",
+        skip_serializing_if = "Option::is_none"
+    )]
+    throughput_rank: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tokenizer: Option<String>,
+    #[serde(
+        default,
+        rename = "maxCompletionTokens",
+        skip_serializing_if = "Option::is_none"
+    )]
+    max_completion_tokens: Option<i64>,
+    #[serde(
+        default,
+        rename = "isModerated",
+        skip_serializing_if = "Option::is_none"
+    )]
+    is_moderated: Option<bool>,
+    #[serde(
+        default,
+        rename = "knowledgeCutoff",
+        skip_serializing_if = "Option::is_none"
+    )]
+    knowledge_cutoff: Option<String>,
+    #[serde(
+        default,
+        rename = "expirationDate",
+        skip_serializing_if = "Option::is_none"
+    )]
+    expiration_date: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -396,6 +428,12 @@ struct OpenRouterAPIModel {
     architecture: OpenRouterAPIArchitecture,
     #[serde(default)]
     supported_parameters: Vec<String>,
+    #[serde(default)]
+    top_provider: OpenRouterAPITopProvider,
+    #[serde(default)]
+    knowledge_cutoff: Option<String>,
+    #[serde(default)]
+    expiration_date: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -409,9 +447,19 @@ struct OpenRouterAPIPricing {
 #[derive(Debug, Default, Deserialize)]
 struct OpenRouterAPIArchitecture {
     #[serde(default)]
+    tokenizer: Option<String>,
+    #[serde(default)]
     input_modalities: Vec<String>,
     #[serde(default)]
     output_modalities: Vec<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct OpenRouterAPITopProvider {
+    #[serde(default)]
+    max_completion_tokens: Option<i64>,
+    #[serde(default)]
+    is_moderated: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2860,6 +2908,9 @@ fn fetch_openrouter_models(api_key: Option<&str>) -> Result<Vec<OpenRouterModelO
         .into_iter()
         .filter_map(openrouter_model_from_api)
         .collect::<Vec<_>>();
+    if let Ok(rankings) = fetch_openrouter_throughput_top_rankings(&agent) {
+        apply_openrouter_throughput_rankings(&mut models, &rankings);
+    }
     if let Some(api_key) = api_key {
         if let Ok(rankings) = fetch_openrouter_daily_top_rankings(&agent, api_key) {
             apply_openrouter_daily_rankings(&mut models, &rankings);
@@ -2875,6 +2926,43 @@ fn fetch_openrouter_models(api_key: Option<&str>) -> Result<Vec<OpenRouterModelO
             .then_with(|| left.label.cmp(&right.label))
     });
     Ok(models)
+}
+
+fn fetch_openrouter_throughput_top_rankings(
+    agent: &ureq::Agent,
+) -> Result<BTreeMap<String, i64>, String> {
+    let response = agent
+        .get("https://openrouter.ai/api/v1/models?sort=throughput-high-to-low")
+        .set("User-Agent", "CCTrans/0.1")
+        .call()
+        .map_err(|error| format!("Could not refresh OpenRouter throughput rankings: {error}"))?;
+    let payload: OpenRouterModelsResponse = response
+        .into_json()
+        .map_err(|error| format!("Could not decode OpenRouter throughput rankings: {error}"))?;
+    Ok(openrouter_throughput_top_rankings(payload.data, 20))
+}
+
+fn openrouter_throughput_top_rankings(
+    models: Vec<OpenRouterAPIModel>,
+    limit: usize,
+) -> BTreeMap<String, i64> {
+    models
+        .into_iter()
+        .filter(|model| {
+            model
+                .architecture
+                .output_modalities
+                .iter()
+                .any(|value| value.eq_ignore_ascii_case("text"))
+        })
+        .filter_map(|model| {
+            let id = model.id.trim().to_string();
+            (!id.is_empty()).then_some(id)
+        })
+        .take(limit)
+        .enumerate()
+        .map(|(index, id)| (id, (index + 1) as i64))
+        .collect()
 }
 
 fn fetch_openrouter_daily_top_rankings(
@@ -2934,6 +3022,15 @@ fn apply_openrouter_daily_rankings(
     }
 }
 
+fn apply_openrouter_throughput_rankings(
+    models: &mut [OpenRouterModelOption],
+    rankings: &BTreeMap<String, i64>,
+) {
+    for model in models {
+        model.throughput_rank = rankings.get(&model.value).copied();
+    }
+}
+
 fn ranking_total_tokens(value: &serde_json::Value) -> u128 {
     match value {
         serde_json::Value::String(value) => value.parse::<u128>().unwrap_or(0),
@@ -2989,7 +3086,19 @@ fn openrouter_model_from_api(model: OpenRouterAPIModel) -> Option<OpenRouterMode
         is_free,
         is_recommended,
         daily_token_rank: None,
+        throughput_rank: None,
+        tokenizer: normalized_optional_string(model.architecture.tokenizer),
+        max_completion_tokens: model.top_provider.max_completion_tokens,
+        is_moderated: model.top_provider.is_moderated,
+        knowledge_cutoff: normalized_optional_string(model.knowledge_cutoff),
+        expiration_date: normalized_optional_string(model.expiration_date),
     })
+}
+
+fn normalized_optional_string(value: Option<String>) -> Option<String> {
+    value
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 fn normalized_modalities(values: Vec<String>) -> Vec<String> {
@@ -3068,6 +3177,12 @@ fn openrouter_model(
         is_free,
         is_recommended,
         daily_token_rank: None,
+        throughput_rank: None,
+        tokenizer: None,
+        max_completion_tokens: None,
+        is_moderated: None,
+        knowledge_cutoff: None,
+        expiration_date: None,
     }
 }
 
@@ -4048,10 +4163,17 @@ mod tests {
                 completion: Some(serde_json::Value::String("0".to_string())),
             },
             architecture: OpenRouterAPIArchitecture {
+                tokenizer: Some("ExampleTok".to_string()),
                 input_modalities: vec!["text".to_string(), "image".to_string()],
                 output_modalities: vec!["text".to_string()],
             },
             supported_parameters: vec!["reasoning".to_string()],
+            top_provider: OpenRouterAPITopProvider {
+                max_completion_tokens: Some(32_768),
+                is_moderated: Some(true),
+            },
+            knowledge_cutoff: Some("2025-01-01".to_string()),
+            expiration_date: Some("2026-12-31".to_string()),
         })
         .unwrap();
 
@@ -4063,6 +4185,12 @@ mod tests {
             vec!["image".to_string(), "text".to_string()]
         );
         assert_eq!(model.daily_token_rank, None);
+        assert_eq!(model.throughput_rank, None);
+        assert_eq!(model.tokenizer.as_deref(), Some("ExampleTok"));
+        assert_eq!(model.max_completion_tokens, Some(32_768));
+        assert_eq!(model.is_moderated, Some(true));
+        assert_eq!(model.knowledge_cutoff.as_deref(), Some("2025-01-01"));
+        assert_eq!(model.expiration_date.as_deref(), Some("2026-12-31"));
         assert!(model.is_free);
         assert!(model.is_reasoning);
         assert_eq!(model.note.as_deref(), Some("Free event"));
@@ -4080,10 +4208,14 @@ mod tests {
                 completion: Some(serde_json::Value::String("0".to_string())),
             },
             architecture: OpenRouterAPIArchitecture {
+                tokenizer: Some("Router".to_string()),
                 input_modalities: vec!["text".to_string(), "image".to_string()],
                 output_modalities: vec!["text".to_string()],
             },
             supported_parameters: Vec::new(),
+            top_provider: OpenRouterAPITopProvider::default(),
+            knowledge_cutoff: None,
+            expiration_date: None,
         })
         .unwrap();
 
@@ -4100,10 +4232,14 @@ mod tests {
                 completion: Some(serde_json::Value::String("-1".to_string())),
             },
             architecture: OpenRouterAPIArchitecture {
+                tokenizer: Some("Router".to_string()),
                 input_modalities: vec!["text".to_string(), "image".to_string()],
                 output_modalities: vec!["text".to_string(), "image".to_string()],
             },
             supported_parameters: Vec::new(),
+            top_provider: OpenRouterAPITopProvider::default(),
+            knowledge_cutoff: None,
+            expiration_date: None,
         })
         .unwrap();
 
@@ -4111,6 +4247,54 @@ mod tests {
         assert_eq!(auto_router.prompt_price_per_million, -1_000_000.0);
         assert_eq!(auto_router.completion_price_per_million, -1_000_000.0);
         assert!(auto_router.note.is_none());
+    }
+
+    #[test]
+    fn throughput_rankings_keep_first_twenty_text_models_and_apply_to_models() {
+        let models = (0..22)
+            .map(|index| OpenRouterAPIModel {
+                id: format!("provider/fast-{index:02}"),
+                name: format!("Fast {index:02}"),
+                created: None,
+                context_length: None,
+                pricing: OpenRouterAPIPricing::default(),
+                architecture: OpenRouterAPIArchitecture {
+                    tokenizer: None,
+                    input_modalities: vec!["text".to_string()],
+                    output_modalities: if index == 1 {
+                        vec!["image".to_string()]
+                    } else {
+                        vec!["text".to_string()]
+                    },
+                },
+                supported_parameters: Vec::new(),
+                top_provider: OpenRouterAPITopProvider::default(),
+                knowledge_cutoff: None,
+                expiration_date: None,
+            })
+            .collect::<Vec<_>>();
+
+        let rankings = openrouter_throughput_top_rankings(models, 20);
+        assert_eq!(rankings.get("provider/fast-00"), Some(&1));
+        assert!(!rankings.contains_key("provider/fast-01"));
+        assert_eq!(rankings.get("provider/fast-20"), Some(&20));
+        assert!(!rankings.contains_key("provider/fast-21"));
+
+        let mut models = vec![openrouter_model(
+            "Fast",
+            "provider/fast-00",
+            None,
+            0.1,
+            0.2,
+            &["text"],
+            "2026-05-11",
+            1000,
+            false,
+            false,
+            false,
+        )];
+        apply_openrouter_throughput_rankings(&mut models, &rankings);
+        assert_eq!(models[0].throughput_rank, Some(1));
     }
 
     #[test]

@@ -38,7 +38,7 @@
   } from "./lib/settings";
 
   type Section = "general" | "models" | "shortcuts" | "excluded" | "advanced" | "info";
-  type OpenRouterSortKey = "model" | "releaseDate" | "dailyRank" | "inputPrice" | "outputPrice" | "context";
+  type OpenRouterSortKey = "model" | "releaseDate" | "dailyRank" | "throughputRank" | "inputPrice" | "outputPrice" | "context" | "maxCompletion";
   type SortDirection = "asc" | "desc";
   type OpenRouterAPIKeyState = {
     configured: boolean;
@@ -545,8 +545,21 @@
       `${formatContextWindow(model.contextWindow)} context`
     ];
     if (isDailyTopModel(model)) parts.push(`Top #${model.dailyTokenRank}`);
+    if (isThroughputTopModel(model)) parts.push(`Fast #${model.throughputRank}`);
     if (model.isReasoning) parts.push("Reasoning");
     if (model.isRecommended) parts.push("Recommended");
+    return parts.join(" · ");
+  }
+
+  function officialModelMetaText(model: OpenRouterModelOption) {
+    const parts = [];
+    if (model.tokenizer) parts.push(`Tokenizer ${model.tokenizer}`);
+    if (typeof model.maxCompletionTokens === "number" && model.maxCompletionTokens > 0) {
+      parts.push(`Max out ${formatContextWindow(model.maxCompletionTokens)}`);
+    }
+    if (model.isModerated === true) parts.push("Moderated");
+    if (model.knowledgeCutoff) parts.push(`Cutoff ${model.knowledgeCutoff}`);
+    if (model.expirationDate) parts.push(`Expires ${model.expirationDate}`);
     return parts.join(" · ");
   }
 
@@ -572,6 +585,9 @@
       if (openRouterSort.key === "dailyRank") {
         return compareOptionalDailyRank(left, right, openRouterSort.direction);
       }
+      if (openRouterSort.key === "throughputRank") {
+        return compareOptionalThroughputRank(left, right, openRouterSort.direction);
+      }
       if (openRouterSort.key === "inputPrice") {
         return (
           sortablePrice(left.promptPricePerMillion) - sortablePrice(right.promptPricePerMillion) ||
@@ -585,6 +601,15 @@
           sortablePrice(left.promptPricePerMillion) - sortablePrice(right.promptPricePerMillion) ||
           left.label.localeCompare(right.label)
         ) * multiplier;
+      }
+      if (openRouterSort.key === "maxCompletion") {
+        return compareOptionalNumber(
+          left.maxCompletionTokens,
+          right.maxCompletionTokens,
+          openRouterSort.direction,
+          left.label,
+          right.label
+        );
       }
       return (left.contextWindow - right.contextWindow || left.label.localeCompare(right.label)) * multiplier;
     });
@@ -605,14 +630,60 @@
     return (leftRank - rightRank || left.label.localeCompare(right.label)) * multiplier;
   }
 
+  function compareOptionalThroughputRank(left: OpenRouterModelOption, right: OpenRouterModelOption, direction: SortDirection) {
+    const leftRank = sortableThroughputRank(left);
+    const rightRank = sortableThroughputRank(right);
+    const leftMissing = leftRank === Number.MAX_SAFE_INTEGER;
+    const rightMissing = rightRank === Number.MAX_SAFE_INTEGER;
+    if (leftMissing !== rightMissing) return leftMissing ? 1 : -1;
+    const multiplier = direction === "asc" ? 1 : -1;
+    return (leftRank - rightRank || left.label.localeCompare(right.label)) * multiplier;
+  }
+
+  function compareOptionalNumber(
+    leftValue: number | null | undefined,
+    rightValue: number | null | undefined,
+    direction: SortDirection,
+    leftLabel: string,
+    rightLabel: string
+  ) {
+    const leftNumber = typeof leftValue === "number" && Number.isFinite(leftValue) ? leftValue : Number.MAX_SAFE_INTEGER;
+    const rightNumber = typeof rightValue === "number" && Number.isFinite(rightValue) ? rightValue : Number.MAX_SAFE_INTEGER;
+    const leftMissing = leftNumber === Number.MAX_SAFE_INTEGER;
+    const rightMissing = rightNumber === Number.MAX_SAFE_INTEGER;
+    if (leftMissing !== rightMissing) return leftMissing ? 1 : -1;
+    const multiplier = direction === "asc" ? 1 : -1;
+    return (leftNumber - rightNumber || leftLabel.localeCompare(rightLabel)) * multiplier;
+  }
+
   function sortableDailyRank(model: OpenRouterModelOption) {
     return isDailyTopModel(model) ? model.dailyTokenRank ?? Number.MAX_SAFE_INTEGER : Number.MAX_SAFE_INTEGER;
+  }
+
+  function sortableThroughputRank(model: OpenRouterModelOption) {
+    return isThroughputTopModel(model) ? model.throughputRank ?? Number.MAX_SAFE_INTEGER : Number.MAX_SAFE_INTEGER;
   }
 
   function isDailyTopModel(model: OpenRouterModelOption) {
     return typeof model.dailyTokenRank === "number" &&
       model.dailyTokenRank >= 1 &&
       model.dailyTokenRank <= 20;
+  }
+
+  function isThroughputTopModel(model: OpenRouterModelOption) {
+    return typeof model.throughputRank === "number" &&
+      model.throughputRank >= 1 &&
+      model.throughputRank <= 20;
+  }
+
+  function isActiveOpenRouterTextModel(model: OpenRouterModelOption) {
+    return settingsState?.settings.provider === "openRouter" &&
+      settingsState.settings.openRouterTextModel === model.value;
+  }
+
+  function openRouterUseLabel(model: OpenRouterModelOption) {
+    if (!isActiveOpenRouterTextModel(model)) return "Use this";
+    return model.value === settingsState?.defaults.openRouterTextModel ? "Default" : "Selected";
   }
 
   function visibleOpenRouterModels(models: OpenRouterModelOption[]) {
@@ -671,11 +742,13 @@
     if (openRouterSort.key !== key) return "Sort";
     if (key === "releaseDate") return openRouterSort.direction === "desc" ? "Newest" : "Oldest";
     if (key === "dailyRank") return openRouterSort.direction === "asc" ? "#1 First" : "#20 First";
+    if (key === "throughputRank") return openRouterSort.direction === "asc" ? "#1 First" : "#20 First";
+    if (key === "maxCompletion") return openRouterSort.direction === "desc" ? "Large" : "Small";
     return openRouterSort.direction === "asc" ? "Asc" : "Desc";
   }
 
   function defaultOpenRouterSortDirection(key: OpenRouterSortKey): SortDirection {
-    return key === "releaseDate" ? "desc" : "asc";
+    return key === "releaseDate" || key === "maxCompletion" ? "desc" : "asc";
   }
 
 </script>
@@ -1147,6 +1220,7 @@
               </button>
             </label>
             <div class="openrouter-filter-panel" aria-label="OpenRouter model filters">
+              <p class="filter-caption">Price filter uses USD per 1M tokens.</p>
               <label>
                 <span>Mode</span>
                 <select
@@ -1158,7 +1232,7 @@
                 </select>
               </label>
               <label>
-                <span>Input min $/1M</span>
+                <span>Input min (USD)</span>
                 <input
                   type="number"
                   min="0"
@@ -1173,7 +1247,7 @@
                 />
               </label>
               <label>
-                <span>Input max $/1M</span>
+                <span>Input max (USD)</span>
                 <input
                   type="number"
                   min="0"
@@ -1188,7 +1262,7 @@
                 />
               </label>
               <label>
-                <span>Output min $/1M</span>
+                <span>Output min (USD)</span>
                 <input
                   type="number"
                   min="0"
@@ -1203,7 +1277,7 @@
                 />
               </label>
               <label>
-                <span>Output max $/1M</span>
+                <span>Output max (USD)</span>
                 <input
                   type="number"
                   min="0"
@@ -1236,6 +1310,9 @@
               <button type="button" class:active={openRouterSort.key === "dailyRank"} onclick={() => updateOpenRouterSort("dailyRank")}>
                 Top <ArrowUpDown size={11} /><span class="sort-state">{sortLabel("dailyRank")}</span>
               </button>
+              <button type="button" class:active={openRouterSort.key === "throughputRank"} onclick={() => updateOpenRouterSort("throughputRank")}>
+                Fast <ArrowUpDown size={11} /><span class="sort-state">{sortLabel("throughputRank")}</span>
+              </button>
               <button type="button" class:active={openRouterSort.key === "inputPrice"} onclick={() => updateOpenRouterSort("inputPrice")}>
                 Input <ArrowUpDown size={11} /><span class="sort-state">{sortLabel("inputPrice")}</span>
               </button>
@@ -1245,12 +1322,16 @@
               <button type="button" class:active={openRouterSort.key === "context"} onclick={() => updateOpenRouterSort("context")}>
                 Context <ArrowUpDown size={11} /><span class="sort-state">{sortLabel("context")}</span>
               </button>
+              <button type="button" class:active={openRouterSort.key === "maxCompletion"} onclick={() => updateOpenRouterSort("maxCompletion")}>
+                Max out <ArrowUpDown size={11} /><span class="sort-state">{sortLabel("maxCompletion")}</span>
+              </button>
             </div>
             {#each visibleOpenRouterModels(settingsState.options.openRouterModels) as model}
               <div
                 class="model-row openrouter-row"
                 class:selected-model={settingsState.settings.provider === "openRouter" && settingsState.settings.openRouterTextModel === model.value}
                 class:top-ranked={isDailyTopModel(model)}
+                class:fast-ranked={isThroughputTopModel(model)}
               >
                 <button
                   class="favorite-button"
@@ -1264,9 +1345,13 @@
                   <strong>{model.label}</strong>
                   <span class="model-id">{model.value}</span>
                   <span>{modalityText(model)} · {formatContextWindow(model.contextWindow)} context · {model.releaseDate}</span>
-                  {#if model.isRecommended || model.isFree || model.isReasoning || isDailyTopModel(model)}
+                  {#if officialModelMetaText(model)}
+                    <span class="official-meta">{officialModelMetaText(model)}</span>
+                  {/if}
+                  {#if model.isRecommended || model.isFree || model.isReasoning || isDailyTopModel(model) || isThroughputTopModel(model)}
                     <div class="model-badges">
                       {#if isDailyTopModel(model)}<em class="top-rank">Top #{model.dailyTokenRank}</em>{/if}
+                      {#if isThroughputTopModel(model)}<em class="fast-rank">Fast #{model.throughputRank}</em>{/if}
                       {#if model.isRecommended}<em>Recommended</em>{/if}
                       {#if model.isFree}<em class="free-event">Free event</em>{/if}
                       {#if model.isReasoning}<em>Reasoning</em>{/if}
@@ -1278,7 +1363,18 @@
                   <span>Out {formatUnitPrice(model.completionPricePerMillion)}</span>
                 </div>
                 <div class="model-actions">
-                  <button class="inline-action primary-use" onclick={() => useOpenRouterTextModel(model.value)}><Cloud size={13} />Use this</button>
+                  <button
+                    class="inline-action primary-use"
+                    class:selected-use={isActiveOpenRouterTextModel(model)}
+                    disabled={isActiveOpenRouterTextModel(model)}
+                    onclick={() => useOpenRouterTextModel(model.value)}
+                  >
+                    {#if isActiveOpenRouterTextModel(model)}
+                      <Check size={13} />{openRouterUseLabel(model)}
+                    {:else}
+                      <Cloud size={13} />Use this
+                    {/if}
+                  </button>
                   {#if model.modalities.includes("image")}
                     <button class="inline-action" onclick={() => useOpenRouterVisionModel(model.value)}>Vision</button>
                   {/if}

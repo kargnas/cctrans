@@ -61,6 +61,12 @@ export type OpenRouterModelOption = {
   isFree: boolean;
   isRecommended: boolean;
   dailyTokenRank?: number | null;
+  throughputRank?: number | null;
+  tokenizer?: string | null;
+  maxCompletionTokens?: number | null;
+  isModerated?: boolean | null;
+  knowledgeCutoff?: string | null;
+  expirationDate?: string | null;
 };
 
 export type PermissionStatus = {
