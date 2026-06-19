@@ -121,6 +121,26 @@ final class AppleTranslationHost: ObservableObject, AppleTranslationBacking {
         }
         armConfiguration(source: next.source, target: next.target)
     }
+
+    /// Turns an opaque `prepareTranslation()` failure into an actionable message
+    /// when the cause is a missing on-device pack. This host view is invisible,
+    /// so Apple's download sheet cannot present here and prepare just throws;
+    /// steer the user to the onboarding window, where the download can run.
+    fileprivate func describePrepareFailure(_ error: any Error) async -> any Error {
+        guard let config = configuration, let source = config.source, let target = config.target else {
+            return error
+        }
+        let status = await LanguageAvailability().status(from: source, to: target)
+        guard status != .installed else {
+            return error
+        }
+        let name = Locale.current.localizedString(
+            forLanguageCode: target.languageCode?.identifier ?? ""
+        ) ?? "the selected language"
+        return TranslationError.localModelUnavailable(
+            "\(name) translation isn’t downloaded. Open CCTrans ▸ Getting Started… and tap Download to install it."
+        )
+    }
 }
 
 private struct AppleTranslationHostView: View {
@@ -130,12 +150,15 @@ private struct AppleTranslationHostView: View {
         Color.clear
             .frame(width: 1, height: 1)
             .translationTask(host.configuration) { session in
-                // Downloads language assets on first use (system confirmation
-                // dialog); returns immediately when already installed.
+                // Downloads language assets on first use; returns immediately
+                // when already installed. This view is invisible, so a missing
+                // pack cannot show the system download sheet — prepare throws,
+                // and we map it to an actionable error pointing at onboarding.
                 do {
                     try await session.prepareTranslation()
                 } catch {
-                    await host.failPendingForActiveConfiguration(with: error)
+                    let mapped = await host.describePrepareFailure(error)
+                    await host.failPendingForActiveConfiguration(with: mapped)
                     return
                 }
                 while let item = await host.takeNextForActiveConfiguration() {

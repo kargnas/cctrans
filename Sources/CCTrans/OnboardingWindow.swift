@@ -27,13 +27,23 @@ final class OnboardingModel: ObservableObject {
 
     @Published var permissions: [Permission] = []
     let isMAS: Bool
+    // Non-nil only when Apple Translation is the active provider; lets onboarding
+    // offer a language-pack download from this visible window (the invisible
+    // keep-alive host cannot present Apple's download sheet).
+    let translationDownload: TranslationDownloadModel?
     let onOpenSettings: () -> Void
     let onQuit: () -> Void
     // Set by the window controller so the SwiftUI "Done" button can close the window.
     var onDismiss: () -> Void = {}
 
-    init(isMAS: Bool, onOpenSettings: @escaping () -> Void, onQuit: @escaping () -> Void) {
+    init(
+        isMAS: Bool,
+        translationDownload: TranslationDownloadModel?,
+        onOpenSettings: @escaping () -> Void,
+        onQuit: @escaping () -> Void
+    ) {
         self.isMAS = isMAS
+        self.translationDownload = translationDownload
         self.onOpenSettings = onOpenSettings
         self.onQuit = onQuit
         refresh()
@@ -133,6 +143,10 @@ struct OnboardingView: View {
                 .padding(6)
             }
 
+            if let translationDownload = model.translationDownload {
+                TranslationDownloadSection(model: translationDownload)
+            }
+
             Spacer(minLength: 0)
 
             HStack {
@@ -145,7 +159,8 @@ struct OnboardingView: View {
             }
         }
         .padding(20)
-        .frame(width: 460, height: 540)
+        // Taller when the translation row is present so nothing clips.
+        .frame(width: 460, height: model.translationDownload == nil ? 540 : 620)
     }
 }
 

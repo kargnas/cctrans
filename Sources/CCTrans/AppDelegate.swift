@@ -1388,8 +1388,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 return false
                 #endif
             }()
+            let settings = settingsStore.settings
+            // Apple Translation is the only provider whose on-device language
+            // pack can be missing; surface a download control just for it.
+            let translationDownload: TranslationDownloadModel? = {
+                guard settings.provider == .appleTranslation else { return nil }
+                let targetName = TranslationLanguage.normalizedName(settings.targetLanguage)
+                guard let targetCode = TranslationLanguage.options
+                    .first(where: { $0.name == targetName })?.code else { return nil }
+                let sourceCode = TranslationLanguage.options
+                    .first(where: { $0.name == TranslationLanguage.normalizedName(settings.sourceLanguage) })?.code
+                // A pack query needs a concrete counterpart; Auto has no code, so
+                // assume English (or Korean when the target itself is English).
+                let counterpart = sourceCode ?? (targetCode == "en" ? "ko" : "en")
+                return TranslationDownloadModel(
+                    source: Locale.Language(identifier: counterpart),
+                    target: Locale.Language(identifier: targetCode),
+                    targetDisplayName: targetName
+                )
+            }()
             let model = OnboardingModel(
                 isMAS: isMAS,
+                translationDownload: translationDownload,
                 onOpenSettings: { [weak self] in self?.showSettingsWindow() },
                 onQuit: { [weak self] in self?.quit() }
             )
