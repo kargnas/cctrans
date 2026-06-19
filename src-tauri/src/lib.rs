@@ -481,7 +481,7 @@ struct OpenRouterAPIKeyState {
     path: String,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct PermissionStatus {
     keyboard: bool,
     accessibility: bool,
@@ -2202,7 +2202,7 @@ fn state_from_disk(app: &AppHandle) -> Result<SettingsState, String> {
         settings,
         defaults,
         options: settings_options(app),
-        permissions: permission_status(),
+        permissions: permission_status(app),
         login_item: login_item_state_impl(app).unwrap_or_else(|error| {
             LoginItemState::unsupported(format!("Login item status unavailable: {error}"))
         }),
@@ -3831,26 +3831,40 @@ fn open_external_url(url: &str) -> std::io::Result<()> {
     }
 }
 
-fn permission_status() -> PermissionStatus {
-    #[cfg(target_os = "macos")]
-    {
-        let accessibility = unsafe { AXIsProcessTrusted() };
-        let keyboard = unsafe { CGPreflightListenEventAccess() || accessibility };
-        let screen = unsafe { CGPreflightScreenCaptureAccess() };
-        PermissionStatus {
-            keyboard,
-            accessibility,
-            screen,
+fn permission_status(app: &AppHandle) -> PermissionStatus {
+    // The settings/permission UI runs in THIS helper, a different TCC subject than
+    // the outer CCTrans.app that actually holds these grants (it owns the CGEventTap
+    // and ScreenCaptureKit). Preflighting here reports the helper's always-empty
+    // state, so read the status the host publishes to the shared dir instead. Fall
+    // back to a local preflight only when the cache is absent (cold start / dev).
+    if let Ok(dir) = shared_data_dir(app) {
+        if let Ok(data) = fs::read_to_string(dir.join("permission-status.json")) {
+            if let Ok(status) = serde_json::from_str::<PermissionStatus>(&data) {
+                return status;
+            }
         }
     }
+    permission_status_local()
+}
 
-    #[cfg(not(target_os = "macos"))]
-    {
-        PermissionStatus {
-            keyboard: false,
-            accessibility: false,
-            screen: false,
-        }
+#[cfg(target_os = "macos")]
+fn permission_status_local() -> PermissionStatus {
+    let accessibility = unsafe { AXIsProcessTrusted() };
+    let keyboard = unsafe { CGPreflightListenEventAccess() || accessibility };
+    let screen = unsafe { CGPreflightScreenCaptureAccess() };
+    PermissionStatus {
+        keyboard,
+        accessibility,
+        screen,
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn permission_status_local() -> PermissionStatus {
+    PermissionStatus {
+        keyboard: false,
+        accessibility: false,
+        screen: false,
     }
 }
 

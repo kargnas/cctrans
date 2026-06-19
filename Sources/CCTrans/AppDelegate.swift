@@ -59,6 +59,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var lastReadyLocalModelID: String?
     private var isUserQuitting = false
     private var hasStarted = false
+    private var permissionStatusTimer: Timer?
+    // Last status written to permission-status.json; only rewrite the shared file
+    // when a grant actually flips, so the steady-state poll never churns the shared
+    // directory watchers (SettingsStore / the Tauri helper) every tick.
+    private var lastWrittenPermissionStatus: [String: Bool]?
     private var lifetimeActivity: NSObjectProtocol?
     #if MAS_BUILD
     // Login-item registration must run in THIS process. SMAppService.mainApp
@@ -132,6 +137,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         startPersistentToastProcess()
         print("CCTrans ready. Press Cmd+C twice to translate clipboard text.")
         reportKeyboardPermissionStatus(requestIfMissing: false)
+        // Publish our (the outer app's) real permission state for the helper UI,
+        // then keep it current — the helper runs in a different bundle and cannot
+        // read our TCC grants itself.
+        writePermissionStatusCache()
+        startPermissionStatusTimer()
         githubStarPrompter.scheduleIfEligible(
             hasWorkspaceRoot: resolveWorkspaceRootURL() != nil,
             hasCompletedInitialSetup: settingsStore.settings.hasCompletedLocalModelSelection
@@ -185,6 +195,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // The persistent toast process has no Dock icon and survives window hide, so it would
         // linger as a zombie unless the menu-bar app kills it explicitly on quit.
         terminateTauriHelper(matching: "--translation-preview")
+        permissionStatusTimer?.invalidate()
         #if MAS_BUILD
         loginRequestWatcher?.cancel()
         #endif
@@ -1455,6 +1466,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         print("Keyboard permission needed. Enable Input Monitoring or Accessibility for CCTrans, then relaunch the app.")
+    }
+
+    // The settings/permission UI lives in the Tauri helper, a different TCC subject
+    // than this outer CCTrans.app that actually holds the grants (it owns the
+    // CGEventTap and ScreenCaptureKit). The helper cannot preflight our permissions,
+    // so publish them to the shared dir for it to read back.
+    private func writePermissionStatusCache() {
+        let accessibility = AXIsProcessTrusted()
+        let status: [String: Bool] = [
+            "keyboard": CGPreflightListenEventAccess() || accessibility,
+            "accessibility": accessibility,
+            "screen": CGPreflightScreenCaptureAccess(),
+        ]
+        guard status != lastWrittenPermissionStatus else { return }
+        guard let data = try? JSONSerialization.data(withJSONObject: status, options: [.sortedKeys]) else {
+            return
+        }
+        try? SharedAppStorage.ensureDirectoryExists()
+        try? data.write(to: SharedAppStorage.fileURL("permission-status.json"), options: .atomic)
+        lastWrittenPermissionStatus = status
+    }
+
+    // macOS posts no notification when the user toggles a grant in System Settings,
+    // and this accessory app never gains focus to observe the return, so a short
+    // poll is the only way the helper's "Refresh" reflects a just-granted permission.
+    // The write is change-gated, so a steady state costs three preflight syscalls per
+    // tick and no disk/watcher activity.
+    private func startPermissionStatusTimer() {
+        let timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+            self?.writePermissionStatusCache()
+        }
+        timer.tolerance = 0.5
+        permissionStatusTimer = timer
     }
 
     @objc private func quit() {
