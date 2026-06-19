@@ -60,6 +60,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var isUserQuitting = false
     private var hasStarted = false
     private var lifetimeActivity: NSObjectProtocol?
+    #if MAS_BUILD
+    // Login-item registration must run in THIS process. SMAppService.mainApp
+    // registers Bundle.main, and only the outer CCTrans.app host resolves
+    // Bundle.main to the outer bundle. Under App Sandbox the Tauri toast's own
+    // Bundle.main is the inner CCTransTauri.app, so it cannot register the outer
+    // app itself; it drops a request file in the shared app-group dir and this
+    // watcher serves it. See serveLoginRequests() / src-tauri request_login_item().
+    private var loginRequestWatcher: DispatchSourceFileSystemObject?
+    #endif
     #if !MAS_BUILD
     // Sparkle needs a strong reference for the whole app lifetime; menu-bar apps
     // must keep this in AppDelegate, not in a transient controller.
@@ -101,6 +110,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settingsStore.onExternalChange = { [weak self] in
             self?.rebuildMenu()
         }
+        #if MAS_BUILD
+        // Serve "Open at Login" toggles from the sandboxed toast here, so
+        // SMAppService registers the outer CCTrans.app rather than the inner helper.
+        startLoginRequestWatcher()
+        // Seed the status cache before the toast can read it, so its first
+        // settings load is a plain file read, not an IPC round-trip.
+        writeLoginStateCache(LoginItemController.status())
+        #endif
         configureStatusItem()
         localModelWarmupNotifier.requestAuthorization()
         startScreenshotHotKey()
@@ -168,7 +185,125 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // The persistent toast process has no Dock icon and survives window hide, so it would
         // linger as a zombie unless the menu-bar app kills it explicitly on quit.
         terminateTauriHelper(matching: "--translation-preview")
+        #if MAS_BUILD
+        loginRequestWatcher?.cancel()
+        #endif
     }
+
+    #if MAS_BUILD
+    private struct LoginRequest: Decodable {
+        let action: String
+        let enabled: Bool?
+        let nonce: String
+        let createdAt: Double
+    }
+
+    private static var loginRequestsDirectoryURL: URL {
+        SharedAppStorage.directoryURL.appendingPathComponent("login-requests", isDirectory: true)
+    }
+
+    // The toast reads status from this cache instead of round-tripping on every
+    // settings load. The host keeps it fresh: seeded on launch, rewritten after
+    // each served request.
+    private static var loginStateCacheURL: URL {
+        SharedAppStorage.fileURL("login-state.json")
+    }
+
+    private func writeLoginStateCache(_ state: LoginItemState) {
+        guard let encoded = try? JSONEncoder().encode(state) else { return }
+        try? encoded.write(to: AppDelegate.loginStateCacheURL, options: .atomic)
+    }
+
+    // Watches the shared login-requests dir (not a single file) because the toast
+    // publishes each request via atomic rename, which would invalidate a
+    // file-level descriptor. Mirrors SettingsStore.startWatchingSharedDirectory.
+    private func startLoginRequestWatcher() {
+        let dir = AppDelegate.loginRequestsDirectoryURL
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        // Serve a request that landed before the watcher armed; the directory
+        // source only fires on future events.
+        serveLoginRequests()
+        let descriptor = open(dir.path, O_EVTONLY)
+        guard descriptor >= 0 else { return }
+        let source = DispatchSource.makeFileSystemObjectSource(
+            fileDescriptor: descriptor,
+            eventMask: [.write, .delete, .rename],
+            queue: .main
+        )
+        source.setEventHandler { [weak self] in
+            self?.serveLoginRequests()
+        }
+        source.setCancelHandler {
+            close(descriptor)
+        }
+        source.resume()
+        loginRequestWatcher = source
+    }
+
+    // Drains pending login requests by running SMAppService HERE, where
+    // Bundle.main is the outer CCTrans.app, then writes the resulting state back
+    // for the toast to read. That is the whole point of routing login through the
+    // host: registration targets the outer app, not the inner helper.
+    private func serveLoginRequests() {
+        let dir = AppDelegate.loginRequestsDirectoryURL
+        guard let entries = try? FileManager.default.contentsOfDirectory(
+            at: dir,
+            includingPropertiesForKeys: [.contentModificationDateKey]
+        ) else {
+            return
+        }
+        let now = Date().timeIntervalSince1970
+        // Sweep responses the toast never read (its poll timed out before our
+        // write landed). Without this they would accumulate, since the req-* stale
+        // guard below never touches resp-* files.
+        for url in entries
+        where url.lastPathComponent.hasPrefix("resp-") && url.pathExtension == "json" {
+            let mtime = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?
+                .contentModificationDate?.timeIntervalSince1970 ?? 0
+            if now - mtime > 30 {
+                try? FileManager.default.removeItem(at: url)
+            }
+        }
+        for url in entries
+        where url.lastPathComponent.hasPrefix("req-") && url.pathExtension == "json" {
+            guard let data = try? Data(contentsOf: url),
+                  let request = try? JSONDecoder().decode(LoginRequest.self, from: data) else {
+                try? FileManager.default.removeItem(at: url)
+                continue
+            }
+            // Mirror the Rust 30s stale guard: a request whose response the toast
+            // never read (timeout, crash) must not act on a later, unrelated run.
+            if now - request.createdAt > 30 {
+                try? FileManager.default.removeItem(at: url)
+                continue
+            }
+            let state: LoginItemState
+            switch request.action {
+            case "set":
+                do {
+                    state = try LoginItemController.setEnabled(request.enabled ?? false)
+                } catch {
+                    var failed = LoginItemController.status()
+                    failed.message = "Could not update login item: \(error.localizedDescription)"
+                    state = failed
+                }
+            default:
+                state = LoginItemController.status()
+            }
+            let responseURL = dir.appendingPathComponent(
+                "resp-\(request.nonce).json",
+                isDirectory: false
+            )
+            if let encoded = try? JSONEncoder().encode(state) {
+                try? encoded.write(to: responseURL, options: .atomic)
+            }
+            // Keep the status cache in lockstep with what we just registered, so
+            // the next settings load reflects the toggle without a round-trip.
+            writeLoginStateCache(state)
+            try? FileManager.default.removeItem(at: url)
+        }
+    }
+    #endif
 
     private func startUpdaterIfBundled() {
         #if !MAS_BUILD

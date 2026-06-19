@@ -169,6 +169,22 @@ Notes:
    NSWorkspace-launched helper — which cannot inherit and must be a full
    sandboxed app — a fork-exec'd child can and must inherit.
 
+   **Login-item exception** (fixed 2026-06-19): `cctrans-cli` lives *inside*
+   `CCTransTauri.app/Contents/MacOS/`, so its `Bundle.main` resolves to the
+   inner helper (`as.kargn.cctrans.helper`), not the outer `CCTrans.app`
+   (`as.kargn.cctrans`). Retranslation and benchmarks don't care — they never
+   read `Bundle.main`. But `SMAppService.mainApp` registers `Bundle.main`, so
+   running `--set-launch-at-login` through `cctrans-cli` registered the **inner
+   helper** as the login item ("CCTransTauri will open at login" instead of
+   "CCTrans"). Login is the one command that must run where `Bundle.main` is the
+   outer app. Fix: the sandboxed toast no longer spawns `cctrans-cli` for login;
+   it writes a request into the shared App Group dir (`login-requests/req-*.json`,
+   atomic temp+rename) and the resident outer Swift host serves it via
+   `SMAppService` and writes back `resp-<nonce>.json` (`AppDelegate.serveLoginRequests`
+   ↔ `request_login_item()` in `src-tauri/src/lib.rs`). `cctrans-cli` stays for
+   retranslation/benchmarks; only login moved off it. Off-MAS the CLI path is
+   unchanged (it already resolves the outer binary, so `Bundle.main` is correct).
+
 ## 4. Build + package pipeline (`scripts/build-mas.zsh`, new)
 
 Mirror `build-app.zsh`, with these differences:

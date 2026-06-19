@@ -1625,6 +1625,15 @@ fn helper_launches_dir() -> Option<PathBuf> {
     mas_shared_data_dir().map(|dir| dir.join("helper-launches"))
 }
 
+// Login requests get their OWN subdir, NOT helper-launches: there the claimed-*
+// files double as the helper shutdown lease, so reusing it would collide. The
+// resident Swift host watches this dir and serves each request with
+// SMAppService, where Bundle.main is the outer CCTrans.app. See
+// request_login_item().
+fn login_requests_dir() -> Option<PathBuf> {
+    mas_shared_data_dir().map(|dir| dir.join("login-requests"))
+}
+
 static CLAIMED_LEASE: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
 
 fn claimed_lease_path() -> Option<&'static PathBuf> {
@@ -3319,17 +3328,117 @@ fn run_legacy_cli(app: &AppHandle, args: Vec<String>, title: &str) -> Result<Act
 }
 
 fn login_item_state_impl(app: &AppHandle) -> Result<LoginItemState, String> {
+    // Status is read on every settings load (state_from_disk runs from 6 sync
+    // commands). Serve it from the host-written cache file — a cheap read like
+    // settings-overrides.json — so the frequent path never round-trips or blocks
+    // on IPC. Only a missing cache (cold start) falls back to a one-shot request,
+    // which also reseeds the cache host-side.
+    if let Some(dir) = mas_shared_data_dir() {
+        let cache = dir.join("login-state.json");
+        if let Ok(data) = fs::read_to_string(&cache) {
+            if let Ok(state) = serde_json::from_str::<LoginItemState>(&data) {
+                return Ok(state);
+            }
+        }
+        return request_login_item(app, "status", None);
+    }
     run_login_item_cli(app, &["--login-item-status"])
 }
 
 fn set_launch_at_login_impl(app: &AppHandle, enabled: bool) -> Result<LoginItemState, String> {
-    run_login_item_cli(
-        app,
-        &[
-            "--set-launch-at-login",
-            if enabled { "true" } else { "false" },
-        ],
-    )
+    request_login_item(app, "set", Some(enabled))
+}
+
+// A correlation id for one login round-trip. Avoids pulling in a uuid crate:
+// pid + epoch nanos + a process-local counter is unique enough to name a
+// request/response pair in the shared dir.
+fn login_request_nonce() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_nanos())
+        .unwrap_or(0);
+    format!("{}-{nanos}-{n}", std::process::id())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LoginRequest {
+    action: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    enabled: Option<bool>,
+    nonce: String,
+    created_at: f64,
+}
+
+// Login-item registration MUST run in the outer CCTrans.app process, because
+// SMAppService.mainApp registers Bundle.main. In the MAS sandbox THIS process
+// (the Tauri helper) is the inner CCTransTauri.app, and the cctrans-cli helper
+// it would otherwise spawn also lives inside the inner bundle — both register
+// the WRONG app. So hand the intent to the resident Swift host over the shared
+// app-group dir and read back the state it produces. Off-sandbox there is no
+// group dir; the CLI path already resolves the outer binary, so fall through.
+fn request_login_item(
+    app: &AppHandle,
+    action: &str,
+    enabled: Option<bool>,
+) -> Result<LoginItemState, String> {
+    let Some(dir) = login_requests_dir() else {
+        let args: Vec<&str> = match enabled {
+            Some(true) => vec!["--set-launch-at-login", "true"],
+            Some(false) => vec!["--set-launch-at-login", "false"],
+            None => vec!["--login-item-status"],
+        };
+        return run_login_item_cli(app, &args);
+    };
+
+    fs::create_dir_all(&dir)
+        .map_err(|error| format!("Could not create login-requests dir: {error}"))?;
+    let created_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|error| format!("Clock error: {error}"))?
+        .as_secs_f64();
+    let nonce = login_request_nonce();
+    let request = LoginRequest {
+        action: action.to_string(),
+        enabled,
+        nonce: nonce.clone(),
+        created_at,
+    };
+    let body = serde_json::to_string_pretty(&request)
+        .map_err(|error| format!("Could not encode login request: {error}"))?;
+
+    // Publish atomically (temp + rename) so the host's directory watcher never
+    // reads a half-written request — same discipline as claim_launch_file. The
+    // ".tmp-req-" prefix is ignored by the host's "req-" filter mid-write.
+    let tmp_path = dir.join(format!(".tmp-req-{nonce}.json"));
+    let request_path = dir.join(format!("req-{nonce}.json"));
+    fs::write(&tmp_path, &body)
+        .map_err(|error| format!("Could not write login request: {error}"))?;
+    fs::rename(&tmp_path, &request_path)
+        .map_err(|error| format!("Could not publish login request: {error}"))?;
+
+    // The host is resident and normally answers within a few ms; the 3s ceiling
+    // is a safety net so a missing host surfaces an error instead of hanging.
+    let response_path = dir.join(format!("resp-{nonce}.json"));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    loop {
+        if let Ok(data) = fs::read_to_string(&response_path) {
+            let parsed = serde_json::from_str::<LoginItemState>(&data);
+            let _ = fs::remove_file(&response_path);
+            let _ = fs::remove_file(&request_path);
+            return parsed.map_err(|error| {
+                format!("Could not parse login item state: {error}. Output: {data}")
+            });
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = fs::remove_file(&request_path);
+            return Err("Login host did not respond".to_string());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
 }
 
 fn run_login_item_cli(app: &AppHandle, args: &[&str]) -> Result<LoginItemState, String> {
