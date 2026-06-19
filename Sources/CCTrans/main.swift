@@ -136,7 +136,9 @@ if CommandLine.arguments.contains("--benchmark-local-models") {
     }
     let samples = Array(TranslationBenchmarkSamples.samples(sourceLanguage: sourceLanguage).prefix(sampleLimit))
     let credentials = CredentialsProvider().credentials()
-    let service = TranslationService()
+    let service = TranslationService(
+        openRouterModelCapabilities: SharedOpenRouterModelCache.capabilities(for:)
+    )
 
     for model in models {
         print("## \(model.title) [\(model.id)]")
@@ -179,7 +181,10 @@ func runAppleTranslationOneShot(text: String, settings: TranslatorSettings, emit
     window.contentView = AppleTranslationHost.shared.makeHostingView()
     window.orderFrontRegardless()
 
-    let service = TranslationService(appleBackend: AppleTranslationHost.shared)
+    let service = TranslationService(
+        appleBackend: AppleTranslationHost.shared,
+        openRouterModelCapabilities: SharedOpenRouterModelCache.capabilities(for:)
+    )
     let credentials = CredentialsProvider().credentials()
     Task { @MainActor in
         do {
@@ -223,7 +228,9 @@ if CommandLine.arguments.contains("--translate-text-once") {
     let onPartial: (@Sendable (String) -> Void)? = emitPartials
         ? { @Sendable partial in emitPreviewStreamLine(["partial": partial]) }
         : nil
-    let result = try await TranslationService().translateText(
+    let result = try await TranslationService(
+        openRouterModelCapabilities: SharedOpenRouterModelCache.capabilities(for:)
+    ).translateText(
         text,
         settings: settings,
         credentials: credentials,
@@ -254,7 +261,9 @@ if CommandLine.arguments.contains("--screenshot-once") {
     let settings = oneShotSettings(defaultProvider: .openRouter)
     let credentials = CredentialsProvider().credentials()
     let data = try await ScreenshotCapture.captureSelectedRegionPNG()
-    let result = try await TranslationService().translateImage(pngData: data, settings: settings, credentials: credentials)
+    let result = try await TranslationService(
+        openRouterModelCapabilities: SharedOpenRouterModelCache.capabilities(for:)
+    ).translateImage(pngData: data, settings: settings, credentials: credentials)
     print(result.text)
     exit(0)
 }

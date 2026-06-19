@@ -16,7 +16,7 @@ export type SettingField =
   | "favoriteOpenRouterModels";
 
 export type OpenRouterModelFilter = {
-  modalityMode: "textOrVision" | "all";
+  modalityMode: "textOrVision" | "others";
   minPromptPricePerMillion: number;
   maxPromptPricePerMillion: number;
   minCompletionPricePerMillion: number;
@@ -55,6 +55,7 @@ export type OpenRouterModelOption = {
   promptPricePerMillion: number;
   completionPricePerMillion: number;
   modalities: string[];
+  outputModalities?: string[];
   releaseDate: string;
   contextWindow: number;
   isReasoning: boolean;

@@ -11,6 +11,7 @@ public struct TranslationResult: Equatable, Sendable {
     public let sourceLanguage: String?
     public let targetLanguage: String?
     public let detectedSourceLanguage: String?
+    public let imageURL: String?
 
     public init(
         text: String,
@@ -20,7 +21,8 @@ public struct TranslationResult: Equatable, Sendable {
         usage: TranslationUsage? = nil,
         sourceLanguage: String? = nil,
         targetLanguage: String? = nil,
-        detectedSourceLanguage: String? = nil
+        detectedSourceLanguage: String? = nil,
+        imageURL: String? = nil
     ) {
         self.text = text
         self.description = description?.nilIfBlank
@@ -30,6 +32,7 @@ public struct TranslationResult: Equatable, Sendable {
         self.sourceLanguage = sourceLanguage
         self.targetLanguage = targetLanguage
         self.detectedSourceLanguage = detectedSourceLanguage
+        self.imageURL = imageURL?.nilIfBlank
     }
 }
 
@@ -83,10 +86,16 @@ public final class TranslationService: @unchecked Sendable {
     private let session: URLSession
     private let localBackendGate = LocalBackendExecutionGate()
     private let appleBackend: (any AppleTranslationBacking)?
+    private let openRouterModelCapabilities: @Sendable (String) -> OpenRouterModelCapabilities?
 
-    public init(session: URLSession = .shared, appleBackend: (any AppleTranslationBacking)? = nil) {
+    public init(
+        session: URLSession = .shared,
+        appleBackend: (any AppleTranslationBacking)? = nil,
+        openRouterModelCapabilities: (@Sendable (String) -> OpenRouterModelCapabilities?)? = nil
+    ) {
         self.session = session
         self.appleBackend = appleBackend
+        self.openRouterModelCapabilities = openRouterModelCapabilities ?? { OpenRouterModelCatalog.capabilities(for: $0) }
     }
 
     public func translateText(
@@ -175,22 +184,31 @@ public final class TranslationService: @unchecked Sendable {
         guard !pngData.isEmpty else {
             throw TranslationError.invalidImageData
         }
-        guard OpenRouterModelCatalog.model(id: settings.openRouterVisionModel)?.supportsVision != false else {
+        let modelCapabilities = openRouterModelCapabilities(settings.openRouterVisionModel)
+        guard modelCapabilities?.supportsVision != false else {
             throw TranslationError.unsupportedImageModel(settings.openRouterVisionModel)
         }
 
         let key = try require(credentials.openRouterAPIKey, named: "OPENROUTER_API_KEY")
-        let prompt = """
-        Screenshot text -> \(settings.targetLanguage)
+        let wantsImageOutput = modelCapabilities?.supportsImageOutput == true
+        let prompt = wantsImageOutput
+            ? """
+            Translate the visible text in this screenshot to \(settings.targetLanguage).
 
-        Fill the response JSON fields:
-        - translation: translated visible text from the screenshot
-        - description: null
+            Return an image that preserves the screenshot layout as much as possible while replacing visible text with the translation.
+            If you also return text, keep it to a short summary of the rendered translation.
+            """
+            : """
+            Screenshot text -> \(settings.targetLanguage)
 
-        Preserve useful line breaks.
-        """
+            Fill the response JSON fields:
+            - translation: translated visible text from the screenshot
+            - description: null
 
-        let body: [String: Any] = [
+            Preserve useful line breaks.
+            """
+
+        var body: [String: Any] = [
             "model": settings.openRouterVisionModel,
             "messages": [
                 [
@@ -215,8 +233,12 @@ public final class TranslationService: @unchecked Sendable {
             ],
             "max_tokens": maxTokens(for: settings.openRouterVisionModel),
             "temperature": 0.1,
-            "response_format": translationSchema,
         ]
+        if let requestedModalities = modelCapabilities?.requestedOutputModalities {
+            body["modalities"] = requestedModalities
+        } else {
+            body["response_format"] = translationSchema
+        }
 
         let response = try await postOpenRouter(body: body, apiKey: key)
         return TranslationResult(
@@ -224,7 +246,8 @@ public final class TranslationService: @unchecked Sendable {
             description: response.description,
             providerTitle: TranslationProvider.openRouter.title,
             model: settings.openRouterVisionModel,
-            usage: response.usage
+            usage: response.usage,
+            imageURL: response.imageURL
         )
     }
 
@@ -290,7 +313,7 @@ public final class TranslationService: @unchecked Sendable {
         // image itself instead of silently switching to a different vision model.
         let model = settings.openRouterTextModel
         if contextImagePNGData != nil,
-           OpenRouterModelCatalog.model(id: model)?.supportsVision == false {
+           openRouterModelCapabilities(model)?.supportsVision == false {
             throw TranslationError.unsupportedImageModel(model)
         }
         // Stream only the plain-text path: a copied selection with no attached screen image, and only
@@ -600,7 +623,7 @@ public final class TranslationService: @unchecked Sendable {
             throw TranslationError.missingTranslation("The streamed response did not contain any text.")
         }
         onPartial(translation)
-        return OpenRouterCompletion(translation: translation, description: nil, usage: usage)
+        return OpenRouterCompletion(translation: translation, description: nil, usage: usage, imageURL: nil)
     }
 
     private func send(_ request: URLRequest) async throws -> Data {
@@ -622,25 +645,57 @@ public final class TranslationService: @unchecked Sendable {
         guard
             let dictionary = object as? [String: Any],
             let choices = dictionary["choices"] as? [[String: Any]],
-            let message = choices.first?["message"] as? [String: Any],
-            let content = message["content"] as? String
+            let message = choices.first?["message"] as? [String: Any]
         else {
             throw TranslationError.missingTranslation(String(data: data, encoding: .utf8) ?? "")
         }
 
         let usage = extractOpenRouterUsage(from: dictionary)
+        let content = message["content"] as? String ?? ""
+        let imageURL = extractOpenRouterImageURL(from: message)
+        guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || imageURL != nil else {
+            throw TranslationError.missingTranslation(String(data: data, encoding: .utf8) ?? "")
+        }
+
         guard let contentData = content.data(using: .utf8),
               let parsed = try? JSONSerialization.jsonObject(with: contentData) as? [String: Any],
               let translation = parsed["translation"] as? String
         else {
-            return OpenRouterCompletion(translation: cleanTranslation(content), description: nil, usage: usage)
+            let translation = cleanTranslation(content)
+            return OpenRouterCompletion(
+                translation: translation.isEmpty && imageURL != nil ? "Image result" : translation,
+                description: nil,
+                usage: usage,
+                imageURL: imageURL
+            )
         }
 
         return OpenRouterCompletion(
             translation: cleanTranslation(translation),
             description: clean(parsed["description"] as? String),
-            usage: usage
+            usage: usage,
+            imageURL: imageURL
         )
+    }
+
+    private func extractOpenRouterImageURL(from message: [String: Any]) -> String? {
+        guard let images = message["images"] as? [[String: Any]] else {
+            return nil
+        }
+
+        for image in images {
+            if let directURL = clean(image["url"] as? String) {
+                return directURL
+            }
+            for key in ["imageUrl", "image_url"] {
+                if let container = image[key] as? [String: Any],
+                   let url = clean(container["url"] as? String) {
+                    return url
+                }
+            }
+        }
+
+        return nil
     }
 
     private func extractOpenRouterUsage(from dictionary: [String: Any]) -> TranslationUsage? {
@@ -906,6 +961,7 @@ private struct OpenRouterCompletion {
     let translation: String
     let description: String?
     let usage: TranslationUsage?
+    let imageURL: String?
 }
 
 private final class LocalBackendExecutionGate: @unchecked Sendable {

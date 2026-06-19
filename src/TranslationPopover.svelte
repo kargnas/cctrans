@@ -73,6 +73,7 @@
   const costLabel = $derived(formatCostCredits(preview.costCredits));
   const modelMetadata = $derived([modelName, costLabel].filter(Boolean).join(" · "));
   const bodyText = $derived(visibleMode === "original" ? preview.originalText : preview.translatedText);
+  const resultImageURL = $derived(visibleMode === "translated" ? preview.translatedImageURL?.trim() ?? "" : "");
   const loadingMessage = $derived(
     preview.originalText === "[screen screenshot]" || preview.originalText === "[selected screenshot]"
       ? uiStrings.translatingScreenshot
@@ -201,6 +202,7 @@
 
   $effect(() => {
     void bodyText;
+    void resultImageURL;
     void visibleMode;
     void modelMetadata;
     void modelWarning;
@@ -297,6 +299,7 @@
       const changed =
         next.mode !== preview.mode ||
         next.translatedText !== preview.translatedText ||
+        next.translatedImageURL !== preview.translatedImageURL ||
         next.errorText !== preview.errorText ||
         next.originalText !== preview.originalText ||
         next.targetLanguage !== preview.targetLanguage ||
@@ -334,6 +337,7 @@
     const favoriteOpenRouterModels = state.options.openRouterModels.filter(
       (option) =>
         option.value === state.settings.openRouterTextModel ||
+        option.value === state.settings.openRouterVisionModel ||
         state.settings.favoriteOpenRouterModels.includes(option.value)
     );
     modelOptions = [
@@ -768,7 +772,16 @@
           </div>
         </footer>
       {:else}
-        <p bind:this={translationTextEl} class:original={visibleMode === "original"} class="translation-text">{bodyText}</p>
+        {#if resultImageURL}
+          <figure class="translation-image-result">
+            <img src={resultImageURL} alt="Translated screenshot result" />
+            {#if bodyText && bodyText !== "Image result"}
+              <figcaption>{bodyText}</figcaption>
+            {/if}
+          </figure>
+        {:else}
+          <p bind:this={translationTextEl} class:original={visibleMode === "original"} class="translation-text">{bodyText}</p>
+        {/if}
         <div class="model-meta-strip" class:warn={modelWarning.length > 0}>
           <span class="model-meta-main"><Cpu size={12} /><span>{modelMetadata}</span></span>
           {#if modelWarning}

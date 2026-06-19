@@ -6,6 +6,7 @@ export type TranslationPreviewState = {
   targetLanguage: string;
   originalText: string;
   translatedText: string;
+  translatedImageURL?: string | null;
   errorText: string | null;
   providerTitle: string;
   model: string;
@@ -27,6 +28,7 @@ export const fallbackTranslationState: TranslationPreviewState = {
   targetLanguage: "Korean",
   originalText: "The future belongs to those who believe in the beauty of their dreams.",
   translatedText: "미래는 자신의 꿈의 아름다움을 믿는 사람들의 것이다.",
+  translatedImageURL: null,
   errorText: null,
   providerTitle: "Local Model",
   model: "Hy-MT2 1.8B 4-bit",

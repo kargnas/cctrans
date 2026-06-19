@@ -6,6 +6,7 @@ public struct OpenRouterModelSpec: Codable, Equatable, Sendable, Identifiable {
     public var promptPricePerMillion: Double
     public var completionPricePerMillion: Double
     public var inputModalities: [String]
+    public var outputModalities: [String]
     public var releaseDate: String
     public var contextWindow: Int
     public var isReasoning: Bool
@@ -18,6 +19,7 @@ public struct OpenRouterModelSpec: Codable, Equatable, Sendable, Identifiable {
         promptPricePerMillion: Double,
         completionPricePerMillion: Double,
         inputModalities: [String],
+        outputModalities: [String] = ["text"],
         releaseDate: String,
         contextWindow: Int,
         isReasoning: Bool,
@@ -29,6 +31,7 @@ public struct OpenRouterModelSpec: Codable, Equatable, Sendable, Identifiable {
         self.promptPricePerMillion = promptPricePerMillion
         self.completionPricePerMillion = completionPricePerMillion
         self.inputModalities = inputModalities
+        self.outputModalities = outputModalities
         self.releaseDate = releaseDate
         self.contextWindow = contextWindow
         self.isReasoning = isReasoning
@@ -38,6 +41,17 @@ public struct OpenRouterModelSpec: Codable, Equatable, Sendable, Identifiable {
 
     public var supportsVision: Bool {
         inputModalities.contains("image")
+    }
+
+    public var supportsImageOutput: Bool {
+        outputModalities.contains("image")
+    }
+
+    public var capabilities: OpenRouterModelCapabilities {
+        OpenRouterModelCapabilities(
+            inputModalities: inputModalities,
+            outputModalities: outputModalities
+        )
     }
 
     public var modalityTitle: String {
@@ -61,6 +75,41 @@ public struct OpenRouterModelSpec: Codable, Equatable, Sendable, Identifiable {
             trimmed.removeLast()
         }
         return trimmed
+    }
+}
+
+public struct OpenRouterModelCapabilities: Equatable, Sendable {
+    public var inputModalities: [String]
+    public var outputModalities: [String]
+
+    public init(inputModalities: [String], outputModalities: [String]) {
+        self.inputModalities = Self.normalized(inputModalities)
+        let output = Self.normalized(outputModalities)
+        self.outputModalities = output.isEmpty ? ["text"] : output
+    }
+
+    public var supportsVision: Bool {
+        inputModalities.contains("image")
+    }
+
+    public var supportsImageOutput: Bool {
+        outputModalities.contains("image")
+    }
+
+    public var requestedOutputModalities: [String]? {
+        guard supportsImageOutput else {
+            return nil
+        }
+        if outputModalities.contains("text") {
+            return ["image", "text"]
+        }
+        return ["image"]
+    }
+
+    private static func normalized(_ values: [String]) -> [String] {
+        Array(Set(values.map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+            .filter { !$0.isEmpty }))
+            .sorted()
     }
 }
 
@@ -236,6 +285,10 @@ public enum OpenRouterModelCatalog {
 
     public static func model(id: String) -> OpenRouterModelSpec? {
         models.first { $0.id == id }
+    }
+
+    public static func capabilities(for id: String) -> OpenRouterModelCapabilities? {
+        model(id: id)?.capabilities
     }
 
     public static func title(for id: String) -> String {

@@ -137,6 +137,49 @@ struct OpenRouterScreenContextTests {
         #expect(result.model == "google/gemini-3.1-flash-lite")
     }
 
+    @Test func screenshotTranslationRequestsAndParsesImageOutputWhenVisionFallbackCanGenerateImages() async throws {
+        let settings = TranslatorSettings(
+            provider: .openRouter,
+            openRouterTextModel: "deepseek/deepseek-v4-flash",
+            openRouterVisionModel: "google/gemini-3.1-flash-image-preview"
+        )
+        let imageURL = "data:image/png;base64,translated"
+        let capabilities = OpenRouterModelCapabilities(
+            inputModalities: ["text", "image"],
+            outputModalities: ["image", "text"]
+        )
+        let service = TranslationService(
+            session: stubbedOpenRouterSession { request in
+                let body = try #require(request.jsonBody)
+                #expect(body["model"] as? String == "google/gemini-3.1-flash-image-preview")
+                #expect(body["response_format"] == nil)
+                #expect(body["modalities"] as? [String] == ["image", "text"])
+
+                let messages = try #require(body["messages"] as? [[String: Any]])
+                let userMessage = try #require(messages.last)
+                let content = try #require(userMessage["content"] as? [[String: Any]])
+                let prompt = try #require(content.compactMap { $0["text"] as? String }.first)
+                #expect(prompt.contains("Return an image"))
+                #expect(content.contains { $0["type"] as? String == "image_url" })
+
+                return openRouterImageResponse(content: "Rendered translation", imageURL: imageURL)
+            },
+            openRouterModelCapabilities: { modelID in
+                modelID == "google/gemini-3.1-flash-image-preview" ? capabilities : nil
+            }
+        )
+
+        let result = try await service.translateImage(
+            pngData: Data([0x89, 0x50, 0x4E, 0x47]),
+            settings: settings,
+            credentials: TranslatorCredentials(openRouterAPIKey: "test-key", huggingFaceToken: nil)
+        )
+
+        #expect(result.text == "Rendered translation")
+        #expect(result.imageURL == imageURL)
+        #expect(result.model == "google/gemini-3.1-flash-image-preview")
+    }
+
     @Test func screenshotTranslationRejectsKnownTextOnlyVisionModel() async throws {
         let settings = TranslatorSettings(
             provider: .openRouter,
@@ -437,6 +480,33 @@ private func openRouterPlainContentResponse(_ content: String) -> Data {
             [
                 "message": [
                     "content": content,
+                ],
+            ],
+        ],
+        "usage": [
+            "prompt_tokens": 11,
+            "completion_tokens": 7,
+            "total_tokens": 18,
+            "cost": 0.000123,
+        ],
+    ]
+    return try! JSONSerialization.data(withJSONObject: payload)
+}
+
+private func openRouterImageResponse(content: String?, imageURL: String) -> Data {
+    let messageContent: Any = content.map { $0 as Any } ?? NSNull()
+    let payload: [String: Any] = [
+        "choices": [
+            [
+                "message": [
+                    "content": messageContent,
+                    "images": [
+                        [
+                            "imageUrl": [
+                                "url": imageURL,
+                            ],
+                        ],
+                    ],
                 ],
             ],
         ],

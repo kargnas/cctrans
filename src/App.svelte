@@ -68,7 +68,7 @@
 
   let isOpenRouterTextOnly = $derived(
     settingsState?.settings.provider === "openRouter" &&
-    !(settingsState?.options.openRouterModels.find((m) => m.value === settingsState?.settings.openRouterTextModel)?.modalities.includes("image") ?? false)
+    !(modelSupportsVisionInput(settingsState?.options.openRouterModels.find((m) => m.value === settingsState?.settings.openRouterTextModel)) ?? false)
   );
 
   $effect(() => {
@@ -294,9 +294,17 @@
     await saveSettings({ ...settingsState.settings, provider: "localHyMT2", localModelID: modelID });
   }
 
-  async function useOpenRouterTextModel(modelID: string) {
+  async function useOpenRouterTextModel(model: OpenRouterModelOption) {
     if (!settingsState) return;
-    await saveSettings({ ...settingsState.settings, provider: "openRouter", openRouterTextModel: modelID });
+    const next: Settings = {
+      ...settingsState.settings,
+      provider: "openRouter",
+      openRouterTextModel: model.value
+    };
+    if (modelSupportsVisionInput(model)) {
+      next.openRouterVisionModel = model.value;
+    }
+    await saveSettings(next);
   }
 
   async function useOpenRouterVisionModel(modelID: string) {
@@ -535,7 +543,11 @@
   }
 
   function modalityText(model: OpenRouterModelOption) {
-    return model.modalities.map((value) => value.charAt(0).toUpperCase() + value.slice(1)).join(" + ");
+    return `In ${formatModalities(model.modalities)} -> Out ${formatModalities(outputModalities(model))}`;
+  }
+
+  function formatModalities(values: string[]) {
+    return values.map((value) => value.charAt(0).toUpperCase() + value.slice(1)).join(" + ");
   }
 
   function modelMetaText(model: OpenRouterModelOption) {
@@ -686,24 +698,99 @@
     return model.value === settingsState?.defaults.openRouterTextModel ? "Default" : "Selected";
   }
 
+  function isActiveLocalModel(modelID: string) {
+    return settingsState?.settings.provider === "localHyMT2" &&
+      settingsState.settings.localModelID === modelID;
+  }
+
+  function localModelUseLabel(modelID: string) {
+    if (!isActiveLocalModel(modelID)) return "Use this";
+    return modelID === settingsState?.defaults.localModelID ? "Default" : "Selected";
+  }
+
+  function isActiveOpenRouterVisionModel(model: OpenRouterModelOption) {
+    return settingsState?.settings.openRouterVisionModel === model.value;
+  }
+
+  function openRouterVisionUseLabel(model: OpenRouterModelOption) {
+    if (!isActiveOpenRouterVisionModel(model)) return "Use fallback";
+    return model.value === settingsState?.defaults.openRouterVisionModel ? "Default" : "Selected";
+  }
+
   function visibleOpenRouterModels(models: OpenRouterModelOption[]) {
     const filter = settingsState?.settings.openRouterModelFilter ?? settingsState?.defaults.openRouterModelFilter;
     if (!filter) return sortOpenRouterModels(models);
     return sortOpenRouterModels(models).filter((model) => openRouterModelMatchesFilter(model, filter));
   }
 
+  function openRouterTextSelectModels(models: OpenRouterModelOption[]) {
+    return includeCurrentOpenRouterModel(
+      visibleOpenRouterModels(models),
+      settingsState?.settings.openRouterTextModel,
+      models
+    );
+  }
+
+  function openRouterVisionSelectModels(models: OpenRouterModelOption[]) {
+    return includeCurrentOpenRouterModel(
+      visionFallbackOpenRouterModels(models),
+      settingsState?.settings.openRouterVisionModel,
+      models
+    );
+  }
+
+  function includeCurrentOpenRouterModel(
+    models: OpenRouterModelOption[],
+    currentValue: string | undefined,
+    allModels: OpenRouterModelOption[]
+  ) {
+    if (!currentValue || models.some((model) => model.value === currentValue)) return models;
+    const current = allModels.find((model) => model.value === currentValue);
+    return current ? [current, ...models] : models;
+  }
+
   function openRouterModelMatchesFilter(model: OpenRouterModelOption, filter: OpenRouterModelFilter) {
-    const modalities = model.modalities.map((value) => value.toLowerCase());
-    if (filter.modalityMode === "textOrVision") {
-      const hasText = modalities.includes("text");
-      const hasVision = modalities.includes("image");
-      if (!hasText || (modalities.length > 1 && !hasVision)) return false;
-    }
+    const textOrVision = isTextOrVisionTranslationModel(model);
+    if (filter.modalityMode === "textOrVision" && !textOrVision) return false;
+    if (filter.modalityMode === "others" && textOrVision) return false;
 
     return model.promptPricePerMillion >= filter.minPromptPricePerMillion &&
       model.promptPricePerMillion <= filter.maxPromptPricePerMillion &&
       model.completionPricePerMillion >= filter.minCompletionPricePerMillion &&
       model.completionPricePerMillion <= filter.maxCompletionPricePerMillion;
+  }
+
+  function visionFallbackOpenRouterModels(models: OpenRouterModelOption[]) {
+    return sortOpenRouterModels(models).filter((model) => modelSupportsVisionInput(model));
+  }
+
+  function isTextOrVisionTranslationModel(model: OpenRouterModelOption) {
+    const input = inputModalities(model);
+    const output = outputModalities(model);
+    const textOutputOnly = output.length === 1 && output[0] === "text";
+    const hasTextInput = input.includes("text");
+    const textOnlyInput = input.length === 1 && input[0] === "text";
+    const textVisionInput = hasTextInput && input.includes("image");
+    return textOutputOnly && (textOnlyInput || textVisionInput);
+  }
+
+  function modelSupportsVisionInput(model: OpenRouterModelOption | undefined | null) {
+    if (!model) return false;
+    const input = inputModalities(model);
+    return input.includes("text") && input.includes("image");
+  }
+
+  function inputModalities(model: OpenRouterModelOption) {
+    return normalizeModalities(model.modalities);
+  }
+
+  function outputModalities(model: OpenRouterModelOption) {
+    const output = normalizeModalities(model.outputModalities ?? []);
+    return output.length > 0 ? output : ["text"];
+  }
+
+  function normalizeModalities(values: string[]) {
+    return [...new Set(values.map((value) => value.trim().toLowerCase()).filter(Boolean))].sort();
   }
 
   async function updateOpenRouterModelFilter(patch: Partial<OpenRouterModelFilter>) {
@@ -752,6 +839,17 @@
   }
 
 </script>
+
+{#snippet modelUseControl(active: boolean, activeLabel: string, inactiveLabel: string, icon: "cpu" | "cloud", action: () => void)}
+  {#if active}
+    <span class="model-use-state"><Check size={13} />{activeLabel}</span>
+  {:else}
+    <button class="inline-action model-use-button" onclick={action}>
+      {#if icon === "cpu"}<Cpu size={13} />{:else}<Cloud size={13} />{/if}
+      {inactiveLabel}
+    </button>
+  {/if}
+{/snippet}
 
 {#snippet translationModelPicker(scope: "general" | "models", state: SettingsState)}
   <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -1125,7 +1223,13 @@
                   <strong>{option.label}</strong>
                   <span>{option.note ?? (option.value === settingsState.defaults.localModelID ? "Default" : "Local runtime")}</span>
                 </div>
-                <button class="inline-action" onclick={() => useLocalModel(option.value)}><Cpu size={13} />Use</button>
+                {@render modelUseControl(
+                  isActiveLocalModel(option.value),
+                  localModelUseLabel(option.value),
+                  "Use this",
+                  "cpu",
+                  () => useLocalModel(option.value)
+                )}
               </div>
             {/each}
             <div class="action-grid single">
@@ -1182,7 +1286,7 @@
                 onchange={(event) => updateModelField("openRouterTextModel", event.currentTarget.value)}
               >
                 <option value="default">Default ({openRouterModelLabel(settingsState.defaults.openRouterTextModel)})</option>
-                {#each visibleOpenRouterModels(settingsState.options.openRouterModels) as option}
+                {#each openRouterTextSelectModels(settingsState.options.openRouterModels) as option}
                   <option value={option.value}>{option.label}</option>
                 {/each}
               </select>
@@ -1198,14 +1302,15 @@
             </label>
             <label class="setting-row">
               <span class="setting-copy">
-                <strong>Vision Model</strong>
+                <strong>Vision Fallback Model</strong>
+                <span>Used by screenshot translation and beta image-output rendering. Text translation keeps using Text Model.</span>
               </span>
               <select
                 value={settingsState.settings.openRouterVisionModel === settingsState.defaults.openRouterVisionModel ? "default" : settingsState.settings.openRouterVisionModel}
                 onchange={(event) => updateModelField("openRouterVisionModel", event.currentTarget.value)}
               >
                 <option value="default">Default ({openRouterModelLabel(settingsState.defaults.openRouterVisionModel)})</option>
-                {#each visibleOpenRouterModels(settingsState.options.openRouterModels).filter((option) => option.modalities.includes("image")) as option}
+                {#each openRouterVisionSelectModels(settingsState.options.openRouterModels) as option}
                   <option value={option.value}>{option.label}</option>
                 {/each}
               </select>
@@ -1220,15 +1325,15 @@
               </button>
             </label>
             <div class="openrouter-filter-panel" aria-label="OpenRouter model filters">
-              <p class="filter-caption">Price filter uses USD per 1M tokens.</p>
+              <p class="filter-caption">Text / Vision Models means text-output models with text-only or text+image input. Price filters use USD per 1M tokens.</p>
               <label>
                 <span>Mode</span>
                 <select
                   value={settingsState.settings.openRouterModelFilter.modalityMode}
                   onchange={(event) => updateOpenRouterModelFilter({ modalityMode: event.currentTarget.value as OpenRouterModelFilter["modalityMode"] })}
                 >
-                  <option value="textOrVision">Text / Vision</option>
-                  <option value="all">All text-output</option>
+                  <option value="textOrVision">Text / Vision Models</option>
+                  <option value="others">Others</option>
                 </select>
               </label>
               <label>
@@ -1363,20 +1468,21 @@
                   <span>Out {formatUnitPrice(model.completionPricePerMillion)}</span>
                 </div>
                 <div class="model-actions">
-                  <button
-                    class="inline-action primary-use"
-                    class:selected-use={isActiveOpenRouterTextModel(model)}
-                    disabled={isActiveOpenRouterTextModel(model)}
-                    onclick={() => useOpenRouterTextModel(model.value)}
-                  >
-                    {#if isActiveOpenRouterTextModel(model)}
-                      <Check size={13} />{openRouterUseLabel(model)}
-                    {:else}
-                      <Cloud size={13} />Use this
-                    {/if}
-                  </button>
-                  {#if model.modalities.includes("image")}
-                    <button class="inline-action" onclick={() => useOpenRouterVisionModel(model.value)}>Vision</button>
+                  {@render modelUseControl(
+                    isActiveOpenRouterTextModel(model),
+                    openRouterUseLabel(model),
+                    "Use this",
+                    "cloud",
+                    () => useOpenRouterTextModel(model)
+                  )}
+                  {#if modelSupportsVisionInput(model)}
+                    {@render modelUseControl(
+                      isActiveOpenRouterVisionModel(model),
+                      openRouterVisionUseLabel(model),
+                      "Use fallback",
+                      "cloud",
+                      () => useOpenRouterVisionModel(model.value)
+                    )}
                   {/if}
                 </div>
               </div>

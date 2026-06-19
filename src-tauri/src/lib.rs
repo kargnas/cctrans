@@ -253,8 +253,8 @@ struct OpenRouterModelFilter {
 enum OpenRouterModalityMode {
     #[serde(rename = "textOrVision")]
     TextOrVision,
-    #[serde(rename = "all")]
-    All,
+    #[serde(rename = "others", alias = "all")]
+    Others,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
@@ -359,6 +359,11 @@ struct OpenRouterModelOption {
     #[serde(rename = "completionPricePerMillion")]
     completion_price_per_million: f64,
     modalities: Vec<String>,
+    #[serde(
+        default = "default_openrouter_output_modalities",
+        rename = "outputModalities"
+    )]
+    output_modalities: Vec<String>,
     #[serde(rename = "releaseDate")]
     release_date: String,
     #[serde(rename = "contextWindow")]
@@ -598,6 +603,8 @@ struct TranslationPreviewState {
     original_text: String,
     #[serde(rename = "translatedText")]
     translated_text: String,
+    #[serde(rename = "translatedImageURL", default)]
+    translated_image_url: Option<String>,
     #[serde(rename = "errorText")]
     error_text: Option<String>,
     #[serde(rename = "providerTitle")]
@@ -955,6 +962,7 @@ fn retranslate_preview(
     // result frozen until the new model finishes. The watcher + JS poll pick this up within ~200ms.
     state.mode = "loading".to_string();
     state.translated_text = String::new();
+    state.translated_image_url = None;
     state.error_text = None;
     write_translation_preview_state(app, &state)?;
 
@@ -1011,6 +1019,7 @@ fn retranslate_preview(
         if let Some(partial) = event.partial {
             state.mode = "translated".to_string();
             state.translated_text = partial;
+            state.translated_image_url = None;
             state.error_text = None;
             let _ = write_translation_preview_state(app, &state);
         } else if let Some(text) = event.final_text {
@@ -2024,6 +2033,7 @@ fn sample_translation_preview(settings: &Settings) -> TranslationPreviewState {
         original_text: "The future belongs to those who believe in the beauty of their dreams."
             .to_string(),
         translated_text: "미래는 자신의 꿈의 아름다움을 믿는 사람들의 것이다.".to_string(),
+        translated_image_url: None,
         error_text: None,
         provider_title: provider_title(&settings.provider).to_string(),
         model: selected_model_title(settings),
@@ -2099,6 +2109,7 @@ fn prepare_translation_preview_for_retranslate(
     state.model = selected_model_title(settings);
     state.model_warning = None;
     state.cost_credits = None;
+    state.translated_image_url = None;
 }
 
 fn default_toast_duration_value() -> f64 {
@@ -2917,7 +2928,7 @@ fn fetch_openrouter_models(api_key: Option<&str>) -> Result<Vec<OpenRouterModelO
         }
     }
     if models.is_empty() {
-        return Err("OpenRouter returned no usable text models.".to_string());
+        return Err("OpenRouter returned no models.".to_string());
     }
     models.sort_by(|left, right| {
         right
@@ -2948,13 +2959,6 @@ fn openrouter_throughput_top_rankings(
 ) -> BTreeMap<String, i64> {
     models
         .into_iter()
-        .filter(|model| {
-            model
-                .architecture
-                .output_modalities
-                .iter()
-                .any(|value| value.eq_ignore_ascii_case("text"))
-        })
         .filter_map(|model| {
             let id = model.id.trim().to_string();
             (!id.is_empty()).then_some(id)
@@ -3045,14 +3049,9 @@ fn openrouter_model_from_api(model: OpenRouterAPIModel) -> Option<OpenRouterMode
     if id.is_empty() || name.is_empty() {
         return None;
     }
-    if !model
-        .architecture
-        .output_modalities
-        .iter()
-        .any(|value| value.eq_ignore_ascii_case("text"))
-    {
-        return None;
-    }
+    let architecture = model.architecture;
+    let input_modalities = normalized_modalities(architecture.input_modalities);
+    let output_modalities = normalized_modalities(architecture.output_modalities);
 
     let prompt_price_per_million = price_per_million(model.pricing.prompt.as_ref());
     let completion_price_per_million = price_per_million(model.pricing.completion.as_ref());
@@ -3076,7 +3075,8 @@ fn openrouter_model_from_api(model: OpenRouterAPIModel) -> Option<OpenRouterMode
         },
         prompt_price_per_million,
         completion_price_per_million,
-        modalities: normalized_modalities(model.architecture.input_modalities),
+        modalities: input_modalities,
+        output_modalities,
         release_date: model
             .created
             .map(unix_seconds_to_ymd)
@@ -3087,7 +3087,7 @@ fn openrouter_model_from_api(model: OpenRouterAPIModel) -> Option<OpenRouterMode
         is_recommended,
         daily_token_rank: None,
         throughput_rank: None,
-        tokenizer: normalized_optional_string(model.architecture.tokenizer),
+        tokenizer: normalized_optional_string(architecture.tokenizer),
         max_completion_tokens: model.top_provider.max_completion_tokens,
         is_moderated: model.top_provider.is_moderated,
         knowledge_cutoff: normalized_optional_string(model.knowledge_cutoff),
@@ -3110,6 +3110,10 @@ fn normalized_modalities(values: Vec<String>) -> Vec<String> {
     normalized.sort();
     normalized.dedup();
     normalized
+}
+
+fn default_openrouter_output_modalities() -> Vec<String> {
+    vec!["text".to_string()]
 }
 
 fn price_per_million(value: Option<&serde_json::Value>) -> f64 {
@@ -3171,6 +3175,7 @@ fn openrouter_model(
             .iter()
             .map(|value| (*value).to_string())
             .collect(),
+        output_modalities: default_openrouter_output_modalities(),
         release_date: release_date.to_string(),
         context_window,
         is_reasoning,
@@ -4011,6 +4016,7 @@ mod tests {
         assert!(state.caret_x.is_none());
         assert!(state.caret_y.is_none());
         assert!(state.model_warning.is_none());
+        assert!(state.translated_image_url.is_none());
         assert!(!state.anchor_bottom);
     }
 
@@ -4020,6 +4026,7 @@ mod tests {
             "mode":"translated","sourceLanguage":"English","targetLanguage":"Korean",
             "originalText":"hi","translatedText":"안녕","errorText":null,
             "providerTitle":"Local Model","model":"m","costCredits":null,"permissionAction":null,
+            "translatedImageURL":"data:image/png;base64,abc",
             "modelWarning":"Vision model used","requestSequence":7,
             "caretX":10.0,"caretY":20.0,"caretW":2.0,"caretH":18.0,"anchorBottom":true
         }"#;
@@ -4027,9 +4034,14 @@ mod tests {
         assert_eq!(state.request_sequence, 7);
         assert_eq!(state.caret_x, Some(10.0));
         assert_eq!(state.model_warning.as_deref(), Some("Vision model used"));
+        assert_eq!(
+            state.translated_image_url.as_deref(),
+            Some("data:image/png;base64,abc")
+        );
         assert!(state.anchor_bottom);
         let encoded = serde_json::to_string(&state).unwrap();
         assert!(encoded.contains("\"modelWarning\":\"Vision model used\""));
+        assert!(encoded.contains("\"translatedImageURL\":\"data:image/png;base64,abc\""));
         assert!(encoded.contains("\"requestSequence\":7"));
         assert!(encoded.contains("\"anchorBottom\":true"));
     }
@@ -4084,7 +4096,7 @@ mod tests {
         settings
             .open_router_model_filter
             .max_completion_price_per_million = 6.5;
-        settings.open_router_model_filter.modality_mode = OpenRouterModalityMode::All;
+        settings.open_router_model_filter.modality_mode = OpenRouterModalityMode::Others;
 
         let stored = StoredSettings::from_effective(&settings, &defaults);
         let reloaded = apply_stored_settings(stored);
@@ -4103,8 +4115,24 @@ mod tests {
         );
         assert_eq!(
             reloaded.open_router_model_filter.modality_mode,
-            OpenRouterModalityMode::All
+            OpenRouterModalityMode::Others
         );
+    }
+
+    #[test]
+    fn openrouter_filter_accepts_legacy_all_modality_value() {
+        let filter: OpenRouterModelFilter = serde_json::from_str(
+            r#"{
+                "modalityMode":"all",
+                "minPromptPricePerMillion":0.0,
+                "maxPromptPricePerMillion":2.0,
+                "minCompletionPricePerMillion":0.0,
+                "maxCompletionPricePerMillion":10.0
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(filter.modality_mode, OpenRouterModalityMode::Others);
     }
 
     #[test]
@@ -4184,6 +4212,7 @@ mod tests {
             model.modalities,
             vec!["image".to_string(), "text".to_string()]
         );
+        assert_eq!(model.output_modalities, vec!["text".to_string()]);
         assert_eq!(model.daily_token_rank, None);
         assert_eq!(model.throughput_rank, None);
         assert_eq!(model.tokenizer.as_deref(), Some("ExampleTok"));
@@ -4250,7 +4279,7 @@ mod tests {
     }
 
     #[test]
-    fn throughput_rankings_keep_first_twenty_text_models_and_apply_to_models() {
+    fn throughput_rankings_keep_first_twenty_models_and_apply_to_models() {
         let models = (0..22)
             .map(|index| OpenRouterAPIModel {
                 id: format!("provider/fast-{index:02}"),
@@ -4276,8 +4305,9 @@ mod tests {
 
         let rankings = openrouter_throughput_top_rankings(models, 20);
         assert_eq!(rankings.get("provider/fast-00"), Some(&1));
-        assert!(!rankings.contains_key("provider/fast-01"));
-        assert_eq!(rankings.get("provider/fast-20"), Some(&20));
+        assert_eq!(rankings.get("provider/fast-01"), Some(&2));
+        assert_eq!(rankings.get("provider/fast-19"), Some(&20));
+        assert!(!rankings.contains_key("provider/fast-20"));
         assert!(!rankings.contains_key("provider/fast-21"));
 
         let mut models = vec![openrouter_model(

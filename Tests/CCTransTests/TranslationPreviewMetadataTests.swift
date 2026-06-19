@@ -20,7 +20,7 @@ struct TranslationPreviewMetadataTests {
                 for: result,
                 inputText: "[selected screenshot]",
                 settings: settings
-            ) == "Screenshot translation used the Vision Model because DeepSeek V4 Flash is text-only."
+            ) == "Screenshot translation used the Vision Fallback Model because DeepSeek V4 Flash is text-only."
         )
     }
 

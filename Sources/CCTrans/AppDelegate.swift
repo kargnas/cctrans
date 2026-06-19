@@ -15,6 +15,7 @@ struct TranslationPreviewPayload: Encodable {
     var targetLanguage: String
     var originalText: String
     var translatedText: String
+    var translatedImageURL: String? = nil
     var errorText: String?
     var providerTitle: String
     var model: String
@@ -32,7 +33,10 @@ struct TranslationPreviewPayload: Encodable {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let settingsStore = SettingsStore()
     private let credentialsProvider = CredentialsProvider()
-    private let translationService = TranslationService(appleBackend: AppleTranslationHost.shared)
+    private let translationService = TranslationService(
+        appleBackend: AppleTranslationHost.shared,
+        openRouterModelCapabilities: SharedOpenRouterModelCache.capabilities(for:)
+    )
     private let requestLogStore = RequestLogStore()
     private let localModelWarmupNotifier = LocalModelWarmupNotifier()
     private var statusItem: NSStatusItem?
@@ -777,6 +781,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             targetLanguage: result.targetLanguage ?? languages.targetLanguage,
             originalText: inputText,
             translatedText: result.text,
+            translatedImageURL: result.imageURL,
             errorText: nil,
             providerTitle: result.providerTitle,
             model: TranslationPreviewMetadata.modelTitle(for: result, settings: settings),

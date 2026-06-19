@@ -31,9 +31,9 @@ public enum TranslationPreviewMetadata {
 
         if isScreenshotPlaceholder(inputText), usedModel == settings.openRouterVisionModel {
             if OpenRouterModelCatalog.model(id: textModel)?.supportsVision == true {
-                return "Screenshot translation used the Vision Model instead of the Text Model."
+                return "Screenshot translation used the Vision Fallback Model instead of the Text Model."
             }
-            return "Screenshot translation used the Vision Model because \(OpenRouterModelCatalog.title(for: textModel)) is text-only."
+            return "Screenshot translation used the Vision Fallback Model because \(OpenRouterModelCatalog.title(for: textModel)) is text-only."
         }
 
         if settings.provider == .openRouter {

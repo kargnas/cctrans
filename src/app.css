@@ -723,6 +723,35 @@ input {
   padding: 0 9px;
 }
 
+.model-use-button {
+  border-color: transparent;
+  background: transparent;
+  color: var(--blue);
+  font-weight: 650;
+}
+
+.model-use-button:hover {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+}
+
+.model-use-state {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 26px;
+  padding: 0 9px;
+  color: var(--secondary);
+  font-size: 11px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.model-use-state svg {
+  color: var(--blue);
+}
+
 .catalog-refresh {
   justify-self: end;
   padding: 0 10px;
@@ -881,16 +910,6 @@ input {
   background: color-mix(in srgb, var(--blue) 11%, transparent);
   color: var(--blue);
   font-weight: 650;
-}
-
-.model-actions .primary-use {
-  color: var(--blue);
-  font-weight: 650;
-}
-
-.model-actions .primary-use.selected-use {
-  border-color: color-mix(in srgb, var(--blue) 30%, transparent);
-  background: var(--accent-soft);
 }
 
 .api-key-row {
@@ -1279,6 +1298,30 @@ kbd {
 .translation-text.original {
   font-size: 14px;
   font-weight: 450;
+  line-height: 1.35;
+}
+
+.translation-image-result {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+}
+
+.translation-image-result img {
+  display: block;
+  width: 100%;
+  max-height: 560px;
+  object-fit: contain;
+  border: 0.5px solid var(--bubble-border);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.45);
+}
+
+.translation-image-result figcaption {
+  margin: 0;
+  color: var(--secondary);
+  font-size: 11px;
+  font-weight: 520;
   line-height: 1.35;
 }
 
