@@ -260,13 +260,20 @@ public final class TranslationService: @unchecked Sendable {
 
         Image output:
         - Return an edited screenshot image, not OCR text.
+        - Use the input screenshot as the only visual reference. Edit the existing screenshot locally; do not redraw, reinterpret, or recompose the app UI.
         - Preserve the original layout, spacing, line wrapping, colors, avatars, icons, and app chrome as closely as possible.
         - Replace only visible human-readable text with \(targetLanguage) translation.
-        - Preserve the original visual hierarchy and font weight. Do not make normal text bold, heavier, larger, or more emphasized unless it was already emphasized in the source image.
-        - For chat, social, document, and app screenshots, body paragraphs must stay regular-weight text. Use bold only for names, titles, badges, headings, or text that was already bold in the source.
-        - In Slack, Discord, browser, or document screenshots, message/body text must be visibly thinner than usernames, titles, and headings. Never render the entire translated body as bold or black-weight text.
-        - Do not thicken translated Korean, CJK, or non-Latin body text to compensate for legibility; match the source weight instead.
-        - Keep translated text readable at the same approximate size as the source; avoid decorative typography, markdown styling, and invented emphasis.
+
+        Text rendering contract:
+        - Internally create a separate text layer for every translated phrase, as if each phrase were quoted exact text. Typeset those layers with a real Korean font rasterizer, then composite them onto the original screenshot. Do not paint Hangul strokes by hand.
+        - Render every translated word as exact, sharp UI text. No misspellings, no extra words, no distorted letters, no random marks, no pseudo-text, and no blended or melted glyphs.
+        - For Korean/Hangul output, every syllable block must be a valid Unicode Hangul syllable with complete jamo shapes. Do not invent pseudo-Hangul, Latin-like substitutions, warped strokes, or AI-looking smeared characters.
+        - Match the original screenshot font as closely as possible. For Korean UI/body text, use a native Korean system sans-serif such as Apple SD Gothic Neo Regular, Noto Sans KR Regular, or an SF Pro-compatible Korean fallback.
+        - The translated Korean text must look like rasterized app text from a font file, not hand-drawn lettering, brush lettering, poster lettering, OCR-like imitation, or model-painted strokes.
+        - Preserve the original visual hierarchy and font weight. Body paragraphs must be Regular 400 or the closest regular-weight Korean UI font. Use Medium/Semibold/Bold only for names, titles, badges, headings, or text that was already emphasized in the source image.
+        - In Slack, Discord, browser, or document screenshots, message/body text must be visibly thinner than usernames, titles, and headings. Never render the entire translated body as bold, black-weight, handwritten, poster-style, or decorative text.
+        - If translated text is longer than the source, choose a concise natural translation, slightly reduce font size, or tighten line wrapping. Do not make the text heavier, stretch glyphs, smear strokes, or stylize letters to make it fit.
+        - Keep translated text readable at the same approximate size as the source; avoid markdown styling, invented emphasis, text outlines, drop shadows, or glow.
         - Do not add captions, notes, explanation boxes, labels, watermarks, or extra UI elements inside the generated image.
 
         Text output:
