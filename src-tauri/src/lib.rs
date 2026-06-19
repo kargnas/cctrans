@@ -2,12 +2,8 @@ use serde::{Deserialize, Serialize};
 mod surfaces;
 
 use std::collections::BTreeMap;
-#[cfg(target_os = "macos")]
-use std::ffi::CString;
 use std::fs;
 use std::io::{BufRead, BufReader};
-#[cfg(target_os = "macos")]
-use std::os::raw::{c_char, c_void};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -822,7 +818,6 @@ fn perform_settings_action(
             "Screen Recording",
             "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
         ),
-        "requestKeyboardPrompt" => request_keyboard_prompt(),
         "revealPermissionApp" => reveal_permission_app_impl(&app),
         _ => Err(format!("Unknown settings action: {action}")),
     }
@@ -1800,7 +1795,13 @@ fn translation_window_placement(
 ) -> TranslationWindowPlacement {
     let monitors = app.available_monitors().unwrap_or_default();
     let fallback_monitor = app.primary_monitor().ok().flatten();
-    let caret = caret_override.or_else(focused_text_caret_bounds);
+    // Caret comes solely from the host-supplied override (KeyboardCaretLocator runs
+    // in the outer CCTrans.app and writes the rect into the shared toast state). The
+    // helper must NOT query AX itself: an unauthorized AXUIElement* call from this
+    // process registers the inner CCTransTauri.app in the macOS Accessibility list,
+    // and the host's richer search already finds every caret the helper's simpler
+    // system-wide query could.
+    let caret = caret_override;
 
     // The popover follows the text caret whenever one is detected, so a saved corner or dragged
     // custom position only acts as the fallback for apps (terminals, Electron) that expose no caret.
@@ -2025,16 +2026,6 @@ impl WorkArea {
     fn max_y(self) -> f64 {
         self.y + self.height
     }
-}
-
-#[cfg(target_os = "macos")]
-fn focused_text_caret_bounds() -> Option<ScreenRect> {
-    unsafe { focused_text_caret_bounds_macos() }
-}
-
-#[cfg(not(target_os = "macos"))]
-fn focused_text_caret_bounds() -> Option<ScreenRect> {
-    None
 }
 
 fn read_translation_preview_state(
@@ -3840,47 +3831,6 @@ fn open_external_url(url: &str) -> std::io::Result<()> {
     }
 }
 
-fn request_keyboard_prompt() -> Result<ActionResult, String> {
-    #[cfg(target_os = "macos")]
-    {
-        let input_granted = unsafe { CGRequestListenEventAccess() };
-        let accessibility = unsafe { AXIsProcessTrusted() };
-        if !accessibility {
-            // Input Monitoring shows a real system prompt, but Accessibility (caret
-            // popovers) cannot be granted by a prompt — macOS only exposes it as a
-            // manual toggle. Open that pane so the still-missing piece is actionable
-            // instead of reporting "available" off Input Monitoring alone.
-            let _ = open_privacy_url(
-                "Accessibility",
-                "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
-            );
-            return Ok(action_result(
-                "Keyboard Prompt",
-                "Accessibility (caret popovers) still needs enabling — opened Accessibility settings.",
-                true,
-            ));
-        }
-        return Ok(action_result(
-            "Keyboard Prompt",
-            if input_granted {
-                "Keyboard monitoring is available."
-            } else {
-                "Keyboard permission prompt requested."
-            },
-            true,
-        ));
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    {
-        Ok(action_result(
-            "Keyboard Prompt",
-            "Keyboard permission prompt is macOS-only.",
-            false,
-        ))
-    }
-}
-
 fn permission_status() -> PermissionStatus {
     #[cfg(target_os = "macos")]
     {
@@ -3904,103 +3854,6 @@ fn permission_status() -> PermissionStatus {
     }
 }
 
-#[cfg(target_os = "macos")]
-unsafe fn focused_text_caret_bounds_macos() -> Option<ScreenRect> {
-    let system = OwnedCfRef::new(AXUIElementCreateSystemWide())?;
-    let focused_attribute = cf_string("AXFocusedUIElement")?;
-    let selected_range_attribute = cf_string("AXSelectedTextRange")?;
-    let bounds_attribute = cf_string("AXBoundsForRange")?;
-
-    let mut focused_object: CFTypeRef = std::ptr::null();
-    if AXUIElementCopyAttributeValue(
-        system.as_ptr(),
-        focused_attribute.as_ptr(),
-        &mut focused_object,
-    ) != K_AX_ERROR_SUCCESS
-        || focused_object.is_null()
-    {
-        return None;
-    }
-    let focused_element = OwnedCfRef::new(focused_object)?;
-
-    let mut range_object: CFTypeRef = std::ptr::null();
-    if AXUIElementCopyAttributeValue(
-        focused_element.as_ptr(),
-        selected_range_attribute.as_ptr(),
-        &mut range_object,
-    ) != K_AX_ERROR_SUCCESS
-        || range_object.is_null()
-    {
-        return None;
-    }
-    let selected_range = OwnedCfRef::new(range_object)?;
-
-    let mut bounds_object: CFTypeRef = std::ptr::null();
-    if AXUIElementCopyParameterizedAttributeValue(
-        focused_element.as_ptr(),
-        bounds_attribute.as_ptr(),
-        selected_range.as_ptr(),
-        &mut bounds_object,
-    ) != K_AX_ERROR_SUCCESS
-        || bounds_object.is_null()
-    {
-        return None;
-    }
-    let bounds_value = OwnedCfRef::new(bounds_object)?;
-    if AXValueGetType(bounds_value.as_ptr()) != K_AX_VALUE_CGRECT_TYPE {
-        return None;
-    }
-
-    let mut rect = CGRect::default();
-    if AXValueGetValue(
-        bounds_value.as_ptr(),
-        K_AX_VALUE_CGRECT_TYPE,
-        &mut rect as *mut CGRect as *mut c_void,
-    ) == 0
-    {
-        return None;
-    }
-
-    ScreenRect::new(
-        rect.origin.x,
-        rect.origin.y,
-        rect.size.width,
-        rect.size.height,
-    )
-}
-
-#[cfg(target_os = "macos")]
-fn cf_string(value: &str) -> Option<OwnedCfRef> {
-    let value = CString::new(value).ok()?;
-    let string = unsafe {
-        CFStringCreateWithCString(std::ptr::null(), value.as_ptr(), K_CF_STRING_ENCODING_UTF8)
-    };
-    OwnedCfRef::new(string)
-}
-
-#[cfg(target_os = "macos")]
-struct OwnedCfRef(CFTypeRef);
-
-#[cfg(target_os = "macos")]
-impl OwnedCfRef {
-    fn new(value: CFTypeRef) -> Option<Self> {
-        (!value.is_null()).then_some(Self(value))
-    }
-
-    fn as_ptr(&self) -> CFTypeRef {
-        self.0
-    }
-}
-
-#[cfg(target_os = "macos")]
-impl Drop for OwnedCfRef {
-    fn drop(&mut self) {
-        unsafe {
-            CFRelease(self.0);
-        }
-    }
-}
-
 fn action_result(title: &str, message: &str, ok: bool) -> ActionResult {
     ActionResult {
         title: title.to_string(),
@@ -4010,77 +3863,11 @@ fn action_result(title: &str, message: &str, ok: bool) -> ActionResult {
 }
 
 #[cfg(target_os = "macos")]
-type CFTypeRef = *const c_void;
-#[cfg(target_os = "macos")]
-type CFStringRef = CFTypeRef;
-#[cfg(target_os = "macos")]
-type AXUIElementRef = CFTypeRef;
-#[cfg(target_os = "macos")]
-type AXValueRef = CFTypeRef;
-
-#[cfg(target_os = "macos")]
-const K_AX_ERROR_SUCCESS: i32 = 0;
-#[cfg(target_os = "macos")]
-const K_AX_VALUE_CGRECT_TYPE: u32 = 3;
-#[cfg(target_os = "macos")]
-const K_CF_STRING_ENCODING_UTF8: u32 = 0x0800_0100;
-
-#[cfg(target_os = "macos")]
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default)]
-struct CGPoint {
-    x: f64,
-    y: f64,
-}
-
-#[cfg(target_os = "macos")]
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default)]
-struct CGSize {
-    width: f64,
-    height: f64,
-}
-
-#[cfg(target_os = "macos")]
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default)]
-struct CGRect {
-    origin: CGPoint,
-    size: CGSize,
-}
-
-#[cfg(target_os = "macos")]
 #[link(name = "ApplicationServices", kind = "framework")]
 extern "C" {
     fn AXIsProcessTrusted() -> bool;
-    fn AXUIElementCreateSystemWide() -> AXUIElementRef;
-    fn AXUIElementCopyAttributeValue(
-        element: AXUIElementRef,
-        attribute: CFStringRef,
-        value: *mut CFTypeRef,
-    ) -> i32;
-    fn AXUIElementCopyParameterizedAttributeValue(
-        element: AXUIElementRef,
-        parameterized_attribute: CFStringRef,
-        parameter: CFTypeRef,
-        result: *mut CFTypeRef,
-    ) -> i32;
-    fn AXValueGetType(value: AXValueRef) -> u32;
-    fn AXValueGetValue(value: AXValueRef, value_type: u32, value_ptr: *mut c_void) -> u8;
     fn CGPreflightListenEventAccess() -> bool;
-    fn CGRequestListenEventAccess() -> bool;
     fn CGPreflightScreenCaptureAccess() -> bool;
-}
-
-#[cfg(target_os = "macos")]
-#[link(name = "CoreFoundation", kind = "framework")]
-extern "C" {
-    fn CFStringCreateWithCString(
-        alloc: CFTypeRef,
-        c_str: *const c_char,
-        encoding: u32,
-    ) -> CFStringRef;
-    fn CFRelease(cf: CFTypeRef);
 }
 
 #[cfg(test)]

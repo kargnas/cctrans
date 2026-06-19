@@ -450,7 +450,6 @@
       openInputMonitoring: "Input Monitoring",
       openAccessibility: "Accessibility",
       openScreenRecording: "Screen Recording",
-      requestKeyboardPrompt: "Keyboard Prompt",
       openPermissionHelper: "Permission Helper"
     };
     return titles[action] ?? "Action";

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import { onMount } from "svelte";
-  import { Accessibility, FolderSearch, Keyboard, Monitor, MousePointer2, RefreshCw, ShieldCheck } from "@lucide/svelte";
+  import { Accessibility, FolderSearch, Keyboard, Monitor, RefreshCw, ShieldCheck } from "@lucide/svelte";
   import { cloneFallbackState, type ActionResult, type SettingsState } from "./lib/settings";
 
   type PermissionAppTarget = {
@@ -164,7 +164,6 @@
             <button onclick={() => action("openAccessibility")}><Accessibility size={14} />Open Accessibility Settings</button>
           {/if}
           <button onclick={() => action("openScreenRecording")}><Monitor size={14} />Open Screen Recording Settings</button>
-          <button onclick={() => action("requestKeyboardPrompt")}><MousePointer2 size={14} />Request Keyboard Prompt</button>
           <button onclick={() => action("revealPermissionApp")}><FolderSearch size={14} />Reveal CCTrans.app</button>
         </section>
 
