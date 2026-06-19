@@ -80,9 +80,11 @@ After completed development or documentation work is verified and committed, run
 ## Translation Toast Contract
 
 - Translation toast glass stays visually stable: do not animate or vary whole-bubble opacity, background alpha, blur, or hover translucency during countdown, hover, or mouse-out. Progress belongs in the countdown bar only.
-- After a result or error appears, auto-dismiss countdown starts immediately.
-- Hovering the toast resets the countdown to the full duration and pauses it; leaving the toast starts counting down from that reset duration.
-- Any click outside the visible toast closes/hides it immediately, including during loading.
+- After a normal text result or error appears, auto-dismiss countdown starts immediately.
+- Image-output translation result popovers (`translatedImageURL`) must never auto-dismiss; show `이미지 번역 결과는 비싸기 때문에 자동으로 이 번역결과 창을 닫지 않고 유저가 직접 닫을 때 까지 기다립니다.` and wait for explicit user close.
+- Hovering a normal auto-dismissible toast resets the countdown to the full duration and pauses it; leaving the toast starts counting down from that reset duration.
+- Outside clicks must not dismiss while translating/loading. After a result or error appears, ignore outside clicks for the first 1 second; after that, ordinary unpinned text/error toasts may close on outside click.
+- The translated toast must expose a visible top-right pin button. Pinned toasts must not auto-dismiss or outside-click-dismiss; the explicit close button still closes them.
 - A loading-to-result update must show the toast again for the same request sequence, so a cold local model warmup cannot finish ready while silently skipping the translated result.
 - Do not bind hover or countdown state to `.translation-bubble` classes, inline styles, opacity, background, blur, transform, or transition. Keep countdown state on the countdown fill element so WebKit does not recompose the backdrop-filter layer on hover.
 - Rust owns global pointer hit-testing for the non-activating toast and emits `toast-hover` plus `toast-dismiss-request`; Svelte owns timer state and close decisions.

@@ -193,21 +193,8 @@ public final class TranslationService: @unchecked Sendable {
         let key = try require(credentials.openRouterAPIKey, named: "OPENROUTER_API_KEY")
         let wantsImageOutput = !selectedModel.usesFallback && modelCapabilities?.supportsImageOutput == true
         let prompt = wantsImageOutput
-            ? """
-            Translate the visible text in this screenshot to \(settings.targetLanguage).
-
-            Return an image that preserves the screenshot layout as much as possible while replacing visible text with the translation.
-            If you also return text, keep it to a short summary of the rendered translation.
-            """
-            : """
-            Screenshot text -> \(settings.targetLanguage)
-
-            Fill the response JSON fields:
-            - translation: translated visible text from the screenshot
-            - description: null
-
-            Preserve useful line breaks.
-            """
+            ? openRouterScreenshotImagePrompt(targetLanguage: settings.targetLanguage)
+            : openRouterScreenshotTextPrompt(targetLanguage: settings.targetLanguage)
 
         var body: [String: Any] = [
             "model": selectedModel.id,
@@ -260,6 +247,47 @@ public final class TranslationService: @unchecked Sendable {
             }
         }
         return (settings.openRouterVisionModel, true)
+    }
+
+    private func openRouterScreenshotImagePrompt(targetLanguage: String) -> String {
+        """
+        Translate the visible text in this screenshot to \(targetLanguage) by generating a new image.
+
+        Mandatory output priority:
+        - First and most important: return the edited screenshot image. Do not satisfy this request with text-only OCR or a text-only translation.
+        - If the API/model supports text alongside the image, also return one short context note as text.
+        - If forced to choose only one output, choose the image.
+
+        Image output:
+        - Return an edited screenshot image, not OCR text.
+        - Preserve the original layout, spacing, line wrapping, colors, avatars, icons, and app chrome as closely as possible.
+        - Replace only visible human-readable text with \(targetLanguage) translation.
+        - Preserve the original visual hierarchy and font weight. Do not make normal text bold, heavier, larger, or more emphasized unless it was already emphasized in the source image.
+        - For chat, social, document, and app screenshots, body paragraphs must stay regular-weight text. Use bold only for names, titles, badges, headings, or text that was already bold in the source.
+        - In Slack, Discord, browser, or document screenshots, message/body text must be visibly thinner than usernames, titles, and headings. Never render the entire translated body as bold or black-weight text.
+        - Do not thicken translated Korean, CJK, or non-Latin body text to compensate for legibility; match the source weight instead.
+        - Keep translated text readable at the same approximate size as the source; avoid decorative typography, markdown styling, and invented emphasis.
+        - Do not add captions, notes, explanation boxes, labels, watermarks, or extra UI elements inside the generated image.
+
+        Text output:
+        - When text output is available alongside the image, do not leave the text content empty and do not write "Image result".
+        - Write only a short \(targetLanguage) context note, one sentence at most.
+        - Explain cultural, product, social, or conversational context that a foreign reader may miss from literal translation alone.
+        - Do not repeat the translated text and do not write English or the source language unless \(targetLanguage) is that language.
+        - If no extra context is useful, briefly say in \(targetLanguage) that no extra context is needed.
+        """
+    }
+
+    private func openRouterScreenshotTextPrompt(targetLanguage: String) -> String {
+        """
+        Screenshot text -> \(targetLanguage)
+
+        Fill the response JSON fields:
+        - translation: translated visible text from the screenshot
+        - description: short \(targetLanguage) context note when cultural, product, social, or conversational context matters, otherwise null
+
+        Preserve useful line breaks. Write every returned string value in \(targetLanguage); do not write English explanations unless \(targetLanguage) is English.
+        """
     }
 
     private func translateWithLocalModel(

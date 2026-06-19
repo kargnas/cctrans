@@ -123,6 +123,9 @@ struct OpenRouterScreenContextTests {
             let userMessage = try #require(messages.last)
             let content = try #require(userMessage["content"] as? [[String: Any]])
             #expect(content.contains { $0["type"] as? String == "image_url" })
+            let prompt = try #require(content.compactMap { $0["text"] as? String }.first)
+            #expect(prompt.contains("description: short Korean context note"))
+            #expect(prompt.contains("Write every returned string value in Korean"))
 
             return openRouterResponse("선택 영역 번역")
         })
@@ -189,10 +192,20 @@ struct OpenRouterScreenContextTests {
                 let userMessage = try #require(messages.last)
                 let content = try #require(userMessage["content"] as? [[String: Any]])
                 let prompt = try #require(content.compactMap { $0["text"] as? String }.first)
-                #expect(prompt.contains("Return an image"))
+                #expect(prompt.contains("by generating a new image"))
+                #expect(prompt.contains("return the edited screenshot image"))
+                #expect(prompt.contains("Do not satisfy this request with text-only"))
+                #expect(prompt.contains("Return an edited screenshot image, not OCR text."))
+                #expect(prompt.contains("Do not make normal text bold"))
+                #expect(prompt.contains("body paragraphs must stay regular-weight text"))
+                #expect(prompt.contains("visibly thinner than usernames"))
+                #expect(prompt.contains("Do not thicken translated Korean"))
+                #expect(prompt.contains("short Korean context note"))
+                #expect(prompt.contains("do not leave the text content empty"))
+                #expect(prompt.contains("do not write English or the source language"))
                 #expect(content.contains { $0["type"] as? String == "image_url" })
 
-                return openRouterImageResponse(content: "Rendered translation", imageURL: imageURL)
+                return openRouterImageResponse(content: "Slack 대화의 맥락상 OKR과 대시보드 운영 방식에 대한 후속 설명입니다.", imageURL: imageURL)
             },
             openRouterModelCapabilities: { modelID in
                 modelID == "google/gemini-3.1-flash-image-preview" ? capabilities : nil
@@ -205,7 +218,7 @@ struct OpenRouterScreenContextTests {
             credentials: TranslatorCredentials(openRouterAPIKey: "test-key", huggingFaceToken: nil)
         )
 
-        #expect(result.text == "Rendered translation")
+        #expect(result.text == "Slack 대화의 맥락상 OKR과 대시보드 운영 방식에 대한 후속 설명입니다.")
         #expect(result.imageURL == imageURL)
         #expect(result.model == "google/gemini-3.1-flash-image-preview")
     }

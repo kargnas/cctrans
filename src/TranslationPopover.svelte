@@ -2,7 +2,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { onMount } from "svelte";
-  import { Check, Copy, Cpu, ExternalLink, Eye, Languages, ShieldCheck, TriangleAlert, X } from "@lucide/svelte";
+  import { Check, Copy, Cpu, ExternalLink, Eye, Languages, Pin, ShieldCheck, TriangleAlert, X } from "@lucide/svelte";
   import { fallbackTranslationState, type ShowToastResult, type TranslationMode, type TranslationPreviewState } from "./lib/translation";
   import { fallbackState, type OpenRouterModelOption, type SettingsState, type TranslationProvider } from "./lib/settings";
 
@@ -60,6 +60,10 @@
   let countdownPaused = $state(false);
   let imageSize = $state<ImageSize>(readStoredImageSize());
   let isOpeningPreview = $state(false);
+  let pinned = $state(false);
+  let outsideDismissAllowedAt = $state(Number.POSITIVE_INFINITY);
+  let lastDismissGuardKey = "";
+  let lastPinResetSequence = -1;
   let pointerOverToast = false;
 
   const uiStrings = {
@@ -75,7 +79,10 @@
     copyCurrent: "Copy",
     copied: "Copied",
     requestPermission: "Request Permission",
-    openInPreview: "Preview로 열기"
+    openInPreview: "Preview로 열기",
+    pin: "Pin translation",
+    unpin: "Unpin translation",
+    imageExpenseWarning: "이미지 번역 결과는 비싸기 때문에 자동으로 이 번역결과 창을 닫지 않고 유저가 직접 닫을 때 까지 기다립니다."
   };
   const targetLanguage = $derived(preview.targetLanguage);
   const modelName = $derived(preview.model.trim() || preview.providerTitle.trim() || "Unknown model");
@@ -83,6 +90,7 @@
   const costLabel = $derived(formatCostCredits(preview.costCredits));
   const modelMetadata = $derived([modelName, costLabel].filter(Boolean).join(" · "));
   const bodyText = $derived(visibleMode === "original" ? preview.originalText : preview.translatedText);
+  const hasTranslatedImage = $derived((preview.translatedImageURL?.trim() ?? "").length > 0);
   const resultImageURL = $derived(visibleMode === "translated" ? preview.translatedImageURL?.trim() ?? "" : "");
   const imageWindowWidth = $derived(resultImageURL ? imageSizeOptions.find((option) => option.value === imageSize)?.width ?? imageSizeOptions[0].width : 396);
   const loadingMessage = $derived(
@@ -92,7 +100,10 @@
   );
   const compactMode = $derived(visibleMode === "translated" || visibleMode === "original");
   const tallMode = $derived(debugMode || visibleMode === "loading" || visibleMode === "error");
-  const showCountdown = $derived(!debugMode && visibleMode !== "loading");
+  const pinVisible = $derived(visibleMode === "translated" || visibleMode === "original");
+  const imageResultPersistent = $derived(hasTranslatedImage && pinVisible);
+  const autoDismissSuppressed = $derived(pinned || imageResultPersistent);
+  const showCountdown = $derived(!debugMode && visibleMode !== "loading" && !autoDismissSuppressed);
   const countdownLabel = $derived(`${countdownRemaining.toFixed(1)}s`);
   const countdownProgressValue = $derived(Math.max(0, Math.min(1, countdownRemaining / countdownDuration)));
   const countdownProgress = $derived(`${countdownProgressValue * 100}%`);
@@ -157,7 +168,9 @@
       // Rust hit-tests outside clicks globally because the toast is non-activating.
       void getCurrentWindow()
         .listen("toast-dismiss-request", () => {
-          void closePopover();
+          if (canDismissFromOutsideClick()) {
+            void closePopover();
+          }
         })
         .then((unlisten) => {
           if (disposed) {
@@ -224,6 +237,18 @@
       syncWindowHeight();
     });
     return () => cancelAnimationFrame(frame);
+  });
+
+  $effect(() => {
+    const sequence = preview.requestSequence ?? 0;
+    const guardKey = `${sequence}:${visibleMode}`;
+    if (guardKey === lastDismissGuardKey) return;
+    lastDismissGuardKey = guardKey;
+    outsideDismissAllowedAt = visibleMode === "loading" ? Number.POSITIVE_INFINITY : performance.now() + 1000;
+    if (sequence !== lastPinResetSequence || visibleMode === "loading") {
+      lastPinResetSequence = sequence;
+      pinned = false;
+    }
   });
 
   $effect(() => {
@@ -654,6 +679,23 @@
     }
   }
 
+  function canDismissFromOutsideClick() {
+    if (visibleMode === "loading") return false;
+    if (pinned || imageResultPersistent) return false;
+    return performance.now() >= outsideDismissAllowedAt;
+  }
+
+  function togglePinned() {
+    pinned = !pinned;
+    if (pinned || autoDismissSuppressed) {
+      clearAutoDismiss();
+      clearCountdown();
+      countdownPaused = false;
+      return;
+    }
+    scheduleAutoDismiss();
+  }
+
   async function cancelLoading() {
     if (debugMode) {
       visibleMode = "translated";
@@ -674,7 +716,7 @@
   function scheduleAutoDismiss() {
     clearAutoDismiss();
     clearCountdown();
-    if (debugMode || visibleMode === "loading") return;
+    if (debugMode || visibleMode === "loading" || autoDismissSuppressed) return;
 
     countdownDuration = dismissDurationForText(bodyText);
     countdownRemaining = countdownDuration;
@@ -704,7 +746,7 @@
   }
 
   function pauseAutoDismiss() {
-    if (debugMode || visibleMode === "loading") return;
+    if (debugMode || visibleMode === "loading" || autoDismissSuppressed) return;
     clearAutoDismiss();
     clearCountdown();
     countdownRemaining = countdownDuration;
@@ -715,7 +757,7 @@
   function resumeAutoDismiss() {
     clearAutoDismiss();
     clearCountdown();
-    if (debugMode || visibleMode === "loading") return;
+    if (debugMode || visibleMode === "loading" || autoDismissSuppressed) return;
     if (countdownRemaining <= 0) {
       void closePopover();
       return;
@@ -762,12 +804,26 @@
     class:no-arrow={arrowHidden}
     class:compact={compactMode}
     class:error={visibleMode === "error"}
+    class:has-pin={pinVisible}
+    class:pinned={pinned}
     role="dialog"
     aria-label="Translation result"
     tabindex="-1"
     onmousedown={startDragging}
   >
     <div class="translation-bubble-inner">
+      {#if pinVisible}
+        <button
+          class="pin-button"
+          class:active={pinned}
+          type="button"
+          aria-label={pinned ? uiStrings.unpin : uiStrings.pin}
+          title={pinned ? uiStrings.unpin : uiStrings.pin}
+          onclick={togglePinned}
+        >
+          <Pin size={15} />
+        </button>
+      {/if}
       {#if visibleMode === "loading"}
         <div class="loading-title">
           <span class="status-dot"></span>
@@ -832,6 +888,7 @@
               <figcaption>{bodyText}</figcaption>
             {/if}
           </figure>
+          <p class="image-expense-warning">{uiStrings.imageExpenseWarning}</p>
         {:else}
           <p bind:this={translationTextEl} class:original={visibleMode === "original"} class="translation-text">{bodyText}</p>
         {/if}

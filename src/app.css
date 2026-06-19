@@ -1104,6 +1104,33 @@ kbd {
   padding: 13px 16px;
 }
 
+.translation-bubble.has-pin .translation-bubble-inner {
+  padding-top: 42px;
+}
+
+.pin-button {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  z-index: 2;
+  display: inline-flex;
+  width: 30px;
+  height: 30px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid var(--glass-border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface-solid) 54%, transparent);
+  color: var(--control-ink);
+}
+
+.pin-button.active {
+  border-color: var(--accent-bar-strong);
+  background: var(--accent-tint);
+  color: var(--blue);
+}
+
 .countdown-bar {
   height: 3px;
   margin-top: 2px;
@@ -1346,6 +1373,18 @@ kbd {
   color: var(--secondary);
   font-size: 11px;
   font-weight: 520;
+  line-height: 1.35;
+}
+
+.image-expense-warning {
+  margin: -2px 0 0;
+  padding: 7px 9px;
+  border: 1px solid color-mix(in srgb, var(--favorite-ink) 24%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--favorite-ink) 8%, transparent);
+  color: var(--favorite-ink);
+  font-size: 11px;
+  font-weight: 540;
   line-height: 1.35;
 }
 
