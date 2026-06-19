@@ -179,8 +179,20 @@
   }
 
   async function updateModelField(field: "openRouterTextModel" | "openRouterVisionModel", value: string) {
+    if (!settingsState) return;
     const trimmed = value.trim();
-    await updateField(field, trimmed === "default" ? settingsState?.defaults[field] ?? trimmed : trimmed);
+    const resolved = trimmed === "default" ? settingsState.defaults[field] : trimmed;
+    const next: Settings = {
+      ...settingsState.settings,
+      [field]: resolved
+    };
+    if (field === "openRouterTextModel") {
+      const model = settingsState.options.openRouterModels.find((option) => option.value === resolved);
+      if (modelSupportsVisionInput(model)) {
+        next.openRouterVisionModel = resolved;
+      }
+    }
+    await saveSettings(next);
   }
 
   async function selectTranslationModel(value: string) {
@@ -193,6 +205,10 @@
       next.localModelID = model === "default" ? settingsState.defaults.localModelID : model;
     } else if (provider === "openRouter") {
       next.openRouterTextModel = model === "default" ? settingsState.defaults.openRouterTextModel : model;
+      const selectedModel = settingsState.options.openRouterModels.find((option) => option.value === next.openRouterTextModel);
+      if (modelSupportsVisionInput(selectedModel)) {
+        next.openRouterVisionModel = next.openRouterTextModel;
+      }
     }
     // appleTranslation is a single-model provider; only the provider changes.
     await saveSettings(next);
@@ -305,11 +321,6 @@
       next.openRouterVisionModel = model.value;
     }
     await saveSettings(next);
-  }
-
-  async function useOpenRouterVisionModel(modelID: string) {
-    if (!settingsState) return;
-    await saveSettings({ ...settingsState.settings, openRouterVisionModel: modelID });
   }
 
   async function loadOpenRouterAPIKeyState() {
@@ -706,15 +717,6 @@
   function localModelUseLabel(modelID: string) {
     if (!isActiveLocalModel(modelID)) return "Use this";
     return modelID === settingsState?.defaults.localModelID ? "Default" : "Selected";
-  }
-
-  function isActiveOpenRouterVisionModel(model: OpenRouterModelOption) {
-    return settingsState?.settings.openRouterVisionModel === model.value;
-  }
-
-  function openRouterVisionUseLabel(model: OpenRouterModelOption) {
-    if (!isActiveOpenRouterVisionModel(model)) return "Use fallback";
-    return model.value === settingsState?.defaults.openRouterVisionModel ? "Default" : "Selected";
   }
 
   function visibleOpenRouterModels(models: OpenRouterModelOption[]) {
@@ -1205,6 +1207,30 @@
                 <RotateCcw size={13} />
               </button>
             </div>
+            <label class="setting-row">
+              <span class="setting-copy">
+                <strong>Vision Fallback Model</strong>
+                <span>Used by screenshot translation and beta image-output rendering.</span>
+              </span>
+              <select
+                value={settingsState.settings.openRouterVisionModel === settingsState.defaults.openRouterVisionModel ? "default" : settingsState.settings.openRouterVisionModel}
+                onchange={(event) => updateModelField("openRouterVisionModel", event.currentTarget.value)}
+              >
+                <option value="default">Default ({openRouterModelLabel(settingsState.defaults.openRouterVisionModel)})</option>
+                {#each openRouterVisionSelectModels(settingsState.options.openRouterModels) as option}
+                  <option value={option.value}>{option.label}</option>
+                {/each}
+              </select>
+              <button
+                class="reset-row"
+                class:visible={settingsState.overrides.openRouterVisionModel}
+                disabled={!settingsState.overrides.openRouterVisionModel}
+                title="Reset Vision Fallback Model"
+                onclick={() => resetField("openRouterVisionModel")}
+              >
+                <RotateCcw size={13} />
+              </button>
+            </label>
           </div>
 
           <h2>Local Model Favorites</h2>
@@ -1296,30 +1322,6 @@
                 disabled={!settingsState.overrides.openRouterTextModel}
                 title="Reset Text Model"
                 onclick={() => resetField("openRouterTextModel")}
-              >
-                <RotateCcw size={13} />
-              </button>
-            </label>
-            <label class="setting-row">
-              <span class="setting-copy">
-                <strong>Vision Fallback Model</strong>
-                <span>Used by screenshot translation and beta image-output rendering. Text translation keeps using Text Model.</span>
-              </span>
-              <select
-                value={settingsState.settings.openRouterVisionModel === settingsState.defaults.openRouterVisionModel ? "default" : settingsState.settings.openRouterVisionModel}
-                onchange={(event) => updateModelField("openRouterVisionModel", event.currentTarget.value)}
-              >
-                <option value="default">Default ({openRouterModelLabel(settingsState.defaults.openRouterVisionModel)})</option>
-                {#each openRouterVisionSelectModels(settingsState.options.openRouterModels) as option}
-                  <option value={option.value}>{option.label}</option>
-                {/each}
-              </select>
-              <button
-                class="reset-row"
-                class:visible={settingsState.overrides.openRouterVisionModel}
-                disabled={!settingsState.overrides.openRouterVisionModel}
-                title="Reset Vision Model"
-                onclick={() => resetField("openRouterVisionModel")}
               >
                 <RotateCcw size={13} />
               </button>
@@ -1475,15 +1477,6 @@
                     "cloud",
                     () => useOpenRouterTextModel(model)
                   )}
-                  {#if modelSupportsVisionInput(model)}
-                    {@render modelUseControl(
-                      isActiveOpenRouterVisionModel(model),
-                      openRouterVisionUseLabel(model),
-                      "Use fallback",
-                      "cloud",
-                      () => useOpenRouterVisionModel(model.value)
-                    )}
-                  {/if}
                 </div>
               </div>
             {/each}
