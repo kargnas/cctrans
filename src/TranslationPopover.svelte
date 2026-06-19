@@ -275,8 +275,8 @@
 
   async function maybeShowForSequence() {
     const seq = preview.requestSequence ?? 0;
-    // Sequence 0 means the legacy throwaway window (already visible); only a persistent reused
-    // window needs an explicit per-translation show, signalled by Swift bumping the sequence.
+    // Sequence 0 is the initial empty state before the first translation; the reused toast window
+    // needs an explicit per-translation show, signalled by Swift bumping the sequence.
     if (!isTauri || seq === 0 || seq === lastShownSequence) return;
     lastShownSequence = seq;
     // The upcoming show repositions the window programmatically; do not let that look like a drag.

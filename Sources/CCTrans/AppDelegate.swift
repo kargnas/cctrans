@@ -1177,7 +1177,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // One hidden Tauri process is launched up front and reused for every translation, so the
         // WebView (and its CJK font cache) stays warm instead of cold-starting on each Cmd+C.
         _ = launchTauriHelper(
-            arguments: ["--translation-preview", "--persistent"],
+            arguments: ["--translation-preview"],
             activate: false,
             replaceExistingMatching: "--translation-preview"
         )

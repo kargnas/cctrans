@@ -632,7 +632,6 @@ struct TranslationPreviewState {
 struct TranslationPreviewRequest {
     mode: String,
     debug: bool,
-    caret_override: Option<ScreenRect>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -1044,15 +1043,10 @@ fn retranslate_preview(
 
 #[tauri::command]
 fn close_translation_preview(app: AppHandle) -> Result<(), String> {
-    // Persistent toast hides so the warmed WebView (and its font cache) survives for reuse;
-    // the legacy throwaway process still exits so its behavior is byte-for-byte unchanged.
-    if is_persistent_toast() {
-        if let Some(window) = app.get_webview_window("translation") {
-            window.hide().map_err(|error| error.to_string())?;
-        }
-        return Ok(());
+    // Hide (never exit) so the warm WebView and its font cache survive for the next translation.
+    if let Some(window) = app.get_webview_window("translation") {
+        window.hide().map_err(|error| error.to_string())?;
     }
-    app.exit(0);
     Ok(())
 }
 
@@ -1400,8 +1394,6 @@ pub fn run() {
                 if let Some(window) = app.get_webview_window("main") {
                     let _ = window.hide();
                 }
-                let settings =
-                    load_effective_settings(app.handle()).unwrap_or_else(|_| default_settings());
                 let height = if request.debug {
                     TRANSLATION_DEBUG_WINDOW_HEIGHT
                 } else if request.mode == "loading" || request.mode == "error" {
@@ -1409,52 +1401,10 @@ pub fn run() {
                 } else {
                     TRANSLATION_WINDOW_HEIGHT
                 };
-                if is_persistent_toast() {
-                    // Built hidden and positioned per-translation by show_translation_toast, so one
-                    // warm WebView is reused instead of cold-starting a process on every Cmd+C.
-                    let url = persistent_translation_url(request.debug);
-                    let window =
-                        WebviewWindowBuilder::new(app, "translation", WebviewUrl::App(url.into()))
-                            .title("CCTrans Translation")
-                            .inner_size(TRANSLATION_WINDOW_WIDTH, height)
-                            .min_inner_size(TRANSLATION_WINDOW_WIDTH, height)
-                            .resizable(false)
-                            .decorations(false)
-                            .transparent(true)
-                            .always_on_top(true)
-                            .skip_taskbar(true)
-                            .focusable(false)
-                            .focused(false)
-                            .visible(false)
-                            .build()?;
-                    apply_toast_theme(&window);
-                    macos_toast::install_pointer_monitor(app.handle().clone());
-                    start_translation_toast_watcher(app.handle().clone());
-                } else {
-                    let placement = translation_window_placement(
-                        app.handle(),
-                        &settings,
-                        TRANSLATION_WINDOW_WIDTH,
-                        height,
-                        request.caret_override,
-                    );
-                    // Svelte resizes the window to fit wrapped text; it must keep the edge that
-                    // points at the caret fixed, so tell it which edge is anchored.
-                    let anchor_bottom = match placement.arrow {
-                        TranslationArrowPlacement::AboveCaret => true,
-                        TranslationArrowPlacement::BelowCaret => false,
-                        TranslationArrowPlacement::Fallback => matches!(
-                            settings.toast_position,
-                            ToastPosition::BottomRight | ToastPosition::BottomLeft
-                        ),
-                    };
-                    let url = format!(
-                        "index.html?surface=translation&mode={}&debug={}&placement={}&anchor={}",
-                        request.mode,
-                        if request.debug { "1" } else { "0" },
-                        placement.arrow.as_query_value(),
-                        if anchor_bottom { "bottom" } else { "top" }
-                    );
+                // Built hidden and positioned per-translation by show_translation_toast, so one
+                // warm WebView is reused instead of cold-starting a process on every Cmd+C.
+                let url = persistent_translation_url(request.debug);
+                let window =
                     WebviewWindowBuilder::new(app, "translation", WebviewUrl::App(url.into()))
                         .title("CCTrans Translation")
                         .inner_size(TRANSLATION_WINDOW_WIDTH, height)
@@ -1466,13 +1416,11 @@ pub fn run() {
                         .skip_taskbar(true)
                         .focusable(false)
                         .focused(false)
-                        .build()
-                        .map(|window| {
-                            let _ = window.set_position(placement.position);
-                            apply_toast_theme(&window);
-                            macos_toast::install_pointer_monitor(app.handle().clone());
-                        })?;
-                }
+                        .visible(false)
+                        .build()?;
+                apply_toast_theme(&window);
+                macos_toast::install_pointer_monitor(app.handle().clone());
+                start_translation_toast_watcher(app.handle().clone());
             } else if let Some(surface) = startup_surface() {
                 if surface != AppSurface::Settings {
                     if let Some(window) = app.get_webview_window("main") {
@@ -1538,11 +1486,11 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building CCTrans Tauri app")
         .run(|_app, event| {
-            // The persistent toast must survive dismissing its only window so the next translation
-            // reuses the warm WebView; legacy throwaway processes are unaffected and exit normally.
+            // The toast process must survive dismissing its only window so the next translation
+            // reuses the warm WebView; only the toast process (not Settings) holds itself open.
             match event {
                 tauri::RunEvent::ExitRequested { api, .. } => {
-                    if is_persistent_toast() {
+                    if translation_preview_request().is_some() {
                         api.prevent_exit();
                     }
                 }
@@ -1728,7 +1676,6 @@ fn translation_preview_request() -> Option<TranslationPreviewRequest> {
     let mut enabled = false;
     let mut mode = "translated".to_string();
     let mut debug = false;
-    let mut caret_override = None;
 
     for arg in effective_args() {
         if arg.as_str() == "--translation-preview" {
@@ -1739,23 +1686,13 @@ fn translation_preview_request() -> Option<TranslationPreviewRequest> {
         } else if let Some(value) = arg.strip_prefix("--translation-preview-state=") {
             enabled = true;
             mode = normalized_translation_mode(value).to_string();
-        } else if let Some(value) = arg.strip_prefix("--translation-preview-caret=") {
-            enabled = true;
-            caret_override = parse_screen_rect(value);
         }
     }
 
     enabled.then_some(TranslationPreviewRequest {
         mode,
         debug,
-        caret_override,
     })
-}
-
-fn is_persistent_toast() -> bool {
-    effective_args()
-        .iter()
-        .any(|arg| arg.as_str() == "--persistent")
 }
 
 fn persistent_translation_url(debug: bool) -> String {
@@ -1774,19 +1711,6 @@ fn normalized_translation_mode(value: &str) -> &'static str {
         "error" => "error",
         _ => "translated",
     }
-}
-
-fn parse_screen_rect(value: &str) -> Option<ScreenRect> {
-    let numbers = value
-        .split(',')
-        .map(str::trim)
-        .map(str::parse::<f64>)
-        .collect::<Result<Vec<_>, _>>()
-        .ok()?;
-    if numbers.len() != 4 {
-        return None;
-    }
-    ScreenRect::new(numbers[0], numbers[1], numbers[2], numbers[3])
 }
 
 fn translation_window_placement(
