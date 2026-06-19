@@ -186,12 +186,6 @@
       ...settingsState.settings,
       [field]: resolved
     };
-    if (field === "openRouterTextModel") {
-      const model = settingsState.options.openRouterModels.find((option) => option.value === resolved);
-      if (modelSupportsVisionInput(model)) {
-        next.openRouterVisionModel = resolved;
-      }
-    }
     await saveSettings(next);
   }
 
@@ -205,10 +199,6 @@
       next.localModelID = model === "default" ? settingsState.defaults.localModelID : model;
     } else if (provider === "openRouter") {
       next.openRouterTextModel = model === "default" ? settingsState.defaults.openRouterTextModel : model;
-      const selectedModel = settingsState.options.openRouterModels.find((option) => option.value === next.openRouterTextModel);
-      if (modelSupportsVisionInput(selectedModel)) {
-        next.openRouterVisionModel = next.openRouterTextModel;
-      }
     }
     // appleTranslation is a single-model provider; only the provider changes.
     await saveSettings(next);
@@ -312,15 +302,7 @@
 
   async function useOpenRouterTextModel(model: OpenRouterModelOption) {
     if (!settingsState) return;
-    const next: Settings = {
-      ...settingsState.settings,
-      provider: "openRouter",
-      openRouterTextModel: model.value
-    };
-    if (modelSupportsVisionInput(model)) {
-      next.openRouterVisionModel = model.value;
-    }
-    await saveSettings(next);
+    await saveSettings({ ...settingsState.settings, provider: "openRouter", openRouterTextModel: model.value });
   }
 
   async function loadOpenRouterAPIKeyState() {
@@ -763,7 +745,7 @@
   }
 
   function visionFallbackOpenRouterModels(models: OpenRouterModelOption[]) {
-    return sortOpenRouterModels(models).filter((model) => modelSupportsVisionInput(model));
+    return sortOpenRouterModels(models).filter((model) => modelSupportsVisionInput(model) && isTextOutputOnlyModel(model));
   }
 
   function isTextOrVisionTranslationModel(model: OpenRouterModelOption) {
@@ -789,6 +771,11 @@
   function outputModalities(model: OpenRouterModelOption) {
     const output = normalizeModalities(model.outputModalities ?? []);
     return output.length > 0 ? output : ["text"];
+  }
+
+  function isTextOutputOnlyModel(model: OpenRouterModelOption) {
+    const output = outputModalities(model);
+    return output.length === 1 && output[0] === "text";
   }
 
   function normalizeModalities(values: string[]) {
@@ -1210,7 +1197,7 @@
             <label class="setting-row">
               <span class="setting-copy">
                 <strong>Vision Fallback Model</strong>
-                <span>Used by screenshot translation and beta image-output rendering.</span>
+                <span>Used only when the active translation model is text-only.</span>
               </span>
               <select
                 value={settingsState.settings.openRouterVisionModel === settingsState.defaults.openRouterVisionModel ? "default" : settingsState.settings.openRouterVisionModel}

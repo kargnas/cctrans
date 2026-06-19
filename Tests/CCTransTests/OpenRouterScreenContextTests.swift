@@ -137,11 +137,41 @@ struct OpenRouterScreenContextTests {
         #expect(result.model == "google/gemini-3.1-flash-lite")
     }
 
-    @Test func screenshotTranslationRequestsAndParsesImageOutputWhenVisionFallbackCanGenerateImages() async throws {
+    @Test func screenshotTranslationUsesSelectedVisionCapableTranslationModelBeforeFallback() async throws {
         let settings = TranslatorSettings(
             provider: .openRouter,
-            openRouterTextModel: "deepseek/deepseek-v4-flash",
-            openRouterVisionModel: "google/gemini-3.1-flash-image-preview"
+            openRouterTextModel: "minimax/minimax-m3",
+            openRouterVisionModel: "google/gemini-3.1-flash-lite"
+        )
+        let service = TranslationService(session: stubbedOpenRouterSession { request in
+            let body = try #require(request.jsonBody)
+            #expect(body["model"] as? String == "minimax/minimax-m3")
+            #expect(body["modalities"] == nil)
+            #expect(body["response_format"] != nil)
+
+            let messages = try #require(body["messages"] as? [[String: Any]])
+            let userMessage = try #require(messages.last)
+            let content = try #require(userMessage["content"] as? [[String: Any]])
+            #expect(content.contains { $0["type"] as? String == "image_url" })
+
+            return openRouterResponse("선택 모델 번역")
+        })
+
+        let result = try await service.translateImage(
+            pngData: Data([0x89, 0x50, 0x4E, 0x47]),
+            settings: settings,
+            credentials: TranslatorCredentials(openRouterAPIKey: "test-key", huggingFaceToken: nil)
+        )
+
+        #expect(result.text == "선택 모델 번역")
+        #expect(result.model == "minimax/minimax-m3")
+    }
+
+    @Test func screenshotTranslationRequestsAndParsesImageOutputWhenTranslationModelCanGenerateImages() async throws {
+        let settings = TranslatorSettings(
+            provider: .openRouter,
+            openRouterTextModel: "google/gemini-3.1-flash-image-preview",
+            openRouterVisionModel: "google/gemini-3.1-flash-lite"
         )
         let imageURL = "data:image/png;base64,translated"
         let capabilities = OpenRouterModelCapabilities(

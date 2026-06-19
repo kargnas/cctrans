@@ -184,13 +184,14 @@ public final class TranslationService: @unchecked Sendable {
         guard !pngData.isEmpty else {
             throw TranslationError.invalidImageData
         }
-        let modelCapabilities = openRouterModelCapabilities(settings.openRouterVisionModel)
+        let selectedModel = openRouterImageTranslationModel(settings: settings)
+        let modelCapabilities = openRouterModelCapabilities(selectedModel.id)
         guard modelCapabilities?.supportsVision != false else {
-            throw TranslationError.unsupportedImageModel(settings.openRouterVisionModel)
+            throw TranslationError.unsupportedImageModel(selectedModel.id)
         }
 
         let key = try require(credentials.openRouterAPIKey, named: "OPENROUTER_API_KEY")
-        let wantsImageOutput = modelCapabilities?.supportsImageOutput == true
+        let wantsImageOutput = !selectedModel.usesFallback && modelCapabilities?.supportsImageOutput == true
         let prompt = wantsImageOutput
             ? """
             Translate the visible text in this screenshot to \(settings.targetLanguage).
@@ -209,7 +210,7 @@ public final class TranslationService: @unchecked Sendable {
             """
 
         var body: [String: Any] = [
-            "model": settings.openRouterVisionModel,
+            "model": selectedModel.id,
             "messages": [
                 [
                     "role": "system",
@@ -231,10 +232,10 @@ public final class TranslationService: @unchecked Sendable {
                     ],
                 ],
             ],
-            "max_tokens": maxTokens(for: settings.openRouterVisionModel),
+            "max_tokens": maxTokens(for: selectedModel.id),
             "temperature": 0.1,
         ]
-        if let requestedModalities = modelCapabilities?.requestedOutputModalities {
+        if wantsImageOutput, let requestedModalities = modelCapabilities?.requestedOutputModalities {
             body["modalities"] = requestedModalities
         } else {
             body["response_format"] = translationSchema
@@ -245,10 +246,20 @@ public final class TranslationService: @unchecked Sendable {
             text: response.translation,
             description: response.description,
             providerTitle: TranslationProvider.openRouter.title,
-            model: settings.openRouterVisionModel,
+            model: selectedModel.id,
             usage: response.usage,
             imageURL: response.imageURL
         )
+    }
+
+    private func openRouterImageTranslationModel(settings: TranslatorSettings) -> (id: String, usesFallback: Bool) {
+        if settings.provider == .openRouter {
+            let activeModel = settings.openRouterTextModel
+            if openRouterModelCapabilities(activeModel)?.supportsVision != false {
+                return (activeModel, false)
+            }
+        }
+        return (settings.openRouterVisionModel, true)
     }
 
     private func translateWithLocalModel(
