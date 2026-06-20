@@ -1466,13 +1466,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         _ = openTauriSurface("permission-helper")
     }
 
-    // First-run flag kept in UserDefaults (not SettingsStore) so this window's
-    // logic stays self-contained. The suite default works inside the sandbox.
-    private var hasSeenOnboarding: Bool {
-        get { UserDefaults.standard.bool(forKey: "as.kargn.cctrans.hasSeenOnboarding") }
-        set { UserDefaults.standard.set(newValue, forKey: "as.kargn.cctrans.hasSeenOnboarding") }
-    }
-
     @objc private func showOnboardingWindow() {
         if onboardingController == nil {
             let isMAS: Bool = {
@@ -1513,15 +1506,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func showOnboardingOnLaunchIfNeeded() {
-        // App Review needs a visible, interactive window to verify the app (a
-        // menu-bar-only accessory reads as "nothing happened" and gets rejected
-        // under Guideline 2.1). Show it on the first launch and whenever a
-        // required permission is still missing; once everything is granted we
-        // stop nagging on every login-item launch. Reopen always re-shows it.
-        guard requiredPermissionsMissing() || !hasSeenOnboarding else {
+        // App Review (Guideline 2.1) needs a visible window on launch; a menu-bar-only
+        // accessory reads as "nothing happened" and gets rejected. So the Welcome window
+        // surfaces on every launch — it adapts to permission state (grant steps when a
+        // permission is missing, "all set" when granted). Power users can opt into a quiet
+        // menu-bar-only start, but only once permissions are granted: a missing permission
+        // means the app cannot work, so we always show the window then (which also keeps a
+        // reviewer's fresh-install first launch visible regardless of the setting).
+        if settingsStore.settings.startMenuBarOnly, !requiredPermissionsMissing() {
             return
         }
-        hasSeenOnboarding = true
         showOnboardingWindow()
     }
 

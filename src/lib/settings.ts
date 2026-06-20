@@ -13,7 +13,8 @@ export type SettingField =
   | "openRouterVisionModel"
   | "openRouterModelFilter"
   | "favoriteLocalModelIDs"
-  | "favoriteOpenRouterModels";
+  | "favoriteOpenRouterModels"
+  | "startMenuBarOnly";
 
 export type OpenRouterModelFilter = {
   modalityMode: "textOrVision" | "others";
@@ -40,6 +41,8 @@ export type Settings = {
   toastPosition: ToastPosition;
   toastCustomPosition: { x: number; y: number } | null;
   toastDuration: number;
+  // Start menu-bar-only on launch (no Welcome window); honored only when permissions are granted.
+  startMenuBarOnly: boolean;
 };
 
 export type SettingOption = {
@@ -135,7 +138,8 @@ export const fallbackState: SettingsState = {
     hasCompletedLocalModelSelection: false,
     toastPosition: "bottomRight",
     toastCustomPosition: null,
-    toastDuration: 4
+    toastDuration: 4,
+    startMenuBarOnly: false
   },
   defaults: {
     provider: "localHyMT2",
@@ -159,7 +163,8 @@ export const fallbackState: SettingsState = {
     hasCompletedLocalModelSelection: false,
     toastPosition: "bottomRight",
     toastCustomPosition: null,
-    toastDuration: 4
+    toastDuration: 4,
+    startMenuBarOnly: false
   },
   overrides: {
     provider: false,
@@ -173,7 +178,8 @@ export const fallbackState: SettingsState = {
     openRouterVisionModel: false,
     openRouterModelFilter: false,
     favoriteLocalModelIDs: false,
-    favoriteOpenRouterModels: false
+    favoriteOpenRouterModels: false,
+    startMenuBarOnly: false
   },
   options: {
     providers: [

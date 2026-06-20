@@ -95,6 +95,10 @@ public struct TranslatorSettings: Codable, Equatable, Sendable {
     public var toastPosition: ToastPosition
     public var toastCustomPosition: ToastCustomPosition?
     public var toastDuration: TimeInterval
+    // When true the app starts menu-bar-only (no Welcome window) on launch. Honored only
+    // once required permissions are granted; a missing permission always shows the window,
+    // both so the app is not silently broken and so App Review's first launch stays visible.
+    public var startMenuBarOnly: Bool
 
     public init(
         provider: TranslationProvider = .localHyMT2,
@@ -112,7 +116,8 @@ public struct TranslatorSettings: Codable, Equatable, Sendable {
         hasCompletedLocalModelSelection: Bool = false,
         toastPosition: ToastPosition = .bottomRight,
         toastCustomPosition: ToastCustomPosition? = nil,
-        toastDuration: TimeInterval = 4
+        toastDuration: TimeInterval = 4,
+        startMenuBarOnly: Bool = false
     ) {
         self.provider = provider
         self.hyMT2Model = hyMT2Model
@@ -130,6 +135,7 @@ public struct TranslatorSettings: Codable, Equatable, Sendable {
         self.toastPosition = toastPosition
         self.toastCustomPosition = toastCustomPosition
         self.toastDuration = toastDuration
+        self.startMenuBarOnly = startMenuBarOnly
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -149,6 +155,7 @@ public struct TranslatorSettings: Codable, Equatable, Sendable {
         case toastPosition
         case toastCustomPosition
         case toastDuration
+        case startMenuBarOnly
     }
 
     public init(from decoder: Decoder) throws {
@@ -172,6 +179,7 @@ public struct TranslatorSettings: Codable, Equatable, Sendable {
         toastPosition = try container.decodeIfPresent(ToastPosition.self, forKey: .toastPosition) ?? .bottomRight
         toastCustomPosition = try container.decodeIfPresent(ToastCustomPosition.self, forKey: .toastCustomPosition)
         toastDuration = try container.decodeIfPresent(TimeInterval.self, forKey: .toastDuration) ?? Self().toastDuration
+        startMenuBarOnly = try container.decodeIfPresent(Bool.self, forKey: .startMenuBarOnly) ?? false
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -195,6 +203,7 @@ public struct TranslatorSettings: Codable, Equatable, Sendable {
         try container.encodeIfDifferent(toastPosition, from: defaults.toastPosition, forKey: .toastPosition)
         try container.encodeIfDifferent(toastCustomPosition, from: defaults.toastCustomPosition, forKey: .toastCustomPosition)
         try container.encodeIfDifferent(toastDuration, from: defaults.toastDuration, forKey: .toastDuration)
+        try container.encodeIfDifferent(startMenuBarOnly, from: defaults.startMenuBarOnly, forKey: .startMenuBarOnly)
     }
 }
 

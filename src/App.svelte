@@ -1082,6 +1082,21 @@
               <span class="reset-row spacer"></span>
             </label>
 
+            <label class="setting-row toggle-row">
+              <span class="setting-copy">
+                <strong>Start in Menu Bar Only</strong>
+                <span class="setting-note">Launch quietly without opening a window. Skipped until macOS permissions are granted.</span>
+              </span>
+              <input
+                class="switch-input"
+                type="checkbox"
+                role="switch"
+                checked={settingsState.settings.startMenuBarOnly}
+                onchange={(event) => updateField("startMenuBarOnly", event.currentTarget.checked)}
+              />
+              <span class="reset-row spacer"></span>
+            </label>
+
             <label class="setting-row">
               <span class="setting-copy">
                 <strong>Source Language</strong>

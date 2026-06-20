@@ -203,6 +203,10 @@ struct Settings {
     toast_custom_position: Option<ToastCustomPosition>,
     #[serde(rename = "toastDuration")]
     toast_duration: f64,
+    // Consumed only by the Swift launcher (start menu-bar-only with no Welcome window);
+    // mirrored here so the settings round-trip through this helper preserves it.
+    #[serde(rename = "startMenuBarOnly")]
+    start_menu_bar_only: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -302,6 +306,8 @@ struct StoredSettings {
     toast_custom_position: Option<ToastCustomPosition>,
     #[serde(rename = "toastDuration")]
     toast_duration: Option<f64>,
+    #[serde(rename = "startMenuBarOnly")]
+    start_menu_bar_only: Option<bool>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -2215,6 +2221,9 @@ fn apply_stored_settings(stored: StoredSettings) -> Settings {
     if let Some(value) = stored.toast_duration {
         settings.toast_duration = value;
     }
+    if let Some(value) = stored.start_menu_bar_only {
+        settings.start_menu_bar_only = value;
+    }
     normalize_settings(settings)
 }
 
@@ -2310,6 +2319,8 @@ impl StoredSettings {
             toast_duration: ((settings.toast_duration - defaults.toast_duration).abs()
                 > f64::EPSILON)
                 .then_some(settings.toast_duration),
+            start_menu_bar_only: (settings.start_menu_bar_only != defaults.start_menu_bar_only)
+                .then_some(settings.start_menu_bar_only),
         }
     }
 
@@ -2331,6 +2342,7 @@ impl StoredSettings {
             && self.toast_position.is_none()
             && self.toast_custom_position.is_none()
             && self.toast_duration.is_none()
+            && self.start_menu_bar_only.is_none()
     }
 }
 
@@ -2422,6 +2434,7 @@ fn default_settings() -> Settings {
         toast_position: ToastPosition::BottomRight,
         toast_custom_position: None,
         toast_duration: 6.0,
+        start_menu_bar_only: false,
     }
 }
 
@@ -2518,6 +2531,10 @@ fn override_map(settings: &Settings, defaults: &Settings) -> BTreeMap<String, bo
         (
             "provider".to_string(),
             settings.provider != defaults.provider,
+        ),
+        (
+            "startMenuBarOnly".to_string(),
+            settings.start_menu_bar_only != defaults.start_menu_bar_only,
         ),
         (
             "localModelID".to_string(),
