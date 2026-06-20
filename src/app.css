@@ -759,10 +759,10 @@ input {
 
 .openrouter-filter-panel {
   display: grid;
-  grid-template-columns: minmax(104px, 1.1fr) repeat(4, minmax(72px, 0.8fr)) auto;
-  gap: 8px;
-  align-items: end;
-  padding: 9px 11px;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 10px 16px;
+  align-items: start;
+  padding: 10px 11px;
   border-bottom: 1px solid var(--border);
 }
 
@@ -789,10 +789,146 @@ input {
   white-space: nowrap;
 }
 
-.openrouter-filter-panel select,
-.openrouter-filter-panel input {
+.openrouter-filter-panel select {
   height: 26px;
   font-size: 10px;
+}
+
+/* Input + Output sit two-per-row (one grid column each). */
+.filter-reset {
+  grid-column: 1 / -1;
+  justify-self: end;
+}
+
+/* Range slider shared by the dual price sliders (RangeSlider.svelte) and the single Top # slider. */
+.range-field {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.range-label {
+  color: var(--secondary);
+  font-size: 9px;
+  font-weight: 560;
+}
+
+.cc-slider {
+  position: relative;
+  height: 36px;
+}
+
+.cc-slider-track {
+  position: absolute;
+  top: 11px;
+  left: 0;
+  right: 0;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--border);
+  transform: translateY(-50%);
+}
+
+.cc-slider-fill {
+  position: absolute;
+  top: 11px;
+  left: var(--lo, 0%);
+  right: calc(100% - var(--hi, 100%));
+  height: 5px;
+  border-radius: 999px;
+  background: var(--blue);
+  transform: translateY(-50%);
+}
+
+.cc-slider-fill.single {
+  left: 0;
+  right: calc(100% - var(--val, 100%));
+}
+
+/* Each value sits under its own thumb, tracking its position; clamped so edge values never clip. */
+.range-bubble {
+  position: absolute;
+  top: 21px;
+  transform: translateX(-50%);
+  color: var(--control-ink);
+  font-size: 10px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.range-bubble-lo {
+  left: clamp(0.7rem, var(--lo), calc(100% - 0.7rem));
+}
+
+.range-bubble-hi {
+  left: clamp(0.7rem, var(--hi), calc(100% - 0.7rem));
+}
+
+.range-bubble-single {
+  left: clamp(0.7rem, var(--val), calc(100% - 0.7rem));
+}
+
+/* Two of these overlay one track for the dual slider; the element is click-through so only the
+   thumbs grab. */
+.cc-range {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 22px;
+  margin: 0;
+  padding: 0;
+  /* Reset the global `select, input` chrome (1px border + radius + solid bg) that otherwise draws a
+     box around the bare track. */
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  -webkit-appearance: none;
+  appearance: none;
+  pointer-events: none;
+}
+
+/* The whole element must not show the global focus box; the thumb carries the focus ring instead. */
+.cc-range:focus,
+.cc-range:focus-visible {
+  outline: none;
+}
+
+.cc-range::-webkit-slider-runnable-track {
+  height: 22px;
+  background: transparent;
+}
+
+.cc-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 0.5px solid rgba(0, 0, 0, 0.28);
+  /* macOS slider knobs stay light in both themes; a theme var would go near-black on the dark
+     track and lose contrast. */
+  background: #fbfbfd;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35), 0 0 0 0.5px rgba(0, 0, 0, 0.06);
+  pointer-events: auto;
+  cursor: grab;
+  transition: transform 0.08s ease;
+}
+
+.cc-range::-webkit-slider-thumb:hover {
+  transform: scale(1.08);
+}
+
+.cc-range:active::-webkit-slider-thumb {
+  cursor: grabbing;
+  transform: scale(1.08);
+}
+
+.cc-range:focus-visible::-webkit-slider-thumb {
+  outline: 2px solid var(--blue);
+  outline-offset: 1px;
 }
 
 /* The OpenRouter catalog reuses the model-row list language instead of a wide
@@ -909,6 +1045,15 @@ input {
   border-color: color-mix(in srgb, var(--blue) 28%, transparent);
   background: color-mix(in srgb, var(--blue) 11%, transparent);
   color: var(--blue);
+  font-weight: 650;
+}
+
+/* Throughput is the secondary speed metric, so it reads as a neutral outline while latency-based
+   "Fast" keeps the prominent blue fill. */
+.model-badges em.tps-rank {
+  border-color: var(--border-strong);
+  background: transparent;
+  color: var(--secondary);
   font-weight: 650;
 }
 
@@ -1366,7 +1511,9 @@ kbd {
 .translation-image-result img {
   display: block;
   width: 100%;
-  max-height: 600px;
+  /* JS sets --cc-image-max-height from the display height so the whole bubble (image + footer +
+     close button) always fits on screen; falls back to 600px outside Tauri. */
+  max-height: var(--cc-image-max-height, 600px);
   object-fit: contain;
   border: 0.5px solid var(--bubble-border);
   border-radius: 8px;

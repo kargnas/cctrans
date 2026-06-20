@@ -247,6 +247,10 @@ struct OpenRouterModelFilter {
     min_completion_price_per_million: f64,
     #[serde(rename = "maxCompletionPricePerMillion")]
     max_completion_price_per_million: f64,
+    // Show only the most popular Top N models (daily-usage rank). 0 = no limit ("All").
+    // serde default keeps filters stored before this field deserializing cleanly.
+    #[serde(rename = "topRankLimit", default = "default_top_rank_limit")]
+    top_rank_limit: i64,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -388,6 +392,14 @@ struct OpenRouterModelOption {
         skip_serializing_if = "Option::is_none"
     )]
     throughput_rank: Option<i64>,
+    // Position in OpenRouter's `sort=latency-low-to-high` list (1 = lowest latency / fastest
+    // first token). Drives the "Fast #X" badge. Distinct from throughput_rank (tokens/sec).
+    #[serde(
+        default,
+        rename = "latencyRank",
+        skip_serializing_if = "Option::is_none"
+    )]
+    latency_rank: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     tokenizer: Option<String>,
     #[serde(
@@ -1066,7 +1078,18 @@ fn resize_translation_preview(
     let window = app
         .get_webview_window("translation")
         .ok_or("Translation window is not available.")?;
-    let clamped = height.clamp(TRANSLATION_WINDOW_HEIGHT, 720.0);
+    // Cap to the monitor work area (minus a margin) instead of a fixed 720px, otherwise a tall
+    // image-translation result grows past the cap and the bottom — including the close button and
+    // the "do not auto-dismiss" notice — is clipped off-screen with no way to close it. Fall back
+    // to 720 when the monitor is unknown.
+    let max_height = window
+        .current_monitor()
+        .ok()
+        .flatten()
+        .map(|monitor| work_area_from_monitor(&monitor).height - TRANSLATION_WINDOW_MARGIN * 2.0)
+        .filter(|height| *height > TRANSLATION_WINDOW_HEIGHT)
+        .unwrap_or(720.0);
+    let clamped = height.clamp(TRANSLATION_WINDOW_HEIGHT, max_height);
     let width = width.clamp(TRANSLATION_WINDOW_WIDTH, 820.0);
     let scale = window.scale_factor().map_err(|error| error.to_string())?;
     let previous = window.outer_size().map_err(|error| error.to_string())?;
@@ -2426,6 +2449,7 @@ fn default_settings() -> Settings {
             max_prompt_price_per_million: 2.0,
             min_completion_price_per_million: 0.0,
             max_completion_price_per_million: 10.0,
+            top_rank_limit: 50,
         },
         include_screen_context_for_llm: false,
         source_language: "Auto".to_string(),
@@ -2498,6 +2522,7 @@ fn normalized_openrouter_model_filter(mut filter: OpenRouterModelFilter) -> Open
             &mut filter.max_completion_price_per_million,
         );
     }
+    filter.top_rank_limit = normalized_top_rank_limit(filter.top_rank_limit);
     filter
 }
 
@@ -2507,6 +2532,16 @@ fn normalized_price_filter_value(value: f64, fallback: f64) -> f64 {
     } else {
         fallback
     }
+}
+
+fn default_top_rank_limit() -> i64 {
+    50
+}
+
+// 0 means "All" (no limit); otherwise cap at 50, which matches how many daily-usage
+// ranks we fetch from OpenRouter.
+fn normalized_top_rank_limit(value: i64) -> i64 {
+    value.clamp(0, 50)
 }
 
 fn normalized_string_list(values: Vec<String>) -> Vec<String> {
@@ -2903,6 +2938,9 @@ fn fetch_openrouter_models(api_key: Option<&str>) -> Result<Vec<OpenRouterModelO
     if let Ok(rankings) = fetch_openrouter_throughput_top_rankings(&agent) {
         apply_openrouter_throughput_rankings(&mut models, &rankings);
     }
+    if let Ok(rankings) = fetch_openrouter_latency_top_rankings(&agent) {
+        apply_openrouter_latency_rankings(&mut models, &rankings);
+    }
     if let Some(api_key) = api_key {
         if let Ok(rankings) = fetch_openrouter_daily_top_rankings(&agent, api_key) {
             apply_openrouter_daily_rankings(&mut models, &rankings);
@@ -2931,10 +2969,29 @@ fn fetch_openrouter_throughput_top_rankings(
     let payload: OpenRouterModelsResponse = response
         .into_json()
         .map_err(|error| format!("Could not decode OpenRouter throughput rankings: {error}"))?;
-    Ok(openrouter_throughput_top_rankings(payload.data, 20))
+    Ok(openrouter_order_top_rankings(payload.data, 20))
 }
 
-fn openrouter_throughput_top_rankings(
+// OpenRouter exposes no numeric latency in /models; it only orders results by latency. So
+// "Fast #X" is the position in the latency-low-to-high list (1 = fastest first token), the same
+// rank-by-order mechanism as throughput.
+fn fetch_openrouter_latency_top_rankings(
+    agent: &ureq::Agent,
+) -> Result<BTreeMap<String, i64>, String> {
+    let response = agent
+        .get("https://openrouter.ai/api/v1/models?sort=latency-low-to-high")
+        .set("User-Agent", "CCTrans/0.1")
+        .call()
+        .map_err(|error| format!("Could not refresh OpenRouter latency rankings: {error}"))?;
+    let payload: OpenRouterModelsResponse = response
+        .into_json()
+        .map_err(|error| format!("Could not decode OpenRouter latency rankings: {error}"))?;
+    Ok(openrouter_order_top_rankings(payload.data, 20))
+}
+
+// Assigns rank 1..=limit by the order OpenRouter returned (the API is already sorted by the
+// requested metric), so this is shared by throughput and latency.
+fn openrouter_order_top_rankings(
     models: Vec<OpenRouterAPIModel>,
     limit: usize,
 ) -> BTreeMap<String, i64> {
@@ -2964,7 +3021,7 @@ fn fetch_openrouter_daily_top_rankings(
     let payload: OpenRouterRankingsDailyResponse = response
         .into_json()
         .map_err(|error| format!("Could not decode OpenRouter rankings: {error}"))?;
-    Ok(openrouter_daily_top_rankings(payload.data, 20))
+    Ok(openrouter_daily_top_rankings(payload.data, 50))
 }
 
 fn openrouter_daily_top_rankings(
@@ -3013,6 +3070,15 @@ fn apply_openrouter_throughput_rankings(
 ) {
     for model in models {
         model.throughput_rank = rankings.get(&model.value).copied();
+    }
+}
+
+fn apply_openrouter_latency_rankings(
+    models: &mut [OpenRouterModelOption],
+    rankings: &BTreeMap<String, i64>,
+) {
+    for model in models {
+        model.latency_rank = rankings.get(&model.value).copied();
     }
 }
 
@@ -3068,6 +3134,7 @@ fn openrouter_model_from_api(model: OpenRouterAPIModel) -> Option<OpenRouterMode
         is_recommended,
         daily_token_rank: None,
         throughput_rank: None,
+        latency_rank: None,
         tokenizer: normalized_optional_string(architecture.tokenizer),
         max_completion_tokens: model.top_provider.max_completion_tokens,
         is_moderated: model.top_provider.is_moderated,
@@ -3164,6 +3231,7 @@ fn openrouter_model(
         is_recommended,
         daily_token_rank: None,
         throughput_rank: None,
+        latency_rank: None,
         tokenizer: None,
         max_completion_tokens: None,
         is_moderated: None,
@@ -4255,7 +4323,7 @@ mod tests {
             })
             .collect::<Vec<_>>();
 
-        let rankings = openrouter_throughput_top_rankings(models, 20);
+        let rankings = openrouter_order_top_rankings(models, 20);
         assert_eq!(rankings.get("provider/fast-00"), Some(&1));
         assert_eq!(rankings.get("provider/fast-01"), Some(&2));
         assert_eq!(rankings.get("provider/fast-19"), Some(&20));

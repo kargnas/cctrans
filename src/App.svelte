@@ -36,9 +36,10 @@
     type ToastPosition,
     type TranslationProvider
   } from "./lib/settings";
+  import RangeSlider from "./lib/RangeSlider.svelte";
 
   type Section = "general" | "models" | "shortcuts" | "excluded" | "advanced" | "info";
-  type OpenRouterSortKey = "model" | "releaseDate" | "dailyRank" | "throughputRank" | "inputPrice" | "outputPrice" | "context" | "maxCompletion";
+  type OpenRouterSortKey = "model" | "releaseDate" | "dailyRank" | "throughputRank" | "latencyRank" | "inputPrice" | "outputPrice" | "context" | "maxCompletion";
   type SortDirection = "asc" | "desc";
   type OpenRouterAPIKeyState = {
     configured: boolean;
@@ -64,6 +65,21 @@
   let openRouterSort = $state<{ key: OpenRouterSortKey; direction: SortDirection }>({
     key: "releaseDate",
     direction: "desc"
+  });
+
+  // OpenRouter has no fixed price ceiling, so the price sliders run to a soft cap chosen to keep the
+  // common low-price range easy to set; a max thumb at the cap means "no upper limit" so pricier
+  // outliers above it are still reachable (see openRouterModelMatchesFilter).
+  const INPUT_PRICE_SLIDER_MAX = 20;
+  const OUTPUT_PRICE_SLIDER_MAX = 60;
+  // Top # slider: 5..50 in steps of 5, with the far end (55) meaning "All" (stored as 0).
+  const TOP_RANK_SLIDER_MAX = 55;
+
+  // Local mirror of the Top # slider so dragging is smooth; only the released value is persisted.
+  let topRankSliderValue = $state(50);
+  $effect(() => {
+    const limit = settingsState?.settings.openRouterModelFilter.topRankLimit ?? 50;
+    topRankSliderValue = limit <= 0 ? TOP_RANK_SLIDER_MAX : limit;
   });
 
   let isOpenRouterTextOnly = $derived(
@@ -549,7 +565,8 @@
       `${formatContextWindow(model.contextWindow)} context`
     ];
     if (isDailyTopModel(model)) parts.push(`Top #${model.dailyTokenRank}`);
-    if (isThroughputTopModel(model)) parts.push(`Fast #${model.throughputRank}`);
+    if (isThroughputTopModel(model)) parts.push(`TPS #${model.throughputRank}`);
+    if (isLatencyTopModel(model)) parts.push(`Fast #${model.latencyRank}`);
     if (model.isReasoning) parts.push("Reasoning");
     if (model.isRecommended) parts.push("Recommended");
     return parts.join(" · ");
@@ -591,6 +608,9 @@
       }
       if (openRouterSort.key === "throughputRank") {
         return compareOptionalThroughputRank(left, right, openRouterSort.direction);
+      }
+      if (openRouterSort.key === "latencyRank") {
+        return compareOptionalLatencyRank(left, right, openRouterSort.direction);
       }
       if (openRouterSort.key === "inputPrice") {
         return (
@@ -644,6 +664,16 @@
     return (leftRank - rightRank || left.label.localeCompare(right.label)) * multiplier;
   }
 
+  function compareOptionalLatencyRank(left: OpenRouterModelOption, right: OpenRouterModelOption, direction: SortDirection) {
+    const leftRank = sortableLatencyRank(left);
+    const rightRank = sortableLatencyRank(right);
+    const leftMissing = leftRank === Number.MAX_SAFE_INTEGER;
+    const rightMissing = rightRank === Number.MAX_SAFE_INTEGER;
+    if (leftMissing !== rightMissing) return leftMissing ? 1 : -1;
+    const multiplier = direction === "asc" ? 1 : -1;
+    return (leftRank - rightRank || left.label.localeCompare(right.label)) * multiplier;
+  }
+
   function compareOptionalNumber(
     leftValue: number | null | undefined,
     rightValue: number | null | undefined,
@@ -668,6 +698,10 @@
     return isThroughputTopModel(model) ? model.throughputRank ?? Number.MAX_SAFE_INTEGER : Number.MAX_SAFE_INTEGER;
   }
 
+  function sortableLatencyRank(model: OpenRouterModelOption) {
+    return isLatencyTopModel(model) ? model.latencyRank ?? Number.MAX_SAFE_INTEGER : Number.MAX_SAFE_INTEGER;
+  }
+
   function isDailyTopModel(model: OpenRouterModelOption) {
     return typeof model.dailyTokenRank === "number" &&
       model.dailyTokenRank >= 1 &&
@@ -678,6 +712,12 @@
     return typeof model.throughputRank === "number" &&
       model.throughputRank >= 1 &&
       model.throughputRank <= 20;
+  }
+
+  function isLatencyTopModel(model: OpenRouterModelOption) {
+    return typeof model.latencyRank === "number" &&
+      model.latencyRank >= 1 &&
+      model.latencyRank <= 20;
   }
 
   function isActiveOpenRouterTextModel(model: OpenRouterModelOption) {
@@ -703,7 +743,20 @@
   function visibleOpenRouterModels(models: OpenRouterModelOption[]) {
     const filter = settingsState?.settings.openRouterModelFilter ?? settingsState?.defaults.openRouterModelFilter;
     if (!filter) return sortOpenRouterModels(models);
-    return sortOpenRouterModels(models).filter((model) => openRouterModelMatchesFilter(model, filter));
+    const matched = sortOpenRouterModels(models).filter((model) => openRouterModelMatchesFilter(model, filter));
+    return applyTopRankLimit(matched, filter.topRankLimit);
+  }
+
+  // "Top #" keeps only the most popular N. When OpenRouter daily-usage ranks are available (they
+  // need an API key) it filters by that popularity rank; otherwise it falls back to the first N of
+  // the current sort so the control still trims long lists. 0 = no limit ("All").
+  function applyTopRankLimit(models: OpenRouterModelOption[], limit: number) {
+    if (!limit || limit <= 0) return models;
+    const hasPopularity = models.some((model) => typeof model.dailyTokenRank === "number");
+    if (hasPopularity) {
+      return models.filter((model) => typeof model.dailyTokenRank === "number" && model.dailyTokenRank <= limit);
+    }
+    return models.slice(0, limit);
   }
 
   function openRouterTextSelectModels(models: OpenRouterModelOption[]) {
@@ -737,10 +790,14 @@
     if (filter.modalityMode === "textOrVision" && !textOrVision) return false;
     if (filter.modalityMode === "others" && textOrVision) return false;
 
+    // A max thumb at the slider's far end means "no upper limit", so don't filter out models
+    // priced above the slider cap in that case.
+    const maxPrompt = filter.maxPromptPricePerMillion >= INPUT_PRICE_SLIDER_MAX ? Infinity : filter.maxPromptPricePerMillion;
+    const maxCompletion = filter.maxCompletionPricePerMillion >= OUTPUT_PRICE_SLIDER_MAX ? Infinity : filter.maxCompletionPricePerMillion;
     return model.promptPricePerMillion >= filter.minPromptPricePerMillion &&
-      model.promptPricePerMillion <= filter.maxPromptPricePerMillion &&
+      model.promptPricePerMillion <= maxPrompt &&
       model.completionPricePerMillion >= filter.minCompletionPricePerMillion &&
-      model.completionPricePerMillion <= filter.maxCompletionPricePerMillion;
+      model.completionPricePerMillion <= maxCompletion;
   }
 
   function visionFallbackOpenRouterModels(models: OpenRouterModelOption[]) {
@@ -789,20 +846,19 @@
     });
   }
 
-  function numericFilterValue(value: string, fallback: number) {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+  function onTopRankInput(event: Event) {
+    topRankSliderValue = Number((event.currentTarget as HTMLInputElement).value);
   }
 
-  function defaultOpenRouterModelFilter(): OpenRouterModelFilter {
-    return settingsState?.defaults.openRouterModelFilter ?? {
-      modalityMode: "textOrVision",
-      minPromptPricePerMillion: 0,
-      maxPromptPricePerMillion: 2,
-      minCompletionPricePerMillion: 0,
-      maxCompletionPricePerMillion: 10
-    };
+  function commitTopRank() {
+    // The far end of the slider means "All" (no limit), stored as 0.
+    void updateOpenRouterModelFilter({
+      topRankLimit: topRankSliderValue >= TOP_RANK_SLIDER_MAX ? 0 : topRankSliderValue
+    });
   }
+
+  const topRankReadout = $derived(topRankSliderValue >= TOP_RANK_SLIDER_MAX ? "All" : `Top ${topRankSliderValue}`);
+  const topRankPercent = $derived(((topRankSliderValue - 5) / (TOP_RANK_SLIDER_MAX - 5)) * 100);
 
   function updateOpenRouterSort(key: OpenRouterSortKey) {
     openRouterSort = {
@@ -818,6 +874,7 @@
     if (key === "releaseDate") return openRouterSort.direction === "desc" ? "Newest" : "Oldest";
     if (key === "dailyRank") return openRouterSort.direction === "asc" ? "#1 First" : "#20 First";
     if (key === "throughputRank") return openRouterSort.direction === "asc" ? "#1 First" : "#20 First";
+    if (key === "latencyRank") return openRouterSort.direction === "asc" ? "#1 First" : "#20 First";
     if (key === "maxCompletion") return openRouterSort.direction === "desc" ? "Large" : "Small";
     return openRouterSort.direction === "asc" ? "Asc" : "Desc";
   }
@@ -1337,8 +1394,8 @@
               </button>
             </label>
             <div class="openrouter-filter-panel" aria-label="OpenRouter model filters">
-              <p class="filter-caption">Text / Vision Models means text-output models with text-only or text+image input. Price filters use USD per 1M tokens.</p>
-              <label>
+              <p class="filter-caption">Text / Vision Models means text-output models with text-only or text+image input. Prices are USD per 1M tokens; drag a max thumb to the right edge for no upper limit.</p>
+              <label class="filter-mode">
                 <span>Mode</span>
                 <select
                   value={settingsState.settings.openRouterModelFilter.modalityMode}
@@ -1348,68 +1405,51 @@
                   <option value="others">Others</option>
                 </select>
               </label>
-              <label>
-                <span>Input min (USD)</span>
-                <input
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  value={settingsState.settings.openRouterModelFilter.minPromptPricePerMillion}
-                  onchange={(event) => updateOpenRouterModelFilter({
-                    minPromptPricePerMillion: numericFilterValue(
-                      event.currentTarget.value,
-                      defaultOpenRouterModelFilter().minPromptPricePerMillion
-                    )
-                  })}
+              <div class="range-field filter-top">
+                <span class="range-label">Models shown</span>
+                <div class="cc-slider" style={`--val:${topRankPercent}%`}>
+                  <div class="cc-slider-track" aria-hidden="true"></div>
+                  <div class="cc-slider-fill single" aria-hidden="true"></div>
+                  <input
+                    class="cc-range"
+                    type="range"
+                    min="5"
+                    max={TOP_RANK_SLIDER_MAX}
+                    step="5"
+                    value={topRankSliderValue}
+                    aria-label="Top models shown"
+                    oninput={onTopRankInput}
+                    onchange={commitTopRank}
+                  />
+                  <span class="range-bubble range-bubble-single">{topRankReadout}</span>
+                </div>
+              </div>
+              <div class="filter-range">
+                <RangeSlider
+                  label="Input price"
+                  prefix="$"
+                  curve={3}
+                  min={settingsState.settings.openRouterModelFilter.minPromptPricePerMillion}
+                  max={settingsState.settings.openRouterModelFilter.maxPromptPricePerMillion}
+                  domainMax={INPUT_PRICE_SLIDER_MAX}
+                  step={0.05}
+                  onChange={(next) => updateOpenRouterModelFilter({ minPromptPricePerMillion: next.min, maxPromptPricePerMillion: next.max })}
                 />
-              </label>
-              <label>
-                <span>Input max (USD)</span>
-                <input
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  value={settingsState.settings.openRouterModelFilter.maxPromptPricePerMillion}
-                  onchange={(event) => updateOpenRouterModelFilter({
-                    maxPromptPricePerMillion: numericFilterValue(
-                      event.currentTarget.value,
-                      defaultOpenRouterModelFilter().maxPromptPricePerMillion
-                    )
-                  })}
+              </div>
+              <div class="filter-range">
+                <RangeSlider
+                  label="Output price"
+                  prefix="$"
+                  curve={3}
+                  min={settingsState.settings.openRouterModelFilter.minCompletionPricePerMillion}
+                  max={settingsState.settings.openRouterModelFilter.maxCompletionPricePerMillion}
+                  domainMax={OUTPUT_PRICE_SLIDER_MAX}
+                  step={0.1}
+                  onChange={(next) => updateOpenRouterModelFilter({ minCompletionPricePerMillion: next.min, maxCompletionPricePerMillion: next.max })}
                 />
-              </label>
-              <label>
-                <span>Output min (USD)</span>
-                <input
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  value={settingsState.settings.openRouterModelFilter.minCompletionPricePerMillion}
-                  onchange={(event) => updateOpenRouterModelFilter({
-                    minCompletionPricePerMillion: numericFilterValue(
-                      event.currentTarget.value,
-                      defaultOpenRouterModelFilter().minCompletionPricePerMillion
-                    )
-                  })}
-                />
-              </label>
-              <label>
-                <span>Output max (USD)</span>
-                <input
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  value={settingsState.settings.openRouterModelFilter.maxCompletionPricePerMillion}
-                  onchange={(event) => updateOpenRouterModelFilter({
-                    maxCompletionPricePerMillion: numericFilterValue(
-                      event.currentTarget.value,
-                      defaultOpenRouterModelFilter().maxCompletionPricePerMillion
-                    )
-                  })}
-                />
-              </label>
+              </div>
               <button
-                class="inline-action"
+                class="inline-action filter-reset"
                 disabled={!settingsState.overrides.openRouterModelFilter}
                 onclick={() => resetField("openRouterModelFilter")}
               >
@@ -1427,8 +1467,11 @@
               <button type="button" class:active={openRouterSort.key === "dailyRank"} onclick={() => updateOpenRouterSort("dailyRank")}>
                 Top <ArrowUpDown size={11} /><span class="sort-state">{sortLabel("dailyRank")}</span>
               </button>
-              <button type="button" class:active={openRouterSort.key === "throughputRank"} onclick={() => updateOpenRouterSort("throughputRank")}>
-                Fast <ArrowUpDown size={11} /><span class="sort-state">{sortLabel("throughputRank")}</span>
+              <button type="button" title="Throughput (tokens/sec) rank" class:active={openRouterSort.key === "throughputRank"} onclick={() => updateOpenRouterSort("throughputRank")}>
+                TPS <ArrowUpDown size={11} /><span class="sort-state">{sortLabel("throughputRank")}</span>
+              </button>
+              <button type="button" title="Lowest latency (fastest first token) rank" class:active={openRouterSort.key === "latencyRank"} onclick={() => updateOpenRouterSort("latencyRank")}>
+                Fast <ArrowUpDown size={11} /><span class="sort-state">{sortLabel("latencyRank")}</span>
               </button>
               <button type="button" class:active={openRouterSort.key === "inputPrice"} onclick={() => updateOpenRouterSort("inputPrice")}>
                 Input <ArrowUpDown size={11} /><span class="sort-state">{sortLabel("inputPrice")}</span>
@@ -1448,7 +1491,7 @@
                 class="model-row openrouter-row"
                 class:selected-model={settingsState.settings.provider === "openRouter" && settingsState.settings.openRouterTextModel === model.value}
                 class:top-ranked={isDailyTopModel(model)}
-                class:fast-ranked={isThroughputTopModel(model)}
+                class:fast-ranked={isLatencyTopModel(model)}
               >
                 <button
                   class="favorite-button"
@@ -1465,10 +1508,11 @@
                   {#if officialModelMetaText(model)}
                     <span class="official-meta">{officialModelMetaText(model)}</span>
                   {/if}
-                  {#if model.isRecommended || model.isFree || model.isReasoning || isDailyTopModel(model) || isThroughputTopModel(model)}
+                  {#if model.isRecommended || model.isFree || model.isReasoning || isDailyTopModel(model) || isThroughputTopModel(model) || isLatencyTopModel(model)}
                     <div class="model-badges">
                       {#if isDailyTopModel(model)}<em class="top-rank">Top #{model.dailyTokenRank}</em>{/if}
-                      {#if isThroughputTopModel(model)}<em class="fast-rank">Fast #{model.throughputRank}</em>{/if}
+                      {#if isLatencyTopModel(model)}<em class="fast-rank">Fast #{model.latencyRank}</em>{/if}
+                      {#if isThroughputTopModel(model)}<em class="tps-rank">TPS #{model.throughputRank}</em>{/if}
                       {#if model.isRecommended}<em>Recommended</em>{/if}
                       {#if model.isFree}<em class="free-event">Free event</em>{/if}
                       {#if model.isReasoning}<em>Reasoning</em>{/if}

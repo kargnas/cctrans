@@ -22,6 +22,8 @@ export type OpenRouterModelFilter = {
   maxPromptPricePerMillion: number;
   minCompletionPricePerMillion: number;
   maxCompletionPricePerMillion: number;
+  // Show only the most popular Top N models (daily-usage rank); 0 = no limit ("All").
+  topRankLimit: number;
 };
 
 export type Settings = {
@@ -66,6 +68,8 @@ export type OpenRouterModelOption = {
   isRecommended: boolean;
   dailyTokenRank?: number | null;
   throughputRank?: number | null;
+  // Rank in OpenRouter's latency-low-to-high order (1 = fastest first token). Drives "Fast #X".
+  latencyRank?: number | null;
   tokenizer?: string | null;
   maxCompletionTokens?: number | null;
   isModerated?: boolean | null;
@@ -128,7 +132,8 @@ export const fallbackState: SettingsState = {
       minPromptPricePerMillion: 0,
       maxPromptPricePerMillion: 2,
       minCompletionPricePerMillion: 0,
-      maxCompletionPricePerMillion: 10
+      maxCompletionPricePerMillion: 10,
+      topRankLimit: 50
     },
     favoriteLocalModelIDs: ["hymt2-mlx-1.8b-4bit"],
     favoriteOpenRouterModels: ["deepseek/deepseek-v4-flash"],
@@ -153,7 +158,8 @@ export const fallbackState: SettingsState = {
       minPromptPricePerMillion: 0,
       maxPromptPricePerMillion: 2,
       minCompletionPricePerMillion: 0,
-      maxCompletionPricePerMillion: 10
+      maxCompletionPricePerMillion: 10,
+      topRankLimit: 50
     },
     favoriteLocalModelIDs: ["hymt2-mlx-1.8b-4bit"],
     favoriteOpenRouterModels: ["deepseek/deepseek-v4-flash"],

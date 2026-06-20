@@ -131,6 +131,14 @@
 
   onMount(() => {
     isTauri = "__TAURI_INTERNALS__" in window;
+    // Cap the result image to the display height (minus toast chrome) so a tall screenshot result
+    // never grows the bubble past the screen and pushes the close button off-screen. Screen-based,
+    // not vh, to avoid a feedback loop with the JS-driven window resize.
+    const availHeight = window.screen?.availHeight ?? 0;
+    if (availHeight > 0) {
+      const imageCap = Math.max(240, availHeight - 300);
+      document.documentElement.style.setProperty("--cc-image-max-height", `${imageCap}px`);
+    }
     let disposed = false;
     applySettingsState(fallbackState);
     if (isTauri) {
@@ -897,7 +905,9 @@
       {:else}
         {#if resultImageURL}
           <figure class="translation-image-result">
-            <img src={resultImageURL} alt="Translated screenshot result" />
+            <!-- The image's height is unknown until it loads, so re-measure once it does, otherwise
+                 the window stays sized to the pre-load (too short) bubble and clips the footer. -->
+            <img src={resultImageURL} alt="Translated screenshot result" onload={syncWindowHeight} />
             {#if bodyText && bodyText !== "Image result"}
               <figcaption>{bodyText}</figcaption>
             {/if}
