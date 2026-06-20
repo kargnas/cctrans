@@ -994,10 +994,14 @@
         <span>Excluded Apps</span>
       </button>
       <div class="sidebar-separator"></div>
-      <button class:active={activeSection === "advanced"} onclick={() => (activeSection = "advanced")}>
-        <SlidersHorizontal size={15} />
-        <span>Advanced</span>
-      </button>
+      {#if settingsState.appVariant !== "mas"}
+        <!-- Advanced holds only Local Runtime settings, useless in the MAS sandbox (the Python/MLX
+             local backend cannot run there); hide it to match the gated Local model UI below. -->
+        <button class:active={activeSection === "advanced"} onclick={() => (activeSection = "advanced")}>
+          <SlidersHorizontal size={15} />
+          <span>Advanced</span>
+        </button>
+      {/if}
       <button class:active={activeSection === "info"} onclick={() => (activeSection = "info")}>
         <Info size={15} />
         <span>Info</span>
@@ -1234,6 +1238,10 @@
             </label>
           </div>
 
+          {#if settingsState.appVariant !== "mas"}
+          <!-- The Python/MLX local backend cannot run in the MAS sandbox, so local model picks are
+               hidden there to match the model dropdown's gated Local category — otherwise "Use this"
+               would set a provider that silently fails (or gets remapped to Apple on next launch). -->
           <h2>Local Model Favorites</h2>
           <div class="setting-group">
             {#each settingsState.options.localModels as option}
@@ -1263,6 +1271,7 @@
               <button onclick={() => runAction("showLocalModelSetup")}><ShieldCheck size={14} />Model Setup</button>
             </div>
           </div>
+          {/if}
 
           <h2>OpenRouter API Key</h2>
           <div class="setting-group">
