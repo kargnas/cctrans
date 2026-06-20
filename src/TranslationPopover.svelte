@@ -248,6 +248,11 @@
     if (sequence !== lastPinResetSequence || visibleMode === "loading") {
       lastPinResetSequence = sequence;
       pinned = false;
+      // A new translation starts fresh: kill any leftover/paused countdown from the previous toast so
+      // the guard in scheduleAutoDismiss re-arms instead of treating the stale state as still-running.
+      clearAutoDismiss();
+      clearCountdown();
+      countdownPaused = false;
     }
   });
 
@@ -714,6 +719,12 @@
   }
 
   function scheduleAutoDismiss() {
+    // Streaming partials, the 200ms result poll, and the final cost write all call this for the SAME
+    // translation. Each call used to reset countdownStartedAt, so the countdown never ticked down and a
+    // text toast never closed. Leave an already-running or hover-paused countdown intact; only a stopped,
+    // unpaused countdown (re)arms below. A new translation clears these (the requestSequence effect) so a
+    // stale guard can never strand a fresh toast.
+    if (dismissTimer !== undefined || countdownPaused) return;
     clearAutoDismiss();
     clearCountdown();
     if (debugMode || visibleMode === "loading" || autoDismissSuppressed) return;
@@ -734,6 +745,9 @@
     countdownStartedRemaining = Math.max(0, duration);
     countdownInterval = window.setInterval(updateCountdown, 100);
     dismissTimer = window.setTimeout(() => {
+      // Null the handle so the next translation's scheduleAutoDismiss guard sees a stopped timer and
+      // re-arms; a fired setTimeout id stays truthy otherwise and would block every later countdown.
+      dismissTimer = undefined;
       void closePopover();
     }, countdownStartedRemaining * 1000);
   }
