@@ -833,6 +833,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             originalText: inputText ?? title,
             settings: settings ?? settingsStore.settings
         )
+        // A missing on-device pack can't be downloaded from the invisible
+        // translation host, so surface the visible onboarding window where the
+        // system download sheet can actually present.
+        if let translationError = error as? TranslationError,
+           case .appleLanguagePackMissing = translationError {
+            showOnboardingWindow()
+        }
     }
 
     private func translationModelMenu() -> NSMenu {
@@ -1167,6 +1174,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         object["requestSequence"] = 0
+        // Also drop last session's result so a relaunched (or orphaned) toast
+        // can't render a stale "translation"; zeroing the sequence alone is not
+        // enough because the persisted content survives restarts.
+        for key in ["translatedText", "errorText", "originalText", "translatedImageURL"] where object[key] != nil {
+            object[key] = ""
+        }
         guard let updated = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]) else {
             return
         }

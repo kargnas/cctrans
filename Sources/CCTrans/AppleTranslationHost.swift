@@ -54,6 +54,34 @@ final class AppleTranslationHost: ObservableObject, AppleTranslationBacking {
     }
 
     private func enqueue(_ request: Request) {
+        // Pre-flight the on-device pack. The keep-alive host view is invisible,
+        // so Apple cannot present its first-use download sheet here — without the
+        // pack, prepareTranslation() hangs until the 60s watchdog. Fail fast with
+        // an actionable error (AppDelegate opens the visible onboarding download
+        // in response) instead of spinning. Only checkable with a concrete
+        // source; an auto-detect request resolves its source inside the session.
+        guard let source = request.source else {
+            enqueueReady(request)
+            return
+        }
+        let target = request.target
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let status = await LanguageAvailability().status(from: source, to: target)
+            guard status == .installed else {
+                let name = Locale.current.localizedString(
+                    forLanguageCode: target.languageCode?.identifier ?? ""
+                ) ?? "the selected language"
+                request.continuation.resume(
+                    throwing: TranslationError.appleLanguagePackMissing(targetName: name)
+                )
+                return
+            }
+            self.enqueueReady(request)
+        }
+    }
+
+    private func enqueueReady(_ request: Request) {
         pending.append(request)
         armConfiguration(source: request.source, target: request.target)
 
@@ -137,9 +165,7 @@ final class AppleTranslationHost: ObservableObject, AppleTranslationBacking {
         let name = Locale.current.localizedString(
             forLanguageCode: target.languageCode?.identifier ?? ""
         ) ?? "the selected language"
-        return TranslationError.localModelUnavailable(
-            "\(name) translation isn’t downloaded. Open CCTrans ▸ Getting Started… and tap Download to install it."
-        )
+        return TranslationError.appleLanguagePackMissing(targetName: name)
     }
 }
 

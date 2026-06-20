@@ -59,6 +59,7 @@ public enum TranslationError: LocalizedError, Sendable, Equatable {
     case invalidImageData
     case localModelUnavailable(String)
     case unsupportedImageModel(String)
+    case appleLanguagePackMissing(targetName: String)
 
     public var errorDescription: String? {
         switch self {
@@ -78,6 +79,8 @@ public enum TranslationError: LocalizedError, Sendable, Equatable {
             message
         case let .unsupportedImageModel(model):
             "\(OpenRouterModelCatalog.title(for: model)) cannot read images. Choose a Text + Image model for screenshot translation."
+        case let .appleLanguagePackMissing(targetName):
+            "\(targetName) translation isn’t downloaded. Open CCTrans ▸ Getting Started… and tap Download to install it."
         }
     }
 }
