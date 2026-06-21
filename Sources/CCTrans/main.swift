@@ -258,6 +258,10 @@ if CommandLine.arguments.contains("--translate-text-once") {
         ? { @Sendable partial in emitPreviewStreamLine(["partial": partial]) }
         : nil
     let result = try await TranslationService(
+        // Inject the managed client so the CLI translate path (used by the toast's
+        // retranslate and by dev-token smoke tests) can reach CCTrans Cloud. On unsigned
+        // CLI runs App Attest is unsupported, so the dev token (CCTRANS_DEV_TOKEN) is used.
+        managedClient: CctransManagedClient(attestor: CctransAppAttestor.shared),
         openRouterModelCapabilities: SharedOpenRouterModelCache.capabilities(for:)
     ).translateText(
         text,

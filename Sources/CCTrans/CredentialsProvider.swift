@@ -16,7 +16,11 @@ struct CredentialsProvider {
         let environment = EnvLoader.mergedEnvironment(dotenv: EnvLoader.load(paths: paths))
         return TranslatorCredentials(
             openRouterAPIKey: environment["OPENROUTER_API_KEY"],
-            huggingFaceToken: environment["HF_TOKEN"]
+            huggingFaceToken: environment["HF_TOKEN"],
+            // Managed-provider dev bypass (QA only). Put `CCTRANS_DEV_TOKEN=cctdev_…`
+            // in ~/.config/cctrans/.env (gitignored). Signed builds leave it unset and
+            // fall back to App Attest. Never commit this value.
+            cctransDevToken: environment["CCTRANS_DEV_TOKEN"]
         )
     }
 }

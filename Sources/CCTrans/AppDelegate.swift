@@ -35,6 +35,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let credentialsProvider = CredentialsProvider()
     private let translationService = TranslationService(
         appleBackend: AppleTranslationHost.shared,
+        // CCTrans Cloud client. Native App Attest proves the device on signed builds; an
+        // optional dev token (read from env in CredentialsProvider) covers QA on unsigned
+        // builds. Default base URL + URLSession.shared — all strategy lives server-side.
+        managedClient: CctransManagedClient(attestor: CctransAppAttestor.shared),
         openRouterModelCapabilities: SharedOpenRouterModelCache.capabilities(for:)
     )
     private let requestLogStore = RequestLogStore()
@@ -890,6 +894,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             action: #selector(setTranslationModel(_:)),
             representedObject: "appleTranslation:"
         ))
+        // CCTrans Cloud (kargn.as managed): translate with no OpenRouter key. Model-less,
+        // so a flat item like Apple Translation. Shown in every build (no MAS gate).
+        menu.addItem(checkableItem(
+            title: "CCTrans Cloud · No API key",
+            checked: settings.provider == .kargnasManaged,
+            action: #selector(setTranslationModel(_:)),
+            representedObject: "kargnasManaged:"
+        ))
         menu.addItem(submenuItem(title: "OpenRouter LLM", submenu: openRouterMenu))
         return menu
     }
@@ -941,7 +953,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             settings.localModelID = parts[1]
         case .openRouter:
             settings.openRouterTextModel = parts[1]
-        case .appleTranslation:
+        case .appleTranslation, .kargnasManaged:
+            // Model-less providers: the engine is fixed (Apple) or server-chosen
+            // (CCTrans Cloud), so there is no per-model id to apply from the menu.
             break
         }
         settingsStore.settings = settings
@@ -1231,6 +1245,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             OpenRouterModelCatalog.title(for: settings.openRouterTextModel)
         case .appleTranslation:
             "Apple Translation"
+        case .kargnasManaged:
+            // Server picks the model; the client never knows which (§4). Show the brand.
+            TranslationProvider.kargnasManaged.title
         }
     }
 

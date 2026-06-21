@@ -54,6 +54,9 @@ public enum TranslationPreviewMetadata {
             OpenRouterModelCatalog.title(for: settings.openRouterTextModel)
         case .appleTranslation:
             "Apple Translation"
+        case .kargnasManaged:
+            // Server picks the model; the client never knows which (§4). Show the brand.
+            TranslationProvider.kargnasManaged.title
         }
     }
 

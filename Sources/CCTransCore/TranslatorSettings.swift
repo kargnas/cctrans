@@ -7,12 +7,17 @@ public enum TranslationProvider: String, CaseIterable, Codable, Sendable {
     // local provider that survives App Sandbox, so it is the Mac App Store
     // build's local option (the Python-backed localHyMT2 cannot run there).
     case appleTranslation
+    // kargn.as managed cloud: translate through the author's server with no
+    // OpenRouter key. Anonymous device identity via App Attest (or a dev token for
+    // testing). All limits/costs live server-side; the client is a thin proxy (§3).
+    case kargnasManaged
 
     public var title: String {
         switch self {
         case .localHyMT2: "Local Model"
         case .openRouter: "OpenRouter LLM"
         case .appleTranslation: "Apple Translation"
+        case .kargnasManaged: "CCTrans Cloud"
         }
     }
 }
@@ -210,10 +215,14 @@ public struct TranslatorSettings: Codable, Equatable, Sendable {
 public struct TranslatorCredentials: Equatable, Sendable {
     public var openRouterAPIKey: String?
     public var huggingFaceToken: String?
+    // Optional dev-bypass token for the managed (CCTrans Cloud) provider. Present only
+    // for build automation / QA; signed builds use App Attest and leave this nil.
+    public var cctransDevToken: String?
 
-    public init(openRouterAPIKey: String?, huggingFaceToken: String?) {
+    public init(openRouterAPIKey: String?, huggingFaceToken: String?, cctransDevToken: String? = nil) {
         self.openRouterAPIKey = openRouterAPIKey?.nilIfBlank
         self.huggingFaceToken = huggingFaceToken?.nilIfBlank
+        self.cctransDevToken = cctransDevToken?.nilIfBlank
     }
 }
 

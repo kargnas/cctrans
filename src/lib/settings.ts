@@ -1,4 +1,4 @@
-export type TranslationProvider = "localHyMT2" | "openRouter" | "appleTranslation";
+export type TranslationProvider = "localHyMT2" | "openRouter" | "appleTranslation" | "kargnasManaged";
 export type ToastPosition = "bottomRight" | "bottomLeft" | "topRight" | "topLeft" | "custom";
 
 export type SettingField =
@@ -191,6 +191,7 @@ export const fallbackState: SettingsState = {
     providers: [
       { label: "Local Model", value: "localHyMT2" },
       { label: "Apple Translation", value: "appleTranslation", note: "On-device" },
+      { label: "CCTrans Cloud", value: "kargnasManaged", note: "No API key" },
       { label: "OpenRouter LLM", value: "openRouter" }
     ],
     localModels: [

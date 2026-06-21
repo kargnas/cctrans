@@ -60,6 +60,10 @@ public enum TranslationError: LocalizedError, Sendable, Equatable {
     case localModelUnavailable(String)
     case unsupportedImageModel(String)
     case appleLanguagePackMissing(targetName: String)
+    // CCTrans Cloud hit a quota/cap boundary. Carries only the server's display copy
+    // (§3 secret boundary — no numbers). Rendered verbatim; `cta` is held for when
+    // in-app purchase ships but is not shown as a button yet (payment deferred).
+    case managedBlocked(title: String, body: String, cta: String)
 
     public var errorDescription: String? {
         switch self {
@@ -81,6 +85,11 @@ public enum TranslationError: LocalizedError, Sendable, Equatable {
             "\(OpenRouterModelCatalog.title(for: model)) cannot read images. Choose a Text + Image model for screenshot translation."
         case let .appleLanguagePackMissing(targetName):
             "\(targetName) translation isn’t downloaded. Open CCTrans ▸ Getting Started… and tap Download to install it."
+        case let .managedBlocked(title, body, _):
+            // Render the server's copy verbatim (§3 — the client never learns the
+            // numbers). The cta is intentionally NOT shown as text: it maps to a
+            // purchase button that ships with in-app purchase later (payment deferred).
+            [title, body].filter { !$0.isEmpty }.joined(separator: "\n")
         }
     }
 }
@@ -89,15 +98,18 @@ public final class TranslationService: @unchecked Sendable {
     private let session: URLSession
     private let localBackendGate = LocalBackendExecutionGate()
     private let appleBackend: (any AppleTranslationBacking)?
+    private let managedClient: CctransManagedClient?
     private let openRouterModelCapabilities: @Sendable (String) -> OpenRouterModelCapabilities?
 
     public init(
         session: URLSession = .shared,
         appleBackend: (any AppleTranslationBacking)? = nil,
+        managedClient: CctransManagedClient? = nil,
         openRouterModelCapabilities: (@Sendable (String) -> OpenRouterModelCapabilities?)? = nil
     ) {
         self.session = session
         self.appleBackend = appleBackend
+        self.managedClient = managedClient
         self.openRouterModelCapabilities = openRouterModelCapabilities ?? { OpenRouterModelCatalog.capabilities(for: $0) }
     }
 
@@ -141,6 +153,14 @@ public final class TranslationService: @unchecked Sendable {
                 languages: languages,
                 onPartial: onPartial
             )
+        case .kargnasManaged:
+            return try await translateWithManaged(
+                text: trimmed,
+                imageDataURL: nil,
+                mode: "text",
+                languages: languages,
+                credentials: credentials
+            )
         }
     }
 
@@ -179,6 +199,51 @@ public final class TranslationService: @unchecked Sendable {
         )
     }
 
+    /// CCTrans Cloud (kargn.as managed) path. The client is a thin proxy: it sends the
+    /// text/image to the server and renders whatever comes back. No model selection, no
+    /// limits, no costs on the client (§3 — all server-side). A quota/cap block returns
+    /// `.managedBlocked`, surfaced verbatim in the toast.
+    private func translateWithManaged(
+        text: String?,
+        imageDataURL: String?,
+        mode: String,
+        languages: ResolvedTranslationLanguages,
+        credentials: TranslatorCredentials
+    ) async throws -> TranslationResult {
+        guard let managedClient else {
+            throw TranslationError.localModelUnavailable(
+                "CCTrans Cloud needs the running CCTrans app; this context has no managed client."
+            )
+        }
+        // The server maps a language code to its own label. Auto is never a target (the
+        // target list excludes it), so the English fallback is purely defensive.
+        let targetCode = TranslationLanguage.options
+            .first { $0.name == languages.targetLanguage }?.code ?? "en"
+
+        let outcome = try await managedClient.translate(
+            mode: mode,
+            text: text,
+            imageDataURL: imageDataURL,
+            targetCode: targetCode,
+            devToken: credentials.cctransDevToken
+        )
+
+        switch outcome {
+        case let .success(kind, resultText, imageURL):
+            return TranslationResult(
+                text: resultText.isEmpty && imageURL != nil ? "Image result" : resultText,
+                providerTitle: TranslationProvider.kargnasManaged.title,
+                model: "cctrans/managed-\(kind)",
+                sourceLanguage: languages.sourceLanguage,
+                targetLanguage: languages.targetLanguage,
+                detectedSourceLanguage: languages.detectedSourceLanguage,
+                imageURL: imageURL
+            )
+        case let .blocked(_, title, body, cta):
+            throw TranslationError.managedBlocked(title: title, body: body, cta: cta)
+        }
+    }
+
     public func translateImage(
         pngData: Data,
         settings: TranslatorSettings,
@@ -186,6 +251,23 @@ public final class TranslationService: @unchecked Sendable {
     ) async throws -> TranslationResult {
         guard !pngData.isEmpty else {
             throw TranslationError.invalidImageData
+        }
+        if settings.provider == .kargnasManaged {
+            // Screenshot via the managed cloud uses vision mode: the server reads the
+            // image and returns translated text. Same /translate path as text — only the
+            // payload differs — so there is no separate screenshot code path to drift.
+            let languages = TranslationLanguageResolver.resolve(
+                text: "",
+                sourceLanguage: settings.sourceLanguage,
+                targetLanguage: settings.targetLanguage
+            )
+            return try await translateWithManaged(
+                text: nil,
+                imageDataURL: "data:image/png;base64,\(pngData.base64EncodedString())",
+                mode: "vision",
+                languages: languages,
+                credentials: credentials
+            )
         }
         let selectedModel = openRouterImageTranslationModel(settings: settings)
         let modelCapabilities = openRouterModelCapabilities(selectedModel.id)

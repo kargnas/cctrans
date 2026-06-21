@@ -208,7 +208,13 @@
   async function selectTranslationModel(value: string) {
     if (!settingsState) return;
     const [provider, model] = value.split(/:(.*)/s).filter(Boolean);
-    if (provider !== "localHyMT2" && provider !== "openRouter" && provider !== "appleTranslation") return;
+    if (
+      provider !== "localHyMT2" &&
+      provider !== "openRouter" &&
+      provider !== "appleTranslation" &&
+      provider !== "kargnasManaged"
+    )
+      return;
 
     const next: Settings = { ...settingsState.settings, provider };
     if (provider === "localHyMT2") {
@@ -216,7 +222,8 @@
     } else if (provider === "openRouter") {
       next.openRouterTextModel = model === "default" ? settingsState.defaults.openRouterTextModel : model;
     }
-    // appleTranslation is a single-model provider; only the provider changes.
+    // appleTranslation and kargnasManaged are model-less providers (engine fixed / chosen
+    // server-side); only the provider changes.
     await saveSettings(next);
   }
 
@@ -503,6 +510,9 @@
     if (settings.provider === "appleTranslation") {
       return "appleTranslation:apple";
     }
+    if (settings.provider === "kargnasManaged") {
+      return "kargnasManaged:cloud";
+    }
     return settings.openRouterTextModel === defaults.openRouterTextModel
       ? "openRouter:default"
       : `openRouter:${settings.openRouterTextModel}`;
@@ -519,18 +529,21 @@
   function translationModelProviderLabel(provider: TranslationProvider) {
     if (provider === "localHyMT2") return "Local Model";
     if (provider === "appleTranslation") return "Apple Translation";
+    if (provider === "kargnasManaged") return "CCTrans Cloud";
     return "OpenRouter LLM";
   }
 
   function translationModelProviderDetail(settings: Settings) {
     if (settings.provider === "localHyMT2") return "Local runtime active";
     if (settings.provider === "appleTranslation") return "On-device Apple model active";
+    if (settings.provider === "kargnasManaged") return "CCTrans Cloud active · no API key";
     return "OpenRouter API active";
   }
 
   function translationModelName(settings: Settings) {
     if (settings.provider === "localHyMT2") return localModelLabel(settings.localModelID);
     if (settings.provider === "appleTranslation") return "System (on-device)";
+    if (settings.provider === "kargnasManaged") return "Managed (server-chosen)";
     return openRouterModelLabel(settings.openRouterTextModel);
   }
 
@@ -946,6 +959,16 @@
           </button>
           <button
             type="button"
+            class:active={activeTranslationModelProvider === "kargnasManaged"}
+            onmouseenter={() => (activeTranslationModelProvider = "kargnasManaged")}
+            onclick={() => (activeTranslationModelProvider = "kargnasManaged")}
+          >
+            <Cloud size={14} />
+            <span>CCTrans Cloud</span>
+            <ChevronRight size={13} />
+          </button>
+          <button
+            type="button"
             class:active={activeTranslationModelProvider === "openRouter"}
             onmouseenter={() => (activeTranslationModelProvider = "openRouter")}
             onclick={() => (activeTranslationModelProvider = "openRouter")}
@@ -968,6 +991,18 @@
                 <small>Free · offline · languages download on first use</small>
               </span>
               {#if translationModelValue(state.settings, state.defaults) === "appleTranslation:apple"}<Check size={14} />{/if}
+            </button>
+          {:else if activeTranslationModelProvider === "kargnasManaged"}
+            <button
+              type="button"
+              class:selected={translationModelValue(state.settings, state.defaults) === "kargnasManaged:cloud"}
+              onclick={() => chooseTranslationModel("kargnasManaged:cloud")}
+            >
+              <span>
+                <strong>Managed Cloud</strong>
+                <small>Free · no API key · model chosen for you</small>
+              </span>
+              {#if translationModelValue(state.settings, state.defaults) === "kargnasManaged:cloud"}<Check size={14} />{/if}
             </button>
           {:else if activeTranslationModelProvider === "localHyMT2"}
             <button
