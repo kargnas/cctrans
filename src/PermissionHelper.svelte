@@ -83,8 +83,9 @@
       <div>
         <h1>Permission Helper</h1>
         {#if settingsState.appVariant === "mas"}
-          <!-- The sandboxed build cannot use Accessibility (caret popovers). -->
-          <p>Grant Input Monitoring for Cmd+C detection and screen permissions for screenshot translation.</p>
+          <!-- Sandboxed build: Cmd+C detection runs through pasteboard polling (no Input
+               Monitoring — App Review 2.4.5), and Accessibility is unavailable. -->
+          <p>Cmd+C detection works automatically. Grant Screen Recording for screenshot translation.</p>
         {:else}
           <p>Grant keyboard permissions for Cmd+C detection, Accessibility for caret popovers, and screen permissions for screenshot translation.</p>
         {/if}
@@ -112,20 +113,23 @@
 
       <div class="permission-column">
         <section class="setting-group standalone">
-          <div class="setting-row">
-            <span class="setting-copy"><strong>Keyboard</strong></span>
-            <span class:ready={settingsState.permissions.keyboard} class="status-pill">
-              {settingsState.permissions.keyboard ? "Ready" : "Not granted"}
-            </span>
-            {#if !settingsState.permissions.keyboard}
-              <button class="small-button inline-btn" onclick={() => action("openInputMonitoring")}>
-                <Keyboard size={12} />Open Settings
-              </button>
-            {:else}
-              <span class="reset-row spacer"></span>
-            {/if}
-          </div>
           {#if settingsState.appVariant !== "mas"}
+            <!-- Keyboard (Input Monitoring) + Keyboard Cursor (Accessibility) apply only to
+                 the direct-distribution build. The MAS build requests neither: Cmd+C is
+                 detected via pasteboard polling (App Review 2.4.5). -->
+            <div class="setting-row">
+              <span class="setting-copy"><strong>Keyboard</strong></span>
+              <span class:ready={settingsState.permissions.keyboard} class="status-pill">
+                {settingsState.permissions.keyboard ? "Ready" : "Not granted"}
+              </span>
+              {#if !settingsState.permissions.keyboard}
+                <button class="small-button inline-btn" onclick={() => action("openInputMonitoring")}>
+                  <Keyboard size={12} />Open Settings
+                </button>
+              {:else}
+                <span class="reset-row spacer"></span>
+              {/if}
+            </div>
             <div class="setting-row">
               <span class="setting-copy">
                 <strong>Keyboard Cursor</strong>
@@ -159,8 +163,8 @@
         </section>
 
         <section class="action-list">
-          <button onclick={() => action("openInputMonitoring")}><Keyboard size={14} />Open Input Monitoring Settings</button>
           {#if settingsState.appVariant !== "mas"}
+            <button onclick={() => action("openInputMonitoring")}><Keyboard size={14} />Open Input Monitoring Settings</button>
             <button onclick={() => action("openAccessibility")}><Accessibility size={14} />Open Accessibility Settings</button>
           {/if}
           <button onclick={() => action("openScreenRecording")}><Monitor size={14} />Open Screen Recording Settings</button>

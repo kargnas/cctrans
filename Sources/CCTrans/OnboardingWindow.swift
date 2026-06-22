@@ -56,31 +56,35 @@ final class OnboardingModel: ObservableObject {
     // (which it does on an Input Monitoring grant); Refresh covers Screen Recording
     // and the post-relaunch read.
     func refresh() {
-        var rows: [Permission] = [
-            Permission(
-                id: "input",
-                title: "Input Monitoring",
-                detail: "Detects the double ⌘C that triggers a translation.",
-                granted: CGPreflightListenEventAccess(),
-                request: {
-                    _ = CGRequestListenEventAccess()
-                    Self.openPrivacySettings("Privacy_ListenEvent")
-                }
-            ),
-            Permission(
-                id: "screen",
-                title: "Screen Recording",
-                detail: "Captures the selected region for screenshot translation.",
-                granted: CGPreflightScreenCaptureAccess(),
-                request: {
-                    _ = CGRequestScreenCaptureAccess()
-                    Self.openPrivacySettings("Privacy_ScreenCapture")
-                }
-            ),
-        ]
-        // The MAS build routes selection capture through Input Monitoring + the
-        // sandbox, so it never asks for Accessibility; only the Developer ID build
-        // reads the selection via the Accessibility API.
+        var rows: [Permission] = []
+        #if !MAS_BUILD
+        // Input Monitoring is requested ONLY on direct-distribution builds. App Review
+        // Guideline 2.4.5 forbids requesting it to drive a hotkey, so the MAS build omits
+        // this card and detects the double ⌘C through PasteboardMonitor (clipboard-
+        // changeCount polling), which needs no permission at all.
+        rows.append(Permission(
+            id: "input",
+            title: "Input Monitoring",
+            detail: "Detects the double ⌘C that triggers a translation.",
+            granted: CGPreflightListenEventAccess(),
+            request: {
+                _ = CGRequestListenEventAccess()
+                Self.openPrivacySettings("Privacy_ListenEvent")
+            }
+        ))
+        #endif
+        rows.append(Permission(
+            id: "screen",
+            title: "Screen Recording",
+            detail: "Captures the selected region for screenshot translation.",
+            granted: CGPreflightScreenCaptureAccess(),
+            request: {
+                _ = CGRequestScreenCaptureAccess()
+                Self.openPrivacySettings("Privacy_ScreenCapture")
+            }
+        ))
+        // The MAS build reads the selection through the sandbox, so it never asks for
+        // Accessibility; only the Developer ID build uses the Accessibility API.
         if !isMAS {
             rows.append(Permission(
                 id: "ax",
@@ -177,7 +181,10 @@ private struct PermissionRowView: View {
             }
             Spacer()
             if !permission.granted {
-                Button("Grant") { permission.request() }
+                // App Review 5.1.1(iv): the priming button shown before the OS Screen
+                // Recording prompt must not say "Grant"/"Allow"; Apple asks for neutral
+                // wording like "Continue"/"Next".
+                Button("Continue") { permission.request() }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)

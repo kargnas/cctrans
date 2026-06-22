@@ -44,7 +44,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let requestLogStore = RequestLogStore()
     private let localModelWarmupNotifier = LocalModelWarmupNotifier()
     private var statusItem: NSStatusItem?
+    // Only the direct-distribution build observes the keyboard; the MAS build relies on
+    // PasteboardMonitor instead (no Input Monitoring — App Review 2.4.5).
+    #if !MAS_BUILD
     private var keyboardMonitor: KeyboardMonitor?
+    #endif
     private var pasteboardMonitor: PasteboardMonitor?
     private var screenshotHotKey: ScreenshotHotKey?
     private var keepAliveWindow: NSWindow?
@@ -136,7 +140,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         configureStatusItem()
         localModelWarmupNotifier.requestAuthorization()
         startScreenshotHotKey()
+        #if !MAS_BUILD
         startKeyboardMonitor()
+        #endif
         startPasteboardMonitor()
         resetPersistedToastSequence()
         // Clear any persistent toast helper orphaned by a previous main process
@@ -518,6 +524,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return "\(info), \(diagnostic)"
     }
 
+    #if !MAS_BUILD
     private func startKeyboardMonitor() {
         let onScreenshot: (() -> Void)?
         if didRegisterScreenshotHotKey {
@@ -539,6 +546,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         keyboardMonitor?.start()
     }
+    #endif
 
     private func startScreenshotHotKey() {
         screenshotHotKey = ScreenshotHotKey { [weak self] in
@@ -1538,13 +1546,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func requiredPermissionsMissing() -> Bool {
         #if MAS_BUILD
-        return !CGPreflightListenEventAccess() || !CGPreflightScreenCaptureAccess()
+        // Input Monitoring is no longer requested on MAS (App Review 2.4.5): double-⌘C
+        // runs through pasteboard polling with no permission. Only Screen Recording (for
+        // screenshot translation) remains a grantable permission worth surfacing.
+        return !CGPreflightScreenCaptureAccess()
         #else
         return !CGPreflightListenEventAccess() || !AXIsProcessTrusted() || !CGPreflightScreenCaptureAccess()
         #endif
     }
 
     private func reportKeyboardPermissionStatus(requestIfMissing: Bool) {
+        #if MAS_BUILD
+        // The MAS build needs no keyboard permission: double-⌘C is detected through
+        // PasteboardMonitor (clipboard polling) and Shift+Cmd+2 through the Carbon
+        // ScreenshotHotKey. Requesting Input Monitoring here would violate App Review 2.4.5.
+        _ = requestIfMissing
+        print("MAS build: copy detection uses pasteboard polling — no keyboard permission required.")
+        #else
         let canListenToEvents = CGPreflightListenEventAccess()
         let isAccessibilityTrusted = AXIsProcessTrusted()
 
@@ -1560,6 +1578,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         print("Keyboard permission needed. Enable Input Monitoring or Accessibility for CCTrans, then relaunch the app.")
+        #endif
     }
 
     // The settings/permission UI lives in the Tauri helper, a different TCC subject
@@ -1568,8 +1587,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // so publish them to the shared dir for it to read back.
     private func writePermissionStatusCache() {
         let accessibility = AXIsProcessTrusted()
+        #if MAS_BUILD
+        // MAS detects double-⌘C through pasteboard polling, which needs no Input
+        // Monitoring, so the keyboard capability is always satisfied (App Review 2.4.5).
+        let keyboardReady = true
+        #else
+        let keyboardReady = CGPreflightListenEventAccess() || accessibility
+        #endif
         let status: [String: Bool] = [
-            "keyboard": CGPreflightListenEventAccess() || accessibility,
+            "keyboard": keyboardReady,
             "accessibility": accessibility,
             "screen": CGPreflightScreenCaptureAccess(),
         ]

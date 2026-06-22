@@ -1,6 +1,14 @@
 import AppKit
 import CCTransCore
 
+// Global ⌘C / double-⌘C detection via a listen-only CGEventTap (rides Input Monitoring)
+// with an NSEvent-monitor (Accessibility) fallback. NOT compiled into the Mac App Store
+// build: App Review Guideline 2.4.5 forbids requesting Input Monitoring to drive a hotkey,
+// and a sandboxed global NSEvent monitor needs Accessibility, which is equally off-limits.
+// The MAS build detects the double ⌘C through PasteboardMonitor (clipboard-changeCount
+// polling) and registers Shift+Cmd+2 through the permission-free Carbon ScreenshotHotKey,
+// so KeyboardMonitor has no role there.
+#if !MAS_BUILD
 @MainActor
 final class KeyboardMonitor {
     private struct KeySnapshot: Sendable {
@@ -191,3 +199,4 @@ final class KeyboardMonitor {
         }
     }
 }
+#endif
