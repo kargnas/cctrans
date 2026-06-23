@@ -107,8 +107,62 @@ altool step and a missing signing secret.
 ```
 
 Report to the user: the run URL/result, the version+build uploaded, and that the
-build is processing (not yet live) — App Review / TestFlight distribution is a
-separate manual step in App Store Connect.
+build is processing (not yet live). Submitting it for App Review is the next step
+(Step 6) — uploading alone does NOT submit.
+
+## Step 6 — Submit for App Review (and the resubmit blocker)
+
+Steps 1–5 only UPLOAD the build; they do not submit it. To put a version into the
+review queue, attach the build to the App Store version and **Submit**. Two ways:
+
+- **ASC web** (most reliable, ~3 clicks): the distribution page →
+  `https://appstoreconnect.apple.com/apps/6779669255/distribution` → open the
+  version → Submit for Review. The web uses a different Apple backend than the
+  public API, so it works even when the API path below 500s.
+- **Automated** via `fastlane deliver`, run **locally** with the spaceship cookie
+  session (the same one appstore-review-status uses). The CI `deliver.yml`
+  (`submit_for_review=true`) CANNOT do a post-rejection resubmit — see the blocker.
+
+### The post-rejection blocker (this WILL bite — cost ~8 failed tries to learn)
+
+After a rejection the previous review submission stays **open** as
+`state=UNRESOLVED_ISSUES` (visible in appstore-review-status) and BLOCKS a new
+submission:
+
+- The api_key path (CI `deliver.yml`) fails the submit step with a misleading
+  `The request could not be completed because: Server error got 500` — the build
+  *selects* fine, then the submit 500s. It is **not** an Apple outage; retrying
+  the identical path just 500s again.
+- The cookie path says it plainly: `Cannot submit for review - A review
+  submission is already in progress`.
+
+`deliver.yml` can't clear it (it has no `reject_if_possible`). Fix it locally with
+the cookie session — two runs:
+
+```bash
+cd <cctrans-store repo root>      # deliver reads fastlane/ there (metadata repo)
+common=(--username kars@kargn.as --app_identifier as.kargn.cctrans --platform osx \
+        --app_version <v> --build_number <v> --skip_metadata true \
+        --skip_screenshots true --skip_binary_upload true --force true \
+        --run_precheck_before_submit false)
+env FASTLANE_USER=kars@kargn.as FASTLANE_ITC_TEAM_ID=520806 \
+    SPACESHIP_SKIP_2FA_UPGRADE=1 FASTLANE_SKIP_UPDATE_CHECK=1 \
+  fastlane deliver --submit_for_review true --reject_if_possible true "${common[@]}" < /dev/null
+# ^ closes the stale UNRESOLVED_ISSUES submission (→ COMPLETE) and opens a fresh
+#   one; it may then ERROR on post_review_submission_item — that's expected.
+#   Run the SAME thing again WITHOUT --reject_if_possible; it now submits:
+env FASTLANE_USER=kars@kargn.as FASTLANE_ITC_TEAM_ID=520806 \
+    SPACESHIP_SKIP_2FA_UPGRADE=1 FASTLANE_SKIP_UPDATE_CHECK=1 \
+  fastlane deliver --submit_for_review true "${common[@]}" < /dev/null
+# expect: "Successfully submitted the app for review!"
+```
+
+If the cookie is stale (`Available session is not valid anymore`), run
+`fastlane spaceauth -u kars@kargn.as` once (2FA) and retry.
+
+VERIFY: appstore-review-status must show the version `state=WAITING_FOR_REVIEW`
+AND a new review submission `state=WAITING_FOR_REVIEW`. Any other state = not
+submitted; do not report success.
 
 ## Testers & first-time TestFlight setup
 
@@ -125,3 +179,5 @@ setup (and the spaceship gotchas that bite there), see
 | Run builds an old commit | You released a ref whose `origin` tip lacks your commit. Push, then re-dispatch. |
 | Signing / profile step fails | A `CCTRANS_MAS_*` / `APPLE_TEAM_ID` repo secret is missing or expired (see the secret list at the top of the workflow file, .github/workflows/release-mas.yml). |
 | `gh workflow run` 404 | Wrong workflow name; it is exactly `Mac App Store Release`. |
+| Submit step: `Server error got 500` (build selects, then 500s) — repeats every retry | NOT an outage. A stale `UNRESOLVED_ISSUES` review submission is blocking it. Clear locally with `deliver --reject_if_possible true`, then resubmit (Step 6). |
+| `Cannot submit for review - A review submission is already in progress` | Same blocker, seen on the cookie path. Run `--reject_if_possible true` once, then plain `--submit_for_review true` (Step 6). |

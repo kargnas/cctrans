@@ -76,7 +76,9 @@ fastlane spaceauth -u kars@kargn.as   # paste the 2FA code once
 | `PENDING_DEVELOPER_RELEASE` / `READY_FOR_SALE` | Approved |
 
 Review-submission `state=UNRESOLVED_ISSUES` is the submission-level form of a
-rejection; its thread holds the message(s).
+rejection; its thread holds the message(s). It also stays **open** and **blocks a
+new submission** until cleared — a resubmit must reject it first (see the
+**testflight-release** skill, "the post-rejection blocker").
 
 ## Attachments caveat (important)
 
