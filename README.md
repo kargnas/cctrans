@@ -1,4 +1,10 @@
 <p align="center">
+  <video src="https://raw.githubusercontent.com/kargnas/cctrans/main/docs/demo.mp4" width="760" controls muted playsinline preload="metadata"></video>
+  <br>
+  <a href="docs/demo.mp4">Open demo video</a>
+</p>
+
+<p align="center">
   <img src="assets/icon/app-icon-rounded-1024.png" width="128" alt="CCTrans icon">
   &nbsp;&nbsp;&nbsp;
   <img src="docs/images/toast.png" width="360" alt="Translation toast: copied text translated to English by the local model, with language badge and copy/settings actions">
