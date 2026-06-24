@@ -1193,6 +1193,21 @@
               <span class="reset-row spacer"></span>
             </label>
 
+            <label class="setting-row toggle-row">
+              <span class="setting-copy">
+                <strong>Send Screen as Context</strong>
+                <span class="setting-note">Attach the whole screen to OpenRouter vision models for extra context. Off by default — it increases token cost and shares your screen with the provider.</span>
+              </span>
+              <input
+                class="switch-input"
+                type="checkbox"
+                role="switch"
+                checked={settingsState.settings.includeScreenContextForLLM}
+                onchange={(event) => updateField("includeScreenContextForLLM", event.currentTarget.checked)}
+              />
+              <span class="reset-row spacer"></span>
+            </label>
+
             <label class="setting-row">
               <span class="setting-copy">
                 <strong>Source Language</strong>

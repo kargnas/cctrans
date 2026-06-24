@@ -14,6 +14,7 @@ export type SettingField =
   | "openRouterModelFilter"
   | "favoriteLocalModelIDs"
   | "favoriteOpenRouterModels"
+  | "includeScreenContextForLLM"
   | "startMenuBarOnly";
 
 export type OpenRouterModelFilter = {
@@ -185,6 +186,7 @@ export const fallbackState: SettingsState = {
     openRouterModelFilter: false,
     favoriteLocalModelIDs: false,
     favoriteOpenRouterModels: false,
+    includeScreenContextForLLM: false,
     startMenuBarOnly: false
   },
   options: {

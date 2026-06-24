@@ -92,7 +92,9 @@ public struct TranslatorSettings: Codable, Equatable, Sendable {
     public var openRouterVisionModel: String
     public var favoriteLocalModelIDs: [String]
     public var favoriteOpenRouterModels: [String]
-    // Kept so older saved settings decode cleanly; the app now attaches OpenRouter screen context automatically when trusted.
+    // Opt-in (default false): attach the full screen as visual context to OpenRouter vision models.
+    // Lay dormant after caret-cropped auto-context shipped; re-surfaced as a user toggle once caret
+    // cropping was removed (App Review 2.4.5 — it relied on the AXUIElement caret API).
     public var includeScreenContextForLLM: Bool
     public var sourceLanguage: String
     public var targetLanguage: String

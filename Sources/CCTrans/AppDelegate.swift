@@ -23,10 +23,6 @@ struct TranslationPreviewPayload: Encodable {
     var costCredits: Double?
     var permissionAction: String? = nil
     var requestSequence: Int = 0
-    var caretX: Double? = nil
-    var caretY: Double? = nil
-    var caretW: Double? = nil
-    var caretH: Double? = nil
 }
 
 @MainActor
@@ -55,7 +51,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var onboardingController: OnboardingWindowController?
     private var statusPulseTask: Task<Void, Never>?
     private var lastClipboardTriggerAt: Date?
-    private var lastTranslationCaretBounds: CGRect?
     private var translationRequestSequence = 0
     private var lastPartialWriteAt = Date.distantPast
     private var lastPartialTranslatedLength = 0
@@ -809,10 +804,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func contextImagePNGDataIfNeeded(settings: TranslatorSettings) async -> ScreenContextCaptureResult {
-        // Only attach a screen-context screenshot when the selected text model can
-        // accept images. Text-only models (e.g. DeepSeek) would otherwise force a
-        // silent switch to a different vision model and the request would fail.
-        guard settings.provider == .openRouter,
+        // Off by default: attach a full-screen context screenshot only when the user opts in
+        // (includeScreenContextForLLM) AND the selected OpenRouter text model accepts images.
+        // Text-only models would otherwise force a silent switch to a vision model and fail.
+        // Caret-localized cropping was removed (App Review 2.4.5), so this sends the whole display.
+        guard settings.includeScreenContextForLLM,
+              settings.provider == .openRouter,
               OpenRouterModelCatalog.model(id: settings.openRouterTextModel)?.supportsVision == true else {
             return ScreenContextCaptureResult(pngData: nil, diagnostic: nil)
         }
@@ -1140,37 +1137,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         sourceTitle: String,
         settings displaySettings: TranslatorSettings? = nil
     ) {
-        let caretBounds: CGRect?
-        #if MAS_BUILD
-        // App Sandbox blocks the AXUIElement API that caret location relies on,
-        // so the toast always falls back to the user's toastPosition setting.
-        caretBounds = nil
+        // The toast always positions itself from the user's toastPosition setting; caret-anchored
+        // placement was removed (App Review 2.4.5 — it needed the AXUIElement caret API).
         if payload.mode == "loading" {
             // A new loading frame is a new user request; bumping the sequence tells the persistent
             // toast window to reposition and show, instead of only updating its text in place.
             translationRequestSequence += 1
         }
-        #else
-        if payload.mode == "loading" {
-            caretBounds = KeyboardCaretLocator.focusedTextBounds(for: payload.originalText)
-            lastTranslationCaretBounds = caretBounds
-            // A new loading frame is a new user request; bumping the sequence tells the persistent
-            // toast window to reposition and show, instead of only updating its text in place.
-            translationRequestSequence += 1
-        } else {
-            caretBounds = lastTranslationCaretBounds
-                ?? KeyboardCaretLocator.focusedTextBounds(for: payload.originalText)
-        }
-        #endif
 
         var payload = payload
         payload.requestSequence = translationRequestSequence
-        if let caret = toastCaretRect(for: caretBounds) {
-            payload.caretX = caret.0
-            payload.caretY = caret.1
-            payload.caretW = caret.2
-            payload.caretH = caret.3
-        }
         writeTranslationPreviewState(payload)
     }
 
@@ -1217,19 +1193,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             replaceExistingMatching: "--translation-preview"
         )
     }
-
-    // KeyboardCaretLocator returns AppKit screen coordinates (bottom-left origin). The Rust
-    // placement logic works in global Quartz coordinates (top-left origin), so flip Y against the
-    // primary display height before writing the caret rect into the shared toast state.
-    private func toastCaretRect(for caretBounds: CGRect?) -> (Double, Double, Double, Double)? {
-        guard let caret = caretBounds,
-              let primaryHeight = (NSScreen.screens.first ?? NSScreen.main)?.frame.height else {
-            return nil
-        }
-        let topLeftY = primaryHeight - caret.maxY
-        return (Double(caret.minX), Double(topLeftY), Double(caret.width), Double(caret.height))
-    }
-
 
     private func resolvedLanguages(
         for text: String,

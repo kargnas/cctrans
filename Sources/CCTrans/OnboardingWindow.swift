@@ -79,8 +79,10 @@ final class OnboardingModel: ObservableObject {
             detail: "Captures the selected region for screenshot translation.",
             granted: CGPreflightScreenCaptureAccess(),
             request: {
+                // App Review 5.1.1(iv): do NOT redirect to System Settings around the prompt. Just
+                // trigger the native TCC request; a previously-denied user reaches Settings through
+                // the user-initiated Screen Recording button, not an automatic redirect.
                 _ = CGRequestScreenCaptureAccess()
-                Self.openPrivacySettings("Privacy_ScreenCapture")
             }
         ))
         // The MAS build reads the selection through the sandbox, so it never asks for

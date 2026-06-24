@@ -34,8 +34,6 @@ struct ScreenContextCaptureResult {
 }
 
 enum ScreenshotCapture {
-    private static let contextCropSize = CGSize(width: 192, height: 192)
-
     static func captureMainDisplayPNG() async throws -> Data {
         try await captureMainDisplayPNG(outputScale: .point1x)
     }
@@ -108,8 +106,7 @@ enum ScreenshotCapture {
         configuration.showsCursor = false
 
         let image = try await captureImage(filter: filter, configuration: configuration)
-        let outputImage = outputScale == .contextCrop ? contextImageAroundKeyboardCursor(image) : image
-        let bitmap = NSBitmapImageRep(cgImage: outputImage)
+        let bitmap = NSBitmapImageRep(cgImage: image)
         guard let data = bitmap.representation(using: .png, properties: [:]) else {
             throw ScreenshotCaptureError.encodingFailed
         }
@@ -222,57 +219,15 @@ enum ScreenshotCapture {
             image = source
         }
 
-        let outputImage = outputScale == .contextCrop ? contextImageAroundKeyboardCursor(image) : image
-        let bitmap = NSBitmapImageRep(cgImage: outputImage)
+        let bitmap = NSBitmapImageRep(cgImage: image)
         guard let resized = bitmap.representation(using: .png, properties: [:]) else {
             throw ScreenshotCaptureError.encodingFailed
         }
         return resized
     }
 
-    private static func contextImageAroundKeyboardCursor(_ image: CGImage) -> CGImage {
-        guard let center = keyboardCursorCenter(in: image) else {
-            return image
-        }
-
-        let cropSize = CGSize(
-            width: min(contextCropSize.width, CGFloat(image.width)),
-            height: min(contextCropSize.height, CGFloat(image.height))
-        )
-        let origin = CGPoint(
-            x: min(max(center.x - cropSize.width / 2, 0), CGFloat(image.width) - cropSize.width),
-            y: min(max(center.y - cropSize.height / 2, 0), CGFloat(image.height) - cropSize.height)
-        )
-        let cropRect = CGRect(origin: origin, size: cropSize).integral
-        return image.cropping(to: cropRect) ?? image
-    }
-
-    private static func keyboardCursorCenter(in image: CGImage) -> CGPoint? {
-        guard let caretBounds = KeyboardCaretLocator.focusedTextCaretBounds() else {
-            return nil
-        }
-
-        let displayBounds = CGDisplayBounds(CGMainDisplayID())
-        guard displayBounds.intersects(caretBounds) else {
-            return nil
-        }
-
-        let x = caretBounds.midX - displayBounds.minX
-        let y = caretBounds.midY - displayBounds.minY
-        guard x.isFinite, y.isFinite else {
-            return nil
-        }
-
-        return CGPoint(
-            x: min(max(x, 0), CGFloat(image.width)),
-            y: min(max(y, 0), CGFloat(image.height))
-        )
-    }
-
     private static func contextDiagnostic(prefix: String) -> String {
-        KeyboardCaretLocator.focusedTextCaretBounds() == nil
-            ? "\(prefix), full context crop (keyboard cursor unavailable)"
-            : "\(prefix), keyboard cursor crop"
+        "\(prefix), full display context"
     }
 
     private static func shareableContent() async throws -> SCShareableContent {
