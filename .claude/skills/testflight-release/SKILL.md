@@ -65,8 +65,11 @@ Rules (App Store Connect rejects a duplicate `CFBundleVersion`):
 
 - **New work / normal release** → bump the marketing version (`0.3.4` → `0.3.5`)
   and let `build_number` default to it.
-- **Resubmit the SAME version after a rejection** → keep `version` and pass a
-  higher, unique `build_number` (e.g. `version=0.3.4`, `build_number=0.3.4.1`).
+- **Resubmit after a rejection** → `CFBundleVersion` must be **at most 3
+  dot-separated integers**, so you CANNOT append a 4th component (`0.3.9.1` is
+  rejected by altool with error 90257). Bump the last integer instead: ship
+  `version=0.3.10` (build defaults to it), or keep the marketing `version` and
+  pass a higher 3-part `build_number` (e.g. `version=0.3.9`, `build_number=0.3.10`).
 - When unsure whether a number was used, list recent runs (Step 4) or check the
   TestFlight section of the **appstore-review-status** skill — every prior
   `version` shown there is already taken.
@@ -79,8 +82,8 @@ outward-facing and consumes a build number.
 ```bash
 gh workflow run "Mac App Store Release" --ref main \
   -f version=0.3.5
-# resubmit form:
-# gh workflow run "Mac App Store Release" --ref main -f version=0.3.4 -f build_number=0.3.4.1
+# resubmit form (CFBundleVersion is max 3 integers — no 4th component like 0.3.9.1):
+# gh workflow run "Mac App Store Release" --ref main -f version=0.3.10
 ```
 
 ## Step 4 — Watch the run to completion
@@ -176,6 +179,7 @@ setup (and the spaceship gotchas that bite there), see
 | Symptom | Cause / fix |
 |---------|-------------|
 | altool: *bundle version … already exists* | `CFBundleVersion` was used. Re-dispatch with a higher unique `build_number`. |
+| altool 90257: *CFBundleVersion … must be a period-separated list of at most three non-negative integers* | A 4-part build number (e.g. `0.3.9.1`). Use ≤3 integers; bump the last one (`0.3.10`). |
 | Run builds an old commit | You released a ref whose `origin` tip lacks your commit. Push, then re-dispatch. |
 | Signing / profile step fails | A `CCTRANS_MAS_*` / `APPLE_TEAM_ID` repo secret is missing or expired (see the secret list at the top of the workflow file, .github/workflows/release-mas.yml). |
 | `gh workflow run` 404 | Wrong workflow name; it is exactly `Mac App Store Release`. |
