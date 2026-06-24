@@ -39,8 +39,9 @@
   --track: #e7e8ec;
   --favorite-ink: #b36b00;
 
-  /* Translation toast bubble surfaces, tokenized so the glass inverts in dark mode. */
-  --bubble-bg: rgba(255, 255, 255, 0.62);
+  /* Translation toast bubble surfaces, tokenized so the glass inverts in dark mode. Now a light tint
+     over the window's native vibrancy material (not an opaque fill), so the OS blur shows through. */
+  --bubble-bg: rgba(255, 255, 255, 0.30);
   --bubble-border: rgba(0, 0, 0, 0.18);
   --bubble-border-hover: rgba(0, 0, 0, 0.42);
   --bubble-arrow: rgba(0, 0, 0, 0.34);
@@ -83,7 +84,7 @@
     --track: #3a3a3e;
     --favorite-ink: #f0a23a;
 
-    --bubble-bg: rgba(40, 40, 44, 0.62);
+    --bubble-bg: rgba(40, 40, 44, 0.45);
     --bubble-border: rgba(255, 255, 255, 0.16);
     --bubble-border-hover: rgba(255, 255, 255, 0.38);
     --bubble-arrow: rgba(255, 255, 255, 0.28);
@@ -1180,9 +1181,12 @@ kbd {
   border-radius: 14px;
   background: var(--bubble-bg);
   box-shadow: none;
-  backdrop-filter: blur(28px) saturate(160%);
-  -webkit-backdrop-filter: blur(28px) saturate(160%);
-  transform: translateZ(0);
+  /* Blur is rendered by the window's native NSVisualEffectView (see the toast WebviewWindowBuilder
+     .effects() in src-tauri/src/lib.rs), NOT CSS backdrop-filter. On a transparent always-on-top
+     WKWebView the CSS filter re-samples the live desktop behind the panel and intermittently drops for
+     a frame, so the blur visibly flickers on/off. The OS-composited material does not. --bubble-bg is
+     therefore a light tint layered over that material instead of an opaque fill, and translateZ(0) is
+     gone because there is no backdrop-filter left for it to (de)stabilize. */
   --countdown-progress: 100%;
 }
 

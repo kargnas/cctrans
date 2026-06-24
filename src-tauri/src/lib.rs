@@ -10,6 +10,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use surfaces::{open_surface_window, AppSurface};
 #[cfg(target_os = "macos")]
 use tauri::ActivationPolicy;
+use tauri::window::{Effect, EffectState, EffectsBuilder};
 use tauri::{
     AppHandle, LogicalSize, Manager, Monitor, PhysicalPosition, PhysicalSize, WebviewUrl,
     WebviewWindowBuilder,
@@ -1446,6 +1447,20 @@ pub fn run() {
                         .focusable(false)
                         .focused(false)
                         .visible(false)
+                        // Blur via the native NSVisualEffectView (windowEffects), not CSS
+                        // backdrop-filter: on a transparent always-on-top WKWebView the CSS filter
+                        // re-samples the live desktop behind the panel and intermittently drops for a
+                        // frame (the visible "blur flicker"). The OS-composited material is stable.
+                        // state=Active is mandatory because the toast is focusable(false)/non-key, so a
+                        // default-state effect view would render inactive (desaturated). radius matches
+                        // the bubble's 14px corners.
+                        .effects(
+                            EffectsBuilder::new()
+                                .effect(Effect::Popover)
+                                .state(EffectState::Active)
+                                .radius(14.0)
+                                .build(),
+                        )
                         .build()?;
                 apply_toast_theme(&window);
                 macos_toast::install_pointer_monitor(app.handle().clone());
