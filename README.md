@@ -1,7 +1,5 @@
 <p align="center">
-  <video src="https://raw.githubusercontent.com/kargnas/cctrans/main/docs/demo.mp4" width="760" controls muted playsinline preload="metadata"></video>
-  <br>
-  <a href="docs/demo.mp4">Open demo video</a>
+  <video src="https://github.com/user-attachments/assets/73040130-a74a-414c-9353-caa9319cab4c" controls muted playsinline preload="metadata"></video>
 </p>
 
 <p align="center">
