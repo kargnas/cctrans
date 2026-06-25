@@ -1198,18 +1198,20 @@ kbd {
 }
 
 .translation-bubble.has-pin .translation-bubble-inner {
-  /* The pin now overhangs the corner (see .pin-button), so reserve only enough to clear its inner
-     edge (top -12px + 30px height ≈ 18px) instead of a full 42px band — reclaims ~22px of top space. */
-  padding-top: 20px;
+  /* The pin floats over the top-right corner (see .pin-button), so the translation content reserves NO
+     extra top space — it starts at the stage's top edge like a no-pin toast. The user explicitly wants
+     the translation flush to the top with the pin overhanging, not pushed down by a reserved band. */
+  padding-top: 0;
 }
 
 .pin-button {
   position: absolute;
-  /* Drape the pin over the top-right corner (partly outside the bubble) instead of sitting in a
-     reserved band inside it, so the content reclaims the top space the old top:10/right:12 wasted.
-     The overhang stays within the 18px .translation-stage padding, so it is not clipped. */
-  top: -12px;
-  right: -12px;
+  /* Push the pin to the window's top-right corner for the maximum overhang the full-window material
+     card allows: it perches on the rounded-corner (radius 14) transparent zone so it reads as floating.
+     -16px stays inside the 18px .translation-stage padding (no overflow:hidden clip); the window edge is
+     the hard CSS limit. Sticking out PAST the card edge would need a masked NSVisualEffectView gutter. */
+  top: -16px;
+  right: -16px;
   z-index: 2;
   display: inline-flex;
   width: 30px;
