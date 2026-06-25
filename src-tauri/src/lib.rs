@@ -3927,6 +3927,17 @@ fn permission_status(app: &AppHandle) -> PermissionStatus {
 
 #[cfg(target_os = "macos")]
 fn permission_status_local() -> PermissionStatus {
+    // MAS strips Accessibility (App Review 2.4.5): never call AXIsProcessTrusted on the
+    // sandboxed variant. The caret-anchor feature was removed and the selection is read
+    // through the sandbox, so accessibility is N/A; Cmd+C uses pasteboard polling, so the
+    // keyboard capability is always satisfied. Only Screen Recording reflects live TCC state.
+    if app_variant() == "mas" {
+        return PermissionStatus {
+            keyboard: true,
+            accessibility: false,
+            screen: unsafe { CGPreflightScreenCaptureAccess() },
+        };
+    }
     let accessibility = unsafe { AXIsProcessTrusted() };
     let keyboard = unsafe { CGPreflightListenEventAccess() || accessibility };
     let screen = unsafe { CGPreflightScreenCaptureAccess() };

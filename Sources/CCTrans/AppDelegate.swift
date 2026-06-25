@@ -1456,13 +1456,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func showOnboardingWindow() {
         if onboardingController == nil {
-            let isMAS: Bool = {
-                #if MAS_BUILD
-                return true
-                #else
-                return false
-                #endif
-            }()
             let settings = settingsStore.settings
             // Apple Translation is the only provider whose on-device language
             // pack can be missing; surface a download control just for it.
@@ -1483,7 +1476,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 )
             }()
             let model = OnboardingModel(
-                isMAS: isMAS,
                 translationDownload: translationDownload,
                 onOpenSettings: { [weak self] in self?.showSettingsWindow() },
                 onQuit: { [weak self] in self?.quit() }
@@ -1549,12 +1541,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // CGEventTap and ScreenCaptureKit). The helper cannot preflight our permissions,
     // so publish them to the shared dir for it to read back.
     private func writePermissionStatusCache() {
-        let accessibility = AXIsProcessTrusted()
         #if MAS_BUILD
-        // MAS detects double-⌘C through pasteboard polling, which needs no Input
-        // Monitoring, so the keyboard capability is always satisfied (App Review 2.4.5).
+        // MAS strips Accessibility entirely (App Review 2.4.5): the caret-anchor feature was
+        // removed and Cmd+C runs through pasteboard polling, so the binary must NOT call
+        // AXIsProcessTrusted at all — a query-only call on a 2s timer still links the
+        // Accessibility framework into the store binary and re-surfaces the rejection.
+        // Keyboard is always satisfied via pasteboard polling; accessibility is N/A.
+        let accessibility = false
         let keyboardReady = true
         #else
+        let accessibility = AXIsProcessTrusted()
         let keyboardReady = CGPreflightListenEventAccess() || accessibility
         #endif
         let status: [String: Bool] = [

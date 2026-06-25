@@ -26,7 +26,6 @@ final class OnboardingModel: ObservableObject {
     }
 
     @Published var permissions: [Permission] = []
-    let isMAS: Bool
     // Non-nil only when Apple Translation is the active provider; lets onboarding
     // offer a language-pack download from this visible window (the invisible
     // keep-alive host cannot present Apple's download sheet).
@@ -37,12 +36,10 @@ final class OnboardingModel: ObservableObject {
     var onDismiss: () -> Void = {}
 
     init(
-        isMAS: Bool,
         translationDownload: TranslationDownloadModel?,
         onOpenSettings: @escaping () -> Void,
         onQuit: @escaping () -> Void
     ) {
-        self.isMAS = isMAS
         self.translationDownload = translationDownload
         self.onOpenSettings = onOpenSettings
         self.onQuit = onQuit
@@ -85,20 +82,22 @@ final class OnboardingModel: ObservableObject {
                 _ = CGRequestScreenCaptureAccess()
             }
         ))
-        // The MAS build reads the selection through the sandbox, so it never asks for
-        // Accessibility; only the Developer ID build uses the Accessibility API.
-        if !isMAS {
-            rows.append(Permission(
-                id: "ax",
-                title: "Accessibility",
-                detail: "Lets CCTrans read the current text selection.",
-                granted: AXIsProcessTrusted(),
-                request: {
-                    let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
-                    _ = AXIsProcessTrustedWithOptions(options)
-                }
-            ))
-        }
+        #if !MAS_BUILD
+        // Accessibility is requested ONLY on direct-distribution builds. The MAS build reads
+        // the selection through the sandbox and the caret-anchor feature was removed, so it must
+        // not reference the Accessibility API at all (App Review 2.4.5). Compile-gated (not the
+        // old runtime `if !isMAS`) so the AX symbols never link into the store binary.
+        rows.append(Permission(
+            id: "ax",
+            title: "Accessibility",
+            detail: "Lets CCTrans read the current text selection.",
+            granted: AXIsProcessTrusted(),
+            request: {
+                let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
+                _ = AXIsProcessTrustedWithOptions(options)
+            }
+        ))
+        #endif
         permissions = rows
     }
 

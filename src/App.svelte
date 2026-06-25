@@ -1610,25 +1610,32 @@
 
           <h2>Permissions</h2>
           <div class="setting-group">
-            <div class="setting-row">
-              <span class="setting-copy">
-                <strong>Keyboard</strong>
-              </span>
-              <span class:ready={settingsState.permissions.keyboard} class="status-pill">
-                {settingsState.permissions.keyboard ? "Ready" : "Not granted"}
-              </span>
-              <span class="reset-row spacer"></span>
-            </div>
-            <div class="setting-row">
-              <span class="setting-copy">
-                <strong>Keyboard Cursor</strong>
-                <span>Accessibility permission for caret-anchored popovers</span>
-              </span>
-              <span class:ready={settingsState.permissions.accessibility} class="status-pill">
-                {settingsState.permissions.accessibility ? "Ready" : "Not granted"}
-              </span>
-              <span class="reset-row spacer"></span>
-            </div>
+            {#if settingsState.appVariant !== "mas"}
+              <!-- Keyboard (Input Monitoring) + Keyboard Cursor (Accessibility) ship ONLY on the
+                   direct-distribution build. The MAS build requests neither (App Review 2.4.5):
+                   Cmd+C is detected via pasteboard polling and the caret-anchor feature was
+                   removed, so showing these rows would re-trigger the 2.4.5 rejection. Mirrors the
+                   gating already in PermissionHelper.svelte. -->
+              <div class="setting-row">
+                <span class="setting-copy">
+                  <strong>Keyboard</strong>
+                </span>
+                <span class:ready={settingsState.permissions.keyboard} class="status-pill">
+                  {settingsState.permissions.keyboard ? "Ready" : "Not granted"}
+                </span>
+                <span class="reset-row spacer"></span>
+              </div>
+              <div class="setting-row">
+                <span class="setting-copy">
+                  <strong>Keyboard Cursor</strong>
+                  <span>Accessibility permission for caret-anchored popovers</span>
+                </span>
+                <span class:ready={settingsState.permissions.accessibility} class="status-pill">
+                  {settingsState.permissions.accessibility ? "Ready" : "Not granted"}
+                </span>
+                <span class="reset-row spacer"></span>
+              </div>
+            {/if}
             <div class="setting-row">
               <span class="setting-copy">
                 <strong>Screen Recording</strong>
