@@ -39,13 +39,10 @@
   --track: #e7e8ec;
   --favorite-ink: #b36b00;
 
-  /* Translation toast bubble surfaces, tokenized so the glass inverts in dark mode. Now a light tint
-     over the window's native vibrancy material (not an opaque fill), so the OS blur shows through. */
-  --bubble-bg: rgba(255, 255, 255, 0.30);
+  /* Only the translated-image thumbnail still draws its own hairline now that the toast card is the
+     native window material; the bubble itself no longer has a CSS border/background/edge. */
   --bubble-border: rgba(0, 0, 0, 0.18);
   --bubble-border-hover: rgba(0, 0, 0, 0.42);
-  --bubble-arrow: rgba(0, 0, 0, 0.34);
-  --bubble-edge: rgba(255, 255, 255, 0.88);
   --toast-bg: rgba(255, 255, 255, 0.94);
 
   color: var(--text);
@@ -84,11 +81,8 @@
     --track: #3a3a3e;
     --favorite-ink: #f0a23a;
 
-    --bubble-bg: rgba(40, 40, 44, 0.45);
     --bubble-border: rgba(255, 255, 255, 0.16);
     --bubble-border-hover: rgba(255, 255, 255, 0.38);
-    --bubble-arrow: rgba(255, 255, 255, 0.28);
-    --bubble-edge: rgba(255, 255, 255, 0.10);
     --toast-bg: rgba(40, 40, 44, 0.94);
   }
 }
@@ -1175,75 +1169,25 @@ kbd {
 
 .translation-bubble {
   position: relative;
-  width: 348px;
+  /* Fill the stage so the content sits directly on the window's native NSVisualEffectView material,
+     which IS the card. The bubble must NOT draw its own border/background/radius: the material already
+     fills the whole window with rounded corners, so a second rounded box here nested a visible double
+     border inside the panel. Blur comes from that material (.effects() in src-tauri/src/lib.rs), never
+     CSS backdrop-filter — on a transparent always-on-top WKWebView the CSS filter re-samples the live
+     desktop and flickers; the OS-composited material does not. */
+  width: 100%;
   min-height: 88px;
-  border: 0.5px solid var(--bubble-border);
-  border-radius: 14px;
-  background: var(--bubble-bg);
-  box-shadow: none;
-  /* Blur is rendered by the window's native NSVisualEffectView (see the toast WebviewWindowBuilder
-     .effects() in src-tauri/src/lib.rs), NOT CSS backdrop-filter. On a transparent always-on-top
-     WKWebView the CSS filter re-samples the live desktop behind the panel and intermittently drops for
-     a frame, so the blur visibly flickers on/off. The OS-composited material does not. --bubble-bg is
-     therefore a light tint layered over that material instead of an opaque fill, and translateZ(0) is
-     gone because there is no backdrop-filter left for it to (de)stabilize. */
   --countdown-progress: 100%;
-}
-
-.translation-stage.image-small .translation-bubble {
-  width: 512px;
-}
-
-.translation-stage.image-medium .translation-bubble {
-  width: 632px;
-}
-
-.translation-stage.image-large .translation-bubble {
-  width: 772px;
 }
 
 .translation-bubble.compact {
   min-height: 88px;
 }
 
-.translation-bubble::before {
-  position: absolute;
-  top: -16px;
-  left: calc(50% - 13px);
-  width: 28px;
-  height: 28px;
-  border-top: 0.5px solid var(--bubble-arrow);
-  border-left: 0.5px solid var(--bubble-arrow);
-  border-top-left-radius: 6px;
-  background: inherit;
-  content: "";
-  transform: rotate(45deg);
-}
-
-.translation-bubble::after {
-  position: absolute;
-  inset: 1px;
-  border: 1px solid var(--bubble-edge);
-  border-radius: 14px;
-  content: "";
-  pointer-events: none;
-}
-
-.translation-bubble.above::before {
-  top: auto;
-  bottom: -16px;
-  border-top: 0;
-  border-left: 0;
-  border-right: 0.5px solid var(--bubble-arrow);
-  border-bottom: 0.5px solid var(--bubble-arrow);
-  border-top-left-radius: 0;
-  border-bottom-right-radius: 6px;
-}
-
-.translation-bubble.no-arrow::before {
-  display: none;
-}
-
+/* No CSS arrow/edge pseudo-elements: the native material is a rounded rectangle, so a CSS tail or a
+   second inset edge-highlight can't blend with it (the tail would be a borderless transparent nub and
+   the edge would re-introduce a nested outline). Caret-anchored toasts are now tail-less rounded panels
+   positioned next to the caret. */
 .translation-bubble-inner {
   position: relative;
   z-index: 1;
