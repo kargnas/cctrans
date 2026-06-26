@@ -184,6 +184,12 @@ mod macos_toast {
         const RADIUS: f64 = 14.0;
         // A 2px stretchable centre strip; without it cap insets would meet and the mask could not resize.
         const STRETCH: f64 = 2.0;
+        // The masked material renders a near-opaque light panel. Dropping the material view's alphaValue lets a
+        // sliver of the desktop composite through the whole card so it reads as "a bit see-through" instead of a
+        // solid slab. This is static CoreAnimation compositing (NOT CSS backdrop-filter), so it does NOT bring
+        // back the per-frame blur-drop flicker, and the 30% --bubble-bg backing that stabilises the web layer
+        // stays intact. 0.86 = the "살짝 투명" look the user picked.
+        const MATERIAL_ALPHA: f64 = 0.86;
 
         let Ok(ptr) = window.ns_window() else {
             return;
@@ -238,6 +244,7 @@ mod macos_toast {
                     let is_vev: bool = msg_send![&*view, isKindOfClass: vev_class];
                     if is_vev {
                         let _: () = msg_send![&*view, setMaskImage: &*mask];
+                        let _: () = msg_send![&*view, setAlphaValue: MATERIAL_ALPHA];
                     }
                 }
             }
