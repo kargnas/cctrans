@@ -39,11 +39,15 @@
   --track: #e7e8ec;
   --favorite-ink: #b36b00;
 
-  /* The toast card is the native window material, so the bubble draws no visible border/edge. It does
-     carry a near-invisible --bubble-bg: a transparent always-on-top WKWebView over NSVisualEffectView
-     intermittently loses its backing store and the blur drops a frame, so the web layer needs a backing
-     fill to stay composited. 0.05 alpha is below the perceptual threshold (look stays translucent). */
-  --bubble-bg: rgba(255, 255, 255, 0.05);
+  /* The toast card = the native window material, but it needs a CSS tint + rim to read as a distinct warm
+     glass card (image #8), not a raw gray material slab (#9). --bubble-bg is a 30% tint painted on
+     .translation-stage so it reaches the rounded card edge; --bubble-edge is the bright inner glass rim at
+     that edge. The tint doubles as the anti-flicker backing: a transparent always-on-top WKWebView over
+     NSVisualEffectView intermittently drops the blur for a frame, and a solid (NOT backdrop-filter) fill
+     keeps the web layer composited. 0.30 both stabilizes compositing and warms the card; the vibrancy
+     still shows through. */
+  --bubble-bg: rgba(255, 255, 255, 0.30);
+  --bubble-edge: rgba(255, 255, 255, 0.88);
   --bubble-border: rgba(0, 0, 0, 0.18);
   --bubble-border-hover: rgba(0, 0, 0, 0.42);
   --toast-bg: rgba(255, 255, 255, 0.94);
@@ -84,7 +88,8 @@
     --track: #3a3a3e;
     --favorite-ink: #f0a23a;
 
-    --bubble-bg: rgba(40, 40, 44, 0.06);
+    --bubble-bg: rgba(40, 40, 44, 0.45);
+    --bubble-edge: rgba(255, 255, 255, 0.10);
     --bubble-border: rgba(255, 255, 255, 0.16);
     --bubble-border-hover: rgba(255, 255, 255, 0.38);
     --toast-bg: rgba(40, 40, 44, 0.94);
@@ -1140,6 +1145,7 @@ kbd {
 }
 
 .translation-stage {
+  position: relative;
   display: grid;
   width: 100%;
   height: 100%;
@@ -1148,7 +1154,23 @@ kbd {
   overflow: hidden;
   place-items: start center;
   padding: 18px;
-  background: transparent;
+  /* The native material fills the whole rounded window; this tint + the ::after rim sit ON it so the panel
+     reads as a delineated warm glass card (image #8), not a bare material slab (#9). Radius 14 matches the
+     window material (.effects().radius in src-tauri/src/lib.rs) so the tint stops exactly at the card edge
+     — no inset rectangle, no double border. */
+  border-radius: 14px;
+  background: var(--bubble-bg);
+}
+
+.translation-stage::after {
+  /* The bright glass rim image #8 shows at the card edge. inset:1px + radius 14 keeps it a single rim riding
+     just inside the material edge — the card's lit edge, NOT a second nested border. */
+  position: absolute;
+  inset: 1px;
+  border: 1px solid var(--bubble-edge);
+  border-radius: 14px;
+  content: "";
+  pointer-events: none;
 }
 
 .translation-stage.tall {
@@ -1173,15 +1195,11 @@ kbd {
 
 .translation-bubble {
   position: relative;
-  /* The native NSVisualEffectView material (window .effects() in src-tauri/src/lib.rs) IS the card, so
-     the bubble draws NO border/radius — a second rounded box would nest a visible double border. It DOES
-     paint a near-invisible --bubble-bg (0.05): a transparent always-on-top WKWebView composited over the
-     vibrancy intermittently drops the blur for a frame ("blur 풀림" flicker) unless the web layer holds a
-     backing fill. This is a solid fill, NOT backdrop-filter — the CSS filter re-samples the live desktop
-     and is exactly what flickered originally; the OS-composited material plus this backing do not. */
+  /* The bubble is just the content column now — the card surface (tint + rim) lives on .translation-stage
+     so it reaches the rounded card edge. The bubble draws NO border/background/radius of its own: a second
+     rounded box inset from the material edge is exactly what nested a visible double border before. */
   width: 100%;
   min-height: 88px;
-  background: var(--bubble-bg);
   --countdown-progress: 100%;
 }
 
