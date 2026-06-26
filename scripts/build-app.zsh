@@ -30,6 +30,11 @@ TAURI_HELPER_DEST="$RESOURCES_DIR/CCTransTauri.app"
 
 cd "$ROOT"
 swift build -c release
+# `tauri build` runs `vite build` (fresh dist-web) then cargo, which embeds dist-web via
+# `generate_context!` at lib.rs compile time. But cargo does NOT recompile lib.rs when only the frontend
+# (CSS/Svelte) changed, so a frontend-only edit otherwise ships STALE embedded assets — the toast keeps
+# rendering the previous build's CSS. Touch lib.rs to force the recompile + re-embed of the new dist-web.
+touch src-tauri/src/lib.rs
 npm run tauri -- build --bundles app >/dev/null
 
 rm -rf "$APP_DIR"
