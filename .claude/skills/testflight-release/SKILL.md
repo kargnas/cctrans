@@ -151,13 +151,22 @@ common=(--username kars@kargn.as --app_identifier as.kargn.cctrans --platform os
 env FASTLANE_USER=kars@kargn.as FASTLANE_ITC_TEAM_ID=520806 \
     SPACESHIP_SKIP_2FA_UPGRADE=1 FASTLANE_SKIP_UPDATE_CHECK=1 \
   fastlane deliver --submit_for_review true --reject_if_possible true "${common[@]}" < /dev/null
-# ^ closes the stale UNRESOLVED_ISSUES submission (→ COMPLETE) and opens a fresh
-#   one; it may then ERROR on post_review_submission_item — that's expected.
-#   Run the SAME thing again WITHOUT --reject_if_possible; it now submits:
+# ^ requests cancellation of the stale UNRESOLVED_ISSUES submission and tries to open a
+#   fresh one; it ERRORs on post_review_submission_item — that's expected.
+
+# CRITICAL: the reject is ASYNC. The old submission goes to state=CANCELING (NOT
+# instantly COMPLETE), and while it is CANCELING the App Store version stays bound to
+# it — so re-running submit immediately just loops the SAME error ("appStoreVersions ...
+# is not in valid state / already present in another reviewSubmission <old-id>"). Both
+# back-to-back runs fail. WAIT for the old submission to reach state=COMPLETE first
+# (observed ~70s, poll asc-review), THEN run the plain submit:
+until .claude/skills/appstore-review-status/scripts/asc-review.zsh 2>/dev/null \
+      | grep -q "$OLD_SUBMISSION_ID.*COMPLETE"; do sleep 60; done   # OLD_SUBMISSION_ID = the rejected one
 env FASTLANE_USER=kars@kargn.as FASTLANE_ITC_TEAM_ID=520806 \
     SPACESHIP_SKIP_2FA_UPGRADE=1 FASTLANE_SKIP_UPDATE_CHECK=1 \
   fastlane deliver --submit_for_review true "${common[@]}" < /dev/null
-# expect: "Successfully submitted the app for review!"
+# expect: "Successfully submitted the app for review!" (it fills the empty
+# READY_FOR_REVIEW submission the reject run left behind)
 ```
 
 If the cookie is stale (`Available session is not valid anymore`), run
@@ -185,3 +194,4 @@ setup (and the spaceship gotchas that bite there), see
 | `gh workflow run` 404 | Wrong workflow name; it is exactly `Mac App Store Release`. |
 | Submit step: `Server error got 500` (build selects, then 500s) — repeats every retry | NOT an outage. A stale `UNRESOLVED_ISSUES` review submission is blocking it. Clear locally with `deliver --reject_if_possible true`, then resubmit (Step 6). |
 | `Cannot submit for review - A review submission is already in progress` | Same blocker, seen on the cookie path. Run `--reject_if_possible true` once, then plain `--submit_for_review true` (Step 6). |
+| `post_review_submission_item ... appStoreVersions ... is not in valid state / already present in another reviewSubmission <id>` — repeats on BOTH back-to-back runs | The `--reject_if_possible` cancellation is async: the old submission is `state=CANCELING` and still holds the version. Don't keep retrying — WAIT until that submission shows `state=COMPLETE` (poll asc-review, ~70s), THEN run plain `--submit_for_review true` once (Step 6). |
