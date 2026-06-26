@@ -127,18 +127,6 @@ a preview of the translated text.</p>
       </div>
     </main>`;
 
-  // CURRENT: plain element, styled by the document's linked src/app.css (live).
-  document.getElementById("cur").innerHTML = DOM;
-
-  // Historical versions: Shadow DOM, each fed its OWN :host-scoped stylesheet.
-  async function legacy(id, cssURL) {
-    const host = document.getElementById(id);
-    const sr = host.attachShadow({ mode: "open" });
-    const css = await (await fetch(cssURL)).text();
-    sr.innerHTML = `<style>:host{background:transparent!important} ${css}</style>${DOM}`;
-    return sr;
-  }
-
   function measure(subId, root) {
     const card = (root || document).querySelector(".translation-bubble");
     const stage = (root || document).querySelector(".translation-stage");
@@ -149,14 +137,23 @@ a preview of the translated text.</p>
       `card ${Math.round(cb.width)}×${Math.round(cb.height)} · window ${Math.round(sb.width)}×${Math.round(sb.height)}`;
   }
 
-  Promise.all([
-    legacy("pre-fdcb42c", "./toast-harness-css/pre-fdcb42c.css"),
-    legacy("pre-0627812", "./toast-harness-css/pre-0627812.css"),
-  ]).then(([a, b]) => {
-    measure("sub-cur", document);
-    measure("sub-pre-fdcb42c", a);
-    measure("sub-pre-0627812", b);
-  });
+  // CURRENT: plain element, styled by the document's linked src/app.css (live).
+  document.getElementById("cur").innerHTML = DOM;
+  requestAnimationFrame(() => measure("sub-cur", document));
+
+  // Historical versions: Shadow DOM with a <link> to the :host-scoped stylesheet.
+  // Use <link>, NOT fetch(): a file:// page can load a <link> subresource but fetch()
+  // of a local file is CORS-blocked (needs a Chrome flag) — which left these two shadow
+  // cases empty when the file was just opened in a browser.
+  function legacy(id, cssURL) {
+    const host = document.getElementById(id);
+    const sr = host.attachShadow({ mode: "open" });
+    sr.innerHTML = `<link rel="stylesheet" href="${cssURL}" /><style>:host{background:transparent !important}</style>${DOM}`;
+    sr.querySelector("link").addEventListener("load", () => measure("sub-" + id, sr));
+    return sr;
+  }
+  legacy("pre-fdcb42c", "./toast-harness-css/pre-fdcb42c.css");
+  legacy("pre-0627812", "./toast-harness-css/pre-0627812.css");
 </script>
 </body>
 </html>
