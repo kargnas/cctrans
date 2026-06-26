@@ -1538,10 +1538,14 @@ pub fn run() {
                         // frame (the visible "blur flicker"). The OS-composited material is stable.
                         // state=Active is mandatory because the toast is focusable(false)/non-key, so a
                         // default-state effect view would render inactive (desaturated). radius matches
-                        // the bubble's 14px corners.
+                        // the bubble's 14px corners. UnderWindowBackground (not Popover): Popover's material
+                        // is near-opaque white, so the masked card read as a solid white slab and the
+                        // desktop never showed through (image #8 is a translucent glass that picks up the
+                        // backdrop). UnderWindowBackground is the most translucent light material, so the
+                        // card frosts the desktop behind it while staying readable via the 30% --bubble-bg tint.
                         .effects(
                             EffectsBuilder::new()
-                                .effect(Effect::Popover)
+                                .effect(Effect::UnderWindowBackground)
                                 .state(EffectState::Active)
                                 .radius(14.0)
                                 .build(),
