@@ -227,14 +227,18 @@ mod macos_toast {
             let _: () = msg_send![&*mask, setCapInsets: insets];
             let _: () = msg_send![&*mask, setResizingMode: 1_isize]; // NSImageResizingMode::Stretch
 
-            // `.effects()` adds exactly one NSVisualEffectView under the content view; re-mask it.
+            // `.effects()` adds exactly one NSVisualEffectView for the blur. window-vibrancy has put it
+            // directly under the content view in some Tauri versions and under the content view's superview
+            // in others, so re-mask any NSVisualEffectView found at either level.
             let vev_class = <NSVisualEffectView as ClassType>::class();
-            let subviews = frame_view.subviews();
-            for i in 0..subviews.count() {
-                let view = subviews.objectAtIndex(i);
-                let is_vev: bool = msg_send![&*view, isKindOfClass: vev_class];
-                if is_vev {
-                    let _: () = msg_send![&*view, setMaskImage: &*mask];
+            for parent in [&content_view, &frame_view] {
+                let subviews = parent.subviews();
+                for i in 0..subviews.count() {
+                    let view = subviews.objectAtIndex(i);
+                    let is_vev: bool = msg_send![&*view, isKindOfClass: vev_class];
+                    if is_vev {
+                        let _: () = msg_send![&*view, setMaskImage: &*mask];
+                    }
                 }
             }
         }
@@ -1271,6 +1275,10 @@ fn show_translation_toast_inner(app: &AppHandle) -> Result<ShowToastResult, Stri
     let _ = window.set_position(placement.position);
     apply_toast_theme(&window);
     window.show().map_err(|error| error.to_string())?;
+    // Re-apply on the visible window: at build time the window is hidden and the effect's view tree may not
+    // be realized yet, so the build-time mask can miss. Re-masking here (idempotent) guarantees it lands.
+    #[cfg(target_os = "macos")]
+    macos_toast::mask_toast_material_to_card(&window);
     Ok(ShowToastResult {
         arrow: placement.arrow.as_query_value().to_string(),
         anchor_bottom,
