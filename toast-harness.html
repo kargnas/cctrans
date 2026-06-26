@@ -29,7 +29,7 @@
   .desktop {
     position: relative;
     min-height: 100vh;
-    background: linear-gradient(to bottom, #e9e4d3 0%, #e7e2d0 52%, #d3493b 52%, #c43d2d 100%);
+    background: linear-gradient(to bottom, #f6f3ec 0%, #f1ede3 52%, #d3493b 52%, #c43d2d 100%);
     overflow: hidden;
   }
   .desktop::before {
@@ -61,15 +61,20 @@
      was the blur, and the window was transparent. So this case gets no sim blur. */
   .sim-window.no-native-blur { -webkit-backdrop-filter: none; backdrop-filter: none; box-shadow: none; border-radius: 0; }
   .sim-window .translation-stage, .sim-window .mount, .sim-window .host { height: auto; }
+
+  /* CURRENT now uses an INSET card (src/app.css), and the real app will mask the native NSVisualEffectView
+     to the bubble frame. Sim that masked material with a card-level blur (NOT full-window), so the gutter
+     stays transparent like the planned result — full-window blur here would fake the fdcb42c double border. */
+  #cur .translation-bubble { -webkit-backdrop-filter: blur(18px) saturate(1.2); backdrop-filter: blur(18px) saturate(1.2); box-shadow: 0 12px 38px rgba(0,0,0,.22); }
 </style>
 </head>
 <body>
 <div class="desktop">
   <div class="row">
     <div class="case">
-      <span class="label">CURRENT — src/app.css (fix 636a23e)</span>
+      <span class="label">CURRENT — src/app.css (inset card)</span>
       <span class="sub" id="sub-cur">measuring…</span>
-      <div class="sim-window"><div class="mount" id="cur"></div></div>
+      <div class="sim-window no-native-blur"><div class="mount" id="cur"></div></div>
     </div>
     <div class="case">
       <span class="label">PRE-fdcb42c (fdcb42c^)</span>
