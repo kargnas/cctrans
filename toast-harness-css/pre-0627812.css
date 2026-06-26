@@ -1,0 +1,2036 @@
+:host {
+  --blue: #007aff;
+  --green: #34c759;
+  --green-text: #247a3d;
+  --red: #ff3b30;
+  /* Tints derive from fixed Apple blue (not var(--blue)) so color-mix always resolves even when the
+     solid accent below upgrades to the system AccentColor keyword, which is invalid inside color-mix. */
+  --accent-soft: color-mix(in srgb, #007aff 7%, transparent);
+  --accent-tint: color-mix(in srgb, #007aff 10%, transparent);
+  --accent-line: color-mix(in srgb, #007aff 16%, transparent);
+  --accent-bar: color-mix(in srgb, #007aff 55%, transparent);
+  --accent-bar-strong: color-mix(in srgb, #007aff 85%, transparent);
+
+  --text: #1d1d1f;
+  /* Headings and strong labels were hardcoded #202024/#252529; unified so dark mode can lift them together. */
+  --text-strong: #202024;
+  /* Control/button text was hardcoded across #2f2f35/#303036/#343438/#3b3b41/#3f3f46/#45454a; one token flips cleanly in dark. */
+  --control-ink: #2f2f35;
+  --secondary: #6e6e73;
+  --tertiary: #a1a1a6;
+
+  --border: #e5e5ea;
+  --border-strong: #d2d2d7;
+  /* Glass-edge hairline on the translation bubble controls (was rgba(178,178,184,~.5)). */
+  --glass-border: rgba(178, 178, 184, 0.46);
+
+  --bg: #f5f6f8;
+  --surface: rgba(255, 255, 255, 0.86);
+  --surface-solid: #ffffff;
+  --surface-card: rgba(255, 255, 255, 0.78);
+  --surface-pop: rgba(255, 255, 255, 0.98);
+  --sidebar: rgba(246, 247, 250, 0.72);
+  --sidebar-panel: rgba(246, 247, 250, 0.86);
+  --hover: rgba(0, 0, 0, 0.04);
+  /* Text on the accent fill stays white in both schemes, matching macOS accent buttons. */
+  --on-accent: #ffffff;
+
+  --kbd-bg: #f7f7f8;
+  --track: #e7e8ec;
+  --favorite-ink: #b36b00;
+
+  /* Translation toast bubble surfaces, tokenized so the glass inverts in dark mode. */
+  --bubble-bg: rgba(255, 255, 255, 0.62);
+  --bubble-border: rgba(0, 0, 0, 0.18);
+  --bubble-border-hover: rgba(0, 0, 0, 0.42);
+  --bubble-arrow: rgba(0, 0, 0, 0.34);
+  --bubble-edge: rgba(255, 255, 255, 0.88);
+  --toast-bg: rgba(255, 255, 255, 0.94);
+
+  color: var(--text);
+  background: var(--bg);
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Helvetica Neue", Arial, sans-serif;
+  font-synthesis: none;
+  line-height: 1.4;
+}
+
+/* Dark mode follows the system appearance (native-feel ship-readiness D.32). Only token values flip;
+   every selector below resolves through these variables so light-mode pixels stay byte-identical. */
+@media (prefers-color-scheme: dark) {
+  :host {
+    --green-text: #41c463;
+
+    --text: #f5f5f7;
+    --text-strong: #ffffff;
+    --control-ink: #e3e3e6;
+    --secondary: #9b9ba1;
+    --tertiary: #6f6f76;
+
+    --border: #38383c;
+    --border-strong: #48484d;
+    --glass-border: rgba(255, 255, 255, 0.18);
+
+    --bg: #1e1e20;
+    --surface: rgba(40, 40, 44, 0.86);
+    --surface-solid: #2c2c2e;
+    --surface-card: rgba(255, 255, 255, 0.05);
+    --surface-pop: rgba(44, 44, 48, 0.98);
+    --sidebar: rgba(30, 30, 33, 0.72);
+    --sidebar-panel: rgba(36, 36, 40, 0.86);
+    --hover: rgba(255, 255, 255, 0.07);
+
+    --kbd-bg: #2a2a2d;
+    --track: #3a3a3e;
+    --favorite-ink: #f0a23a;
+
+    --bubble-bg: rgba(40, 40, 44, 0.62);
+    --bubble-border: rgba(255, 255, 255, 0.16);
+    --bubble-border-hover: rgba(255, 255, 255, 0.38);
+    --bubble-arrow: rgba(255, 255, 255, 0.28);
+    --bubble-edge: rgba(255, 255, 255, 0.10);
+    --toast-bg: rgba(40, 40, 44, 0.94);
+  }
+}
+
+/* Follow the live macOS system accent for solid accent fills (native-feel D.33). Guarded by @supports so
+   engines that lack AccentColor keep the Apple-blue fallback instead of rendering a transparent fill. */
+@supports (background: AccentColor) {
+  :host {
+    --blue: AccentColor;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+/* Native widgets never let you select their chrome/label text; only real content opts back in. */
+:host {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.translation-text,
+pre,
+input,
+textarea,
+[contenteditable="true"] {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+html,
+body,
+#app {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+}
+
+:host[data-surface="translation"],
+:host[data-surface="translation"] body,
+:host[data-surface="translation"] #app {
+  background: transparent;
+  overflow: hidden;
+}
+
+/* Settings window uses the native macOS vibrancy material (Tauri windowEffects). The root must be
+   transparent so that material shows; the translucent sidebar/content surfaces then layer over it. */
+:host[data-surface="settings"],
+:host[data-surface="settings"] body,
+:host[data-surface="settings"] #app {
+  background: transparent;
+}
+
+button,
+input,
+select {
+  font: inherit;
+}
+
+button {
+  color: inherit;
+}
+
+/* Keyboard focus keeps the platform-drawn ring even on custom-styled controls;
+   `auto` lets WebKit render the system accent ring instead of a CSS imitation. */
+button:focus-visible,
+input:focus-visible,
+select:focus-visible {
+  outline: auto;
+}
+
+.app-frame {
+  position: relative;
+  display: grid;
+  grid-template-columns: 164px minmax(0, 1fr);
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--surface);
+}
+
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px 10px;
+  border-right: 1px solid var(--border);
+  background: var(--sidebar);
+}
+
+.sidebar button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--control-ink);
+  font-size: 12px;
+  font-weight: 540;
+  text-align: left;
+}
+
+.sidebar button:hover {
+  background: var(--hover);
+}
+
+.sidebar button.active {
+  background: var(--blue);
+  color: var(--on-accent);
+}
+
+.sidebar-separator {
+  height: 1px;
+  margin: 10px 0;
+  background: var(--border);
+}
+
+.reset-all {
+  margin-top: auto;
+  border: 1px solid var(--border) !important;
+  background: var(--surface-solid) !important;
+}
+
+.content {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  /* The content column itself is the scroll container, so the overlay scrollbar
+     spans the full window height flush against the right window edge, exactly like
+     System Settings. Insets live on the header and pane content, never out here. */
+  overflow: hidden auto;
+}
+
+.content-header {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  display: flex;
+  /* The header is a flex item of the scrolling column; without this it gets
+     crushed once the pane content overflows. */
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 24px;
+  padding: 20px 16px 12px;
+}
+
+/* System Settings-style toolbar: transparent at rest, gains material + hairline
+   only while content is actually scrolled beneath the title. The hairline is a
+   box-shadow so its appearance never shifts layout. */
+.content-header.scrolled {
+  background: color-mix(in srgb, var(--surface-solid) 72%, transparent);
+  box-shadow: 0 1px 0 var(--border);
+  -webkit-backdrop-filter: blur(14px) saturate(1.3);
+  backdrop-filter: blur(14px) saturate(1.3);
+}
+
+h1,
+h2 {
+  margin: 0;
+  font-weight: 720;
+  letter-spacing: 0;
+}
+
+h1 {
+  font-size: 15px;
+}
+
+h2 {
+  margin: 0 0 8px;
+  color: var(--text-strong);
+  font-size: 12px;
+}
+
+.save-state {
+  color: var(--secondary);
+  font-size: 11px;
+}
+
+.save-state.muted {
+  color: var(--blue);
+}
+
+.pane {
+  /* Scrolling moved up to .content; the pane only carries the content insets.
+     The bottom inset is the end-of-scroll breathing room. */
+  padding: 0 16px 16px;
+}
+
+.setting-group {
+  margin-bottom: 18px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-card);
+}
+
+.menu-setting-group {
+  overflow: visible;
+}
+
+.setting-row {
+  display: grid;
+  grid-template-columns: minmax(126px, 1fr) minmax(170px, 210px) 26px;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 8px 11px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+
+.setting-row:last-child {
+  border-bottom: 0;
+}
+
+.setting-row.text-row {
+  grid-template-columns: minmax(126px, 0.86fr) minmax(170px, 1fr) 26px;
+}
+
+.setting-row.model-picker-row {
+  position: relative;
+  /* Keep the picker column floor at the shared 170px: a 300px floor exceeded the
+     pane width on narrow windows (classic scrollbars shave another 15px) and
+     leaked a horizontal scrollbar through the overflow-visible menu group.
+     The trigger spans already ellipsize, so the column can shrink safely. */
+  grid-template-columns: minmax(146px, 0.8fr) minmax(170px, 1.2fr) 26px;
+}
+
+.setting-row.toggle-row {
+  grid-template-columns: minmax(146px, 1fr) max-content 26px;
+}
+
+.setting-copy {
+  min-width: 0;
+}
+
+.setting-copy strong {
+  display: block;
+  color: var(--text-strong);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.setting-copy span {
+  display: block;
+  margin-top: 2px;
+  overflow: hidden;
+  color: var(--secondary);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.setting-copy span.setting-note {
+  display: -webkit-box;
+  line-height: 1.25;
+  white-space: normal;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+select,
+input {
+  width: 100%;
+  min-width: 0;
+  height: 28px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--surface-solid);
+  color: var(--text);
+  font-size: 11px;
+}
+
+select {
+  padding: 0 24px 0 8px;
+}
+
+input {
+  padding: 0 8px;
+}
+
+.switch-input {
+  position: relative;
+  width: 38px;
+  min-width: 38px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: var(--track);
+  appearance: none;
+  -webkit-appearance: none;
+  transition: background 140ms ease, opacity 140ms ease;
+}
+
+.switch-input::before {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  background: var(--surface-solid);
+  content: "";
+  transition: transform 140ms ease;
+}
+
+.switch-input:checked {
+  background: var(--blue);
+}
+
+.switch-input:checked::before {
+  transform: translateX(16px);
+}
+
+.switch-input:disabled {
+  opacity: 0.48;
+}
+
+.reset-row {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-solid);
+  color: var(--secondary);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.reset-row.visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.reset-row.spacer {
+  border-color: transparent;
+  background: transparent;
+}
+
+.last-result {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--secondary);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.menu-scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 8;
+  border: 0;
+  background: transparent;
+}
+
+.nested-model-picker {
+  position: relative;
+  z-index: 1;
+  min-width: 0;
+}
+
+.nested-model-picker.open {
+  z-index: 20;
+}
+
+.nested-model-trigger {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr) max-content;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--surface-solid);
+  color: var(--text);
+  font-size: 11px;
+  text-align: left;
+}
+
+.nested-model-trigger span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trigger-provider {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 6px;
+  border-radius: 5px;
+  background: var(--accent-tint);
+  color: var(--blue);
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.trigger-provider.open-router {
+  background: rgba(52, 199, 89, 0.12);
+  color: var(--green-text);
+}
+
+.trigger-model {
+  color: var(--text-strong);
+}
+
+.nested-model-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 22;
+  display: grid;
+  grid-template-columns: 132px minmax(0, 1fr);
+  width: min(560px, calc(100vw - 280px));
+  max-height: min(308px, calc(100vh - 176px));
+  overflow: hidden;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--surface-pop);
+}
+
+.nested-model-providers {
+  display: grid;
+  align-content: start;
+  gap: 2px;
+  padding: 6px;
+  border-right: 1px solid var(--border);
+  background: var(--sidebar-panel);
+}
+
+.nested-model-providers button,
+.nested-model-options button {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--control-ink);
+  text-align: left;
+}
+
+.nested-model-providers button {
+  gap: 7px;
+  min-height: 30px;
+  padding: 0 7px;
+  font-size: 11px;
+  font-weight: 560;
+}
+
+.nested-model-providers button span,
+.nested-model-options button span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.nested-model-providers button svg:last-child {
+  margin-left: auto;
+  color: var(--tertiary);
+}
+
+.nested-model-providers button:hover,
+.nested-model-providers button.active {
+  background: var(--blue);
+  color: var(--on-accent);
+}
+
+.nested-model-providers button:hover svg:last-child,
+.nested-model-providers button.active svg:last-child {
+  color: currentColor;
+}
+
+.nested-model-options {
+  display: grid;
+  align-content: start;
+  max-height: min(308px, calc(100vh - 176px));
+  overflow: auto;
+  padding: 5px;
+}
+
+.nested-model-options button {
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 38px;
+  padding: 5px 7px;
+}
+
+.nested-model-options button:hover {
+  background: var(--hover);
+}
+
+.nested-model-options button.selected {
+  color: var(--blue);
+}
+
+.nested-model-options strong,
+.nested-model-options small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nested-model-options strong {
+  color: inherit;
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.nested-model-options small {
+  margin-top: 1px;
+  color: var(--secondary);
+  font-size: 9px;
+  font-weight: 450;
+}
+
+.action-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  padding: 10px 11px;
+}
+
+.action-grid.single {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.action-grid button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 28px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--surface-solid);
+  color: var(--control-ink);
+  font-size: 11px;
+  font-weight: 520;
+}
+
+.model-row {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 8px 11px;
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+}
+
+.model-row:last-child {
+  border-bottom: 0;
+}
+
+.favorite-button,
+.inline-action,
+.api-key-row button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 26px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--surface-solid);
+  color: var(--control-ink);
+  font-size: 11px;
+  font-weight: 540;
+}
+
+.favorite-button {
+  width: 26px;
+  color: var(--tertiary);
+}
+
+.favorite-button.active {
+  border-color: rgba(255, 149, 0, 0.28);
+  color: var(--favorite-ink);
+  background: rgba(255, 149, 0, 0.08);
+}
+
+.model-copy {
+  min-width: 0;
+}
+
+.model-copy strong {
+  display: block;
+  overflow: hidden;
+  color: var(--text-strong);
+  font-size: 11px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-copy span {
+  display: block;
+  margin-top: 2px;
+  overflow: hidden;
+  color: var(--secondary);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-actions {
+  display: inline-flex;
+  gap: 6px;
+}
+
+.inline-action {
+  padding: 0 9px;
+}
+
+.model-use-button {
+  border-color: transparent;
+  background: transparent;
+  color: var(--blue);
+  font-weight: 650;
+}
+
+.model-use-button:hover {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+}
+
+.model-use-state {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 26px;
+  padding: 0 9px;
+  color: var(--secondary);
+  font-size: 11px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.model-use-state svg {
+  color: var(--blue);
+}
+
+.catalog-refresh {
+  justify-self: end;
+  padding: 0 10px;
+}
+
+.openrouter-filter-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 10px 16px;
+  align-items: start;
+  padding: 10px 11px;
+  border-bottom: 1px solid var(--border);
+}
+
+.filter-caption {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--secondary);
+  font-size: 10px;
+  font-weight: 560;
+}
+
+.openrouter-filter-panel label {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.openrouter-filter-panel label span {
+  overflow: hidden;
+  color: var(--secondary);
+  font-size: 9px;
+  font-weight: 560;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.openrouter-filter-panel select {
+  height: 26px;
+  font-size: 10px;
+}
+
+/* Input + Output sit two-per-row (one grid column each). */
+.filter-reset {
+  grid-column: 1 / -1;
+  justify-self: end;
+}
+
+/* Range slider shared by the dual price sliders (RangeSlider.svelte) and the single Top # slider. */
+.range-field {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.range-label {
+  color: var(--secondary);
+  font-size: 9px;
+  font-weight: 560;
+}
+
+.cc-slider {
+  position: relative;
+  height: 36px;
+}
+
+.cc-slider-track {
+  position: absolute;
+  top: 11px;
+  left: 0;
+  right: 0;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--border);
+  transform: translateY(-50%);
+}
+
+.cc-slider-fill {
+  position: absolute;
+  top: 11px;
+  left: var(--lo, 0%);
+  right: calc(100% - var(--hi, 100%));
+  height: 5px;
+  border-radius: 999px;
+  background: var(--blue);
+  transform: translateY(-50%);
+}
+
+.cc-slider-fill.single {
+  left: 0;
+  right: calc(100% - var(--val, 100%));
+}
+
+/* Each value sits under its own thumb, tracking its position; clamped so edge values never clip. */
+.range-bubble {
+  position: absolute;
+  top: 21px;
+  transform: translateX(-50%);
+  color: var(--control-ink);
+  font-size: 10px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.range-bubble-lo {
+  left: clamp(0.7rem, var(--lo), calc(100% - 0.7rem));
+}
+
+.range-bubble-hi {
+  left: clamp(0.7rem, var(--hi), calc(100% - 0.7rem));
+}
+
+.range-bubble-single {
+  left: clamp(0.7rem, var(--val), calc(100% - 0.7rem));
+}
+
+/* Two of these overlay one track for the dual slider; the element is click-through so only the
+   thumbs grab. */
+.cc-range {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 22px;
+  margin: 0;
+  padding: 0;
+  /* Reset the global `select, input` chrome (1px border + radius + solid bg) that otherwise draws a
+     box around the bare track. */
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  -webkit-appearance: none;
+  appearance: none;
+  pointer-events: none;
+}
+
+/* The whole element must not show the global focus box; the thumb carries the focus ring instead. */
+.cc-range:focus,
+.cc-range:focus-visible {
+  outline: none;
+}
+
+.cc-range::-webkit-slider-runnable-track {
+  height: 22px;
+  background: transparent;
+}
+
+.cc-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 0.5px solid rgba(0, 0, 0, 0.28);
+  /* macOS slider knobs stay light in both themes; a theme var would go near-black on the dark
+     track and lose contrast. */
+  background: #fbfbfd;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35), 0 0 0 0.5px rgba(0, 0, 0, 0.06);
+  pointer-events: auto;
+  cursor: grab;
+  transition: transform 0.08s ease;
+}
+
+.cc-range::-webkit-slider-thumb:hover {
+  transform: scale(1.08);
+}
+
+.cc-range:active::-webkit-slider-thumb {
+  cursor: grabbing;
+  transform: scale(1.08);
+}
+
+.cc-range:focus-visible::-webkit-slider-thumb {
+  outline: 2px solid var(--blue);
+  outline-offset: 1px;
+}
+
+/* The OpenRouter catalog reuses the model-row list language instead of a wide
+   table: a fixed-min-width table forced a horizontal scroll inside the card and
+   clipped half the columns at narrow window widths. */
+.openrouter-sort-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  padding: 7px 11px;
+  border-bottom: 1px solid var(--border);
+  color: var(--secondary);
+  font-size: 10px;
+}
+
+.openrouter-sort-bar .sort-caption {
+  font-weight: 560;
+}
+
+.openrouter-sort-bar button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.openrouter-sort-bar button.active {
+  color: var(--blue);
+}
+
+.openrouter-sort-bar .sort-state {
+  color: var(--tertiary);
+  font-size: 9px;
+  font-weight: 560;
+}
+
+.model-row.openrouter-row {
+  grid-template-columns: 30px minmax(0, 1fr) auto auto;
+}
+
+.model-row.selected-model {
+  background: var(--accent-soft);
+}
+
+.model-row.top-ranked {
+  border-color: color-mix(in srgb, var(--favorite-ink) 34%, var(--border));
+}
+
+.model-row.top-ranked .model-copy > strong {
+  color: var(--favorite-ink);
+}
+
+.model-row.fast-ranked:not(.top-ranked) .model-copy > strong {
+  color: var(--blue);
+}
+
+.openrouter-row .model-id {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 9px;
+}
+
+.openrouter-row .official-meta {
+  color: var(--tertiary);
+}
+
+.openrouter-price {
+  display: grid;
+  gap: 1px;
+  color: var(--control-ink);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.model-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 5px;
+}
+
+.model-badges em {
+  padding: 1px 5px;
+  border: 1px solid var(--accent-line);
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--blue);
+  font-size: 9px;
+  font-style: normal;
+  font-weight: 560;
+}
+
+.model-badges em.free-event {
+  border-color: color-mix(in srgb, var(--green-text) 24%, transparent);
+  background: color-mix(in srgb, var(--green-text) 13%, transparent);
+  color: var(--green-text);
+}
+
+.model-badges em.top-rank {
+  border-color: color-mix(in srgb, var(--favorite-ink) 32%, transparent);
+  background: color-mix(in srgb, var(--favorite-ink) 13%, transparent);
+  color: var(--favorite-ink);
+  font-weight: 650;
+}
+
+.model-badges em.fast-rank {
+  border-color: color-mix(in srgb, var(--blue) 28%, transparent);
+  background: color-mix(in srgb, var(--blue) 11%, transparent);
+  color: var(--blue);
+  font-weight: 650;
+}
+
+/* Throughput is the secondary speed metric, so it reads as a neutral outline while latency-based
+   "Fast" keeps the prominent blue fill. */
+.model-badges em.tps-rank {
+  border-color: var(--border-strong);
+  background: transparent;
+  color: var(--secondary);
+  font-weight: 650;
+}
+
+.api-key-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 8px;
+  padding: 10px 11px;
+  border-top: 1px solid var(--border);
+}
+
+.api-key-row button {
+  padding: 0 10px;
+}
+
+kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--kbd-bg);
+  color: var(--control-ink);
+  font-family: inherit;
+  font-size: 11px;
+}
+
+.status-pill,
+.api-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 24px;
+  color: var(--secondary);
+  font-size: 11px;
+}
+
+.status-pill.ready,
+.api-status {
+  color: var(--green-text);
+}
+
+/* Failure notices sit inline under the header like native settings errors,
+   not as a floating overlay stack (a web idiom). */
+.toast-stack {
+  display: grid;
+  flex-shrink: 0;
+  gap: 8px;
+  margin: 0 16px 14px;
+}
+
+.toast {
+  display: grid;
+  gap: 2px;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 59, 48, 0.28);
+  border-radius: 8px;
+  background: var(--toast-bg);
+  color: var(--secondary);
+  font-size: 11px;
+}
+
+.toast strong {
+  color: var(--text);
+  font-size: 12px;
+}
+
+.toast span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.loading {
+  display: grid;
+  width: 100%;
+  height: 100%;
+  place-items: center;
+  background: var(--bg);
+  color: var(--secondary);
+  font-size: 13px;
+}
+
+.translation-stage {
+  display: grid;
+  width: 100%;
+  height: 100%;
+  min-width: 396px;
+  min-height: 124px;
+  overflow: hidden;
+  place-items: start center;
+  padding: 18px;
+  background: transparent;
+}
+
+.translation-stage.tall {
+  min-height: 176px;
+}
+
+.translation-stage.debug {
+  min-height: 230px;
+}
+
+.translation-stage.image-small {
+  min-width: 560px;
+}
+
+.translation-stage.image-medium {
+  min-width: 680px;
+}
+
+.translation-stage.image-large {
+  min-width: 820px;
+}
+
+.translation-bubble {
+  position: relative;
+  width: 348px;
+  min-height: 88px;
+  border: 0.5px solid var(--bubble-border);
+  border-radius: 14px;
+  background: var(--bubble-bg);
+  box-shadow: none;
+  backdrop-filter: blur(28px) saturate(160%);
+  -webkit-backdrop-filter: blur(28px) saturate(160%);
+  transform: translateZ(0);
+  --countdown-progress: 100%;
+}
+
+.translation-stage.image-small .translation-bubble {
+  width: 512px;
+}
+
+.translation-stage.image-medium .translation-bubble {
+  width: 632px;
+}
+
+.translation-stage.image-large .translation-bubble {
+  width: 772px;
+}
+
+.translation-bubble.compact {
+  min-height: 88px;
+}
+
+.translation-bubble::before {
+  position: absolute;
+  top: -16px;
+  left: calc(50% - 13px);
+  width: 28px;
+  height: 28px;
+  border-top: 0.5px solid var(--bubble-arrow);
+  border-left: 0.5px solid var(--bubble-arrow);
+  border-top-left-radius: 6px;
+  background: inherit;
+  content: "";
+  transform: rotate(45deg);
+}
+
+.translation-bubble::after {
+  position: absolute;
+  inset: 1px;
+  border: 1px solid var(--bubble-edge);
+  border-radius: 14px;
+  content: "";
+  pointer-events: none;
+}
+
+.translation-bubble.above::before {
+  top: auto;
+  bottom: -16px;
+  border-top: 0;
+  border-left: 0;
+  border-right: 0.5px solid var(--bubble-arrow);
+  border-bottom: 0.5px solid var(--bubble-arrow);
+  border-top-left-radius: 0;
+  border-bottom-right-radius: 6px;
+}
+
+.translation-bubble.no-arrow::before {
+  display: none;
+}
+
+.translation-bubble-inner {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 13px 16px;
+}
+
+.translation-bubble.has-pin .translation-bubble-inner {
+  /* The pin now overhangs the corner (see .pin-button), so reserve only enough to clear its inner
+     edge (top -12px + 30px height ≈ 18px) instead of a full 42px band — reclaims ~22px of top space. */
+  padding-top: 20px;
+}
+
+.pin-button {
+  position: absolute;
+  /* Drape the pin over the top-right corner (partly outside the bubble) instead of sitting in a
+     reserved band inside it, so the content reclaims the top space the old top:10/right:12 wasted.
+     The overhang stays within the 18px .translation-stage padding, so it is not clipped. */
+  top: -12px;
+  right: -12px;
+  z-index: 2;
+  display: inline-flex;
+  width: 30px;
+  height: 30px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid var(--glass-border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface-solid) 54%, transparent);
+  color: var(--control-ink);
+}
+
+.pin-button.active {
+  border-color: var(--accent-bar-strong);
+  background: var(--accent-tint);
+  color: var(--blue);
+}
+
+.countdown-bar {
+  height: 3px;
+  margin-top: 2px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(120, 120, 128, 0.16);
+}
+
+.countdown-bar-fill {
+  display: block;
+  width: var(--countdown-progress);
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent-bar);
+  transition: width 100ms linear;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .countdown-bar-fill {
+    transition: none;
+  }
+
+  .progress-fill {
+    animation: none;
+  }
+}
+
+.loading-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--blue);
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.error-title {
+  color: var(--red);
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: currentColor;
+}
+
+.copying {
+  margin: 0;
+  color: var(--secondary);
+  font-size: 14px;
+}
+
+.progress-track {
+  position: relative;
+  height: 4px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--track);
+}
+
+.progress-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 40%;
+  border-radius: inherit;
+  background: var(--blue);
+  /* Indeterminate translation has no measurable progress, so slide a segment instead of
+     parking a static 42% bar that reads as a frozen/stalled determinate progress bar. */
+  animation: progress-indeterminate 1.15s ease-in-out infinite;
+}
+
+@keyframes progress-indeterminate {
+  0% {
+    transform: translateX(-110%);
+  }
+  100% {
+    transform: translateX(275%);
+  }
+}
+
+.bubble-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--secondary);
+  font-size: 12px;
+}
+
+.footer-meta {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.permission-request-button {
+  flex: 0 0 auto;
+  gap: 6px;
+}
+
+.language {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--control-ink);
+  white-space: nowrap;
+}
+
+.language-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.language-select-shell {
+  display: inline-flex;
+  align-items: center;
+  min-width: 102px;
+  max-width: 134px;
+  height: 28px;
+  gap: 6px;
+  border: 1px solid var(--glass-border);
+  border-radius: 8px;
+  background: var(--surface-solid);
+  color: var(--control-ink);
+}
+
+.language-select-shell svg {
+  flex: 0 0 auto;
+  margin-left: 10px;
+}
+
+.language-select {
+  width: 100%;
+  min-width: 0;
+  height: 26px;
+  padding: 0 10px 0 0;
+  border: 0;
+  background: var(--surface-solid);
+  color: var(--control-ink);
+  appearance: none;
+  -webkit-appearance: none;
+  font-size: 12px;
+  font-weight: 610;
+  text-align: left;
+}
+
+.model-label {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--secondary);
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 10px;
+  font-weight: 560;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-meta-strip {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+  color: var(--secondary);
+  font-size: 10px;
+  line-height: 1.25;
+}
+
+.model-meta-main,
+.model-warning {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 5px;
+}
+
+.model-meta-main span {
+  min-width: 0;
+  overflow: hidden;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-weight: 560;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-meta-strip svg {
+  flex: 0 0 auto;
+}
+
+.model-warning {
+  color: var(--favorite-ink);
+  white-space: normal;
+}
+
+.translation-text {
+  margin: 0;
+  max-width: none;
+  min-height: 24px;
+  /* Cap height so streamed long output scrolls inside the bubble instead of clipping when the
+     window hits its 720px resize ceiling. */
+  max-height: 560px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0;
+  color: var(--text);
+  font-size: 16px;
+  font-weight: 580;
+  line-height: 1.42;
+  white-space: pre-wrap;
+}
+
+.translation-text.original {
+  font-size: 14px;
+  font-weight: 450;
+  line-height: 1.35;
+}
+
+.translation-image-result {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+}
+
+.translation-image-result img {
+  display: block;
+  width: 100%;
+  /* JS sets --cc-image-max-height from the display height so the whole bubble (image + footer +
+     close button) always fits on screen; falls back to 600px outside Tauri. */
+  max-height: var(--cc-image-max-height, 600px);
+  object-fit: contain;
+  border: 0.5px solid var(--bubble-border);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.45);
+}
+
+.translation-image-result figcaption {
+  margin: 0;
+  color: var(--secondary);
+  font-size: 11px;
+  font-weight: 520;
+  line-height: 1.35;
+}
+
+.image-expense-warning {
+  margin: -2px 0 0;
+  padding: 7px 9px;
+  border: 1px solid color-mix(in srgb, var(--favorite-ink) 24%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--favorite-ink) 8%, transparent);
+  color: var(--favorite-ink);
+  font-size: 11px;
+  font-weight: 540;
+  line-height: 1.35;
+}
+
+.model-select-shell {
+  position: relative;
+  display: inline-flex;
+  width: 28px;
+  height: 28px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--glass-border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+}
+
+.model-select-shell svg {
+  pointer-events: none;
+}
+
+.model-select {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  border: 0;
+  opacity: 0;
+  font-size: 11px;
+  font-weight: 560;
+}
+
+.action-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+.image-size-control {
+  display: inline-flex;
+  height: 28px;
+  padding: 2px;
+  border: 1px solid var(--glass-border);
+  border-radius: 8px;
+  background: rgba(120, 120, 128, 0.1);
+}
+
+.image-size-control button {
+  min-width: 24px;
+  height: 22px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--secondary);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.image-size-control button.active {
+  background: var(--surface-solid);
+  color: var(--text);
+}
+
+.preview-open-button {
+  gap: 6px;
+  min-width: 112px;
+  padding: 0 10px;
+}
+
+.small-button,
+.icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--glass-border);
+  background: transparent;
+  color: var(--text);
+}
+
+.small-button {
+  min-height: 28px;
+  min-width: 68px;
+  padding: 0 12px;
+  border-radius: 9px;
+  font-size: 12px;
+  font-weight: 560;
+  white-space: nowrap;
+}
+
+.icon-button {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 8px;
+}
+
+.preview-switcher {
+  display: inline-flex;
+  gap: 4px;
+  margin-top: 14px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-card);
+}
+
+.preview-switcher button {
+  min-height: 24px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--secondary);
+  font-size: 11px;
+}
+
+.preview-switcher button.active {
+  background: var(--blue);
+  color: var(--on-accent);
+}
+
+@media (max-width: 560px) {
+  .app-frame {
+    grid-template-columns: 132px minmax(0, 1fr);
+    min-width: 0;
+  }
+
+  .setting-row,
+  .setting-row.text-row,
+  .setting-row.model-picker-row {
+    grid-template-columns: 1fr;
+  }
+
+  .reset-row {
+    justify-self: end;
+  }
+
+  .nested-model-menu {
+    left: 0;
+    right: auto;
+    grid-template-columns: 1fr;
+    width: min(420px, calc(100vw - 40px));
+  }
+
+  .nested-model-providers {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+}
+
+.utility-frame {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  padding: 18px;
+  background: var(--surface);
+}
+
+.surface-header,
+.surface-footer,
+.toolbar,
+.split-panels article header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.surface-header {
+  margin-bottom: 14px;
+}
+
+.surface-header h1 {
+  margin-bottom: 3px;
+  font-size: 17px;
+}
+
+.surface-header p,
+.app-card span {
+  margin: 0;
+  color: var(--secondary);
+  font-size: 11px;
+}
+
+.toolbar label {
+  display: grid;
+  gap: 3px;
+  color: var(--secondary);
+  font-size: 10px;
+}
+
+.toolbar button,
+.surface-footer button,
+.action-list button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 28px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--surface-solid);
+  color: var(--control-ink);
+  font-size: 11px;
+  font-weight: 540;
+}
+
+.surface-footer {
+  margin-top: 12px;
+  justify-content: flex-start;
+}
+
+.surface-footer .primary {
+  border-color: var(--blue);
+  background: var(--blue);
+  color: var(--on-accent);
+}
+
+.model-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 280px;
+  gap: 12px;
+  min-height: 220px;
+}
+
+.table-panel,
+.detail-panel,
+.split-panels article,
+.log-list,
+.app-card,
+.action-list {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-card);
+}
+
+.table-panel {
+  overflow: auto;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+
+th,
+td {
+  padding: 8px 9px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+}
+
+th {
+  color: var(--secondary);
+  font-weight: 650;
+}
+
+tr.active td {
+  background: var(--accent-tint);
+}
+
+.detail-panel {
+  padding: 14px;
+}
+
+.detail-panel .eyebrow {
+  color: var(--secondary);
+  font-size: 10px;
+}
+
+.detail-panel h2 {
+  margin: 6px 0;
+  font-size: 14px;
+}
+
+.detail-panel strong,
+.detail-panel p {
+  display: block;
+  margin: 0 0 10px;
+  color: var(--secondary);
+  font-size: 11px;
+}
+
+.split-panels {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  min-height: 0;
+  margin-top: 12px;
+  flex: 1;
+}
+
+.split-panels article {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 12px;
+}
+
+.segmented {
+  display: inline-flex;
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.segmented button {
+  min-height: 22px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--secondary);
+  font-size: 10px;
+}
+
+.segmented button.active {
+  background: var(--blue);
+  color: var(--on-accent);
+}
+
+pre {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  margin: 10px 0 0;
+  color: var(--control-ink);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11px;
+  white-space: pre-wrap;
+}
+
+.summary-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+  color: var(--secondary);
+  font-size: 11px;
+}
+
+.summary-strip span {
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-card);
+}
+
+.summary-strip strong {
+  color: var(--text);
+}
+
+.log-list {
+  flex: 1;
+  overflow: auto;
+  padding: 12px;
+}
+
+.empty-state {
+  display: grid;
+  height: 100%;
+  place-items: center;
+  color: var(--secondary);
+  font-size: 12px;
+}
+
+.log-entry {
+  display: grid;
+  gap: 7px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+}
+
+.log-entry:first-child {
+  padding-top: 0;
+}
+
+.log-entry header {
+  display: grid;
+  gap: 3px;
+}
+
+.log-entry header span,
+.log-entry p {
+  margin: 0;
+  color: var(--secondary);
+}
+
+.permission-grid {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  gap: 16px;
+}
+
+.app-card {
+  display: grid;
+  gap: 10px;
+  align-content: center;
+  justify-items: center;
+  min-height: 240px;
+  padding: 16px;
+  text-align: center;
+}
+
+.app-card.draggable {
+  cursor: grab;
+}
+
+.app-card.draggable:active {
+  cursor: grabbing;
+}
+
+.app-card strong {
+  font-size: 13px;
+}
+
+.app-path {
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--secondary);
+  font-family: inherit;
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.permission-column {
+  display: grid;
+  gap: 16px;
+}
+
+.setting-group.standalone {
+  margin-bottom: 0;
+}
+
+.action-list {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+}
+
+.action-result {
+  margin: 0;
+  color: var(--red);
+  font-size: 11px;
+}
+
+.action-result.ok {
+  color: var(--green-text);
+}
+
+.toast-preview-frame {
+  display: grid;
+  gap: 12px;
+  width: 100%;
+  height: 100%;
+  align-content: end;
+  padding: 0;
+  background: transparent;
+  pointer-events: none;
+}
+
+.preview-toast {
+  display: grid;
+  gap: 6px;
+  width: 420px;
+  min-height: 52px;
+  padding: 12px 16px;
+  border: 1px solid rgba(217, 217, 222, 0.72);
+  border-radius: 8px;
+  background: rgba(34, 34, 38, 0.82);
+  color: var(--on-accent);
+}
+
+.preview-toast header {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.preview-toast p {
+  margin: 0;
+  font-size: 14px;
+}
