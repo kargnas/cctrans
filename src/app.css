@@ -39,8 +39,11 @@
   --track: #e7e8ec;
   --favorite-ink: #b36b00;
 
-  /* Only the translated-image thumbnail still draws its own hairline now that the toast card is the
-     native window material; the bubble itself no longer has a CSS border/background/edge. */
+  /* The toast card is the native window material, so the bubble draws no visible border/edge. It does
+     carry a near-invisible --bubble-bg: a transparent always-on-top WKWebView over NSVisualEffectView
+     intermittently loses its backing store and the blur drops a frame, so the web layer needs a backing
+     fill to stay composited. 0.05 alpha is below the perceptual threshold (look stays translucent). */
+  --bubble-bg: rgba(255, 255, 255, 0.05);
   --bubble-border: rgba(0, 0, 0, 0.18);
   --bubble-border-hover: rgba(0, 0, 0, 0.42);
   --toast-bg: rgba(255, 255, 255, 0.94);
@@ -81,6 +84,7 @@
     --track: #3a3a3e;
     --favorite-ink: #f0a23a;
 
+    --bubble-bg: rgba(40, 40, 44, 0.06);
     --bubble-border: rgba(255, 255, 255, 0.16);
     --bubble-border-hover: rgba(255, 255, 255, 0.38);
     --toast-bg: rgba(40, 40, 44, 0.94);
@@ -1169,14 +1173,15 @@ kbd {
 
 .translation-bubble {
   position: relative;
-  /* Fill the stage so the content sits directly on the window's native NSVisualEffectView material,
-     which IS the card. The bubble must NOT draw its own border/background/radius: the material already
-     fills the whole window with rounded corners, so a second rounded box here nested a visible double
-     border inside the panel. Blur comes from that material (.effects() in src-tauri/src/lib.rs), never
-     CSS backdrop-filter — on a transparent always-on-top WKWebView the CSS filter re-samples the live
-     desktop and flickers; the OS-composited material does not. */
+  /* The native NSVisualEffectView material (window .effects() in src-tauri/src/lib.rs) IS the card, so
+     the bubble draws NO border/radius — a second rounded box would nest a visible double border. It DOES
+     paint a near-invisible --bubble-bg (0.05): a transparent always-on-top WKWebView composited over the
+     vibrancy intermittently drops the blur for a frame ("blur 풀림" flicker) unless the web layer holds a
+     backing fill. This is a solid fill, NOT backdrop-filter — the CSS filter re-samples the live desktop
+     and is exactly what flickered originally; the OS-composited material plus this backing do not. */
   width: 100%;
   min-height: 88px;
+  background: var(--bubble-bg);
   --countdown-progress: 100%;
 }
 
