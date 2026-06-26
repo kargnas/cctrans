@@ -162,6 +162,83 @@ mod macos_toast {
         // process lifetime; dropping the token would unregister it via its Drop glue.
         std::mem::forget(token);
     }
+
+    // Re-shape the toast's native vibrancy so the card looks like image #8: an inset rounded panel with a
+    // TRANSPARENT gutter the pin can overhang into. The window's `.effects()` makes the NSVisualEffectView
+    // fill the entire 396px window, which would frost that gutter and nest a double border around the inset
+    // 348px `.translation-bubble` (the fdcb42c bug). Replacing its maskImage with an inset rounded rect
+    // clips the material to just the card; the gutter then shows the desktop, and the pin floats over it.
+    //
+    // The card is ALWAYS inset 24px horizontally / 18px vertically: the bubble is `window_width - 48`
+    // (348 in 396, 512 in 560, …) centred under 18px stage padding, and `window_height - 36` tall. A 9-part
+    // stretchable NSImage (cap insets pin the gutter + the 4 rounded corners, only the centre stretches)
+    // tracks every resize, so this is set once and the OS rescales it.
+    pub fn mask_toast_material_to_card(window: &tauri::WebviewWindow) {
+        use objc2::rc::Retained;
+        use objc2::{msg_send, AnyThread, ClassType};
+        use objc2_app_kit::{NSBezierPath, NSColor, NSImage, NSVisualEffectView};
+        use objc2_foundation::{NSEdgeInsets, NSPoint, NSRect, NSSize};
+
+        const GUTTER_X: f64 = 24.0;
+        const GUTTER_Y: f64 = 18.0;
+        const RADIUS: f64 = 14.0;
+        // A 2px stretchable centre strip; without it cap insets would meet and the mask could not resize.
+        const STRETCH: f64 = 2.0;
+
+        let Ok(ptr) = window.ns_window() else {
+            return;
+        };
+        let ns_window: &NSWindow = unsafe { &*(ptr as *mut NSWindow) };
+        let Some(content_view) = ns_window.contentView() else {
+            return;
+        };
+        let Some(frame_view) = (unsafe { content_view.superview() }) else {
+            return;
+        };
+
+        let size = NSSize::new(
+            GUTTER_X * 2.0 + RADIUS * 2.0 + STRETCH,
+            GUTTER_Y * 2.0 + RADIUS * 2.0 + STRETCH,
+        );
+        unsafe {
+            // Draw an opaque rounded rect inset by the gutter onto a transparent image; the alpha IS the mask.
+            let mask: Retained<NSImage> = msg_send![NSImage::alloc(), initWithSize: size];
+            let _: () = msg_send![&*mask, lockFocus];
+            let card = NSRect::new(
+                NSPoint::new(GUTTER_X, GUTTER_Y),
+                NSSize::new(RADIUS * 2.0 + STRETCH, RADIUS * 2.0 + STRETCH),
+            );
+            let path: Retained<NSBezierPath> = msg_send![
+                <NSBezierPath as ClassType>::class(),
+                bezierPathWithRoundedRect: card,
+                xRadius: RADIUS,
+                yRadius: RADIUS,
+            ];
+            let black = NSColor::blackColor();
+            let _: () = msg_send![&*black, set];
+            let _: () = msg_send![&*path, fill];
+            let _: () = msg_send![&*mask, unlockFocus];
+            let insets = NSEdgeInsets {
+                top: GUTTER_Y + RADIUS,
+                left: GUTTER_X + RADIUS,
+                bottom: GUTTER_Y + RADIUS,
+                right: GUTTER_X + RADIUS,
+            };
+            let _: () = msg_send![&*mask, setCapInsets: insets];
+            let _: () = msg_send![&*mask, setResizingMode: 1_isize]; // NSImageResizingMode::Stretch
+
+            // `.effects()` adds exactly one NSVisualEffectView under the content view; re-mask it.
+            let vev_class = <NSVisualEffectView as ClassType>::class();
+            let subviews = frame_view.subviews();
+            for i in 0..subviews.count() {
+                let view = subviews.objectAtIndex(i);
+                let is_vev: bool = msg_send![&*view, isKindOfClass: vev_class];
+                if is_vev {
+                    let _: () = msg_send![&*view, setMaskImage: &*mask];
+                }
+            }
+        }
+    }
 }
 
 const TRANSLATION_WINDOW_WIDTH: f64 = 396.0;
@@ -1463,6 +1540,7 @@ pub fn run() {
                         )
                         .build()?;
                 apply_toast_theme(&window);
+                macos_toast::mask_toast_material_to_card(&window);
                 macos_toast::install_pointer_monitor(app.handle().clone());
                 start_translation_toast_watcher(app.handle().clone());
             } else if let Some(surface) = startup_surface() {

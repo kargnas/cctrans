@@ -16,6 +16,8 @@ block2 = "0.6"
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", features = [
   "NSApplication",
+  "NSBezierPath",
+  "NSColor",
   "NSDragging",
   "NSDraggingItem",
   "NSDraggingSession",
@@ -23,6 +25,7 @@ objc2-app-kit = { version = "0.3", features = [
   "NSImage",
   "NSPasteboard",
   "NSView",
+  "NSVisualEffectView",
   "NSWindow",
   "NSWorkspace",
   "block2"

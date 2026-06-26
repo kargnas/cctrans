@@ -1145,7 +1145,6 @@ kbd {
 }
 
 .translation-stage {
-  position: relative;
   display: grid;
   width: 100%;
   height: 100%;
@@ -1154,23 +1153,12 @@ kbd {
   overflow: hidden;
   place-items: start center;
   padding: 18px;
-  /* The native material fills the whole rounded window; this tint + the ::after rim sit ON it so the panel
-     reads as a delineated warm glass card (image #8), not a bare material slab (#9). Radius 14 matches the
-     window material (.effects().radius in src-tauri/src/lib.rs) so the tint stops exactly at the card edge
-     — no inset rectangle, no double border. */
-  border-radius: 14px;
-  background: var(--bubble-bg);
-}
-
-.translation-stage::after {
-  /* The bright glass rim image #8 shows at the card edge. inset:1px + radius 14 keeps it a single rim riding
-     just inside the material edge — the card's lit edge, NOT a second nested border. */
-  position: absolute;
-  inset: 1px;
-  border: 1px solid var(--bubble-edge);
-  border-radius: 14px;
-  content: "";
-  pointer-events: none;
+  /* The stage is the transparent window gutter, NOT the card. The visible card is the inset
+     .translation-bubble; the pin overhangs past the card edge into this gutter. The native
+     NSVisualEffectView material is masked to the bubble's frame (src-tauri/src/lib.rs) so the gutter shows
+     the desktop, not frosted material — without that mask a full-window material would nest a double
+     border around the inset card (the fdcb42c bug). */
+  background: transparent;
 }
 
 .translation-stage.tall {
@@ -1195,12 +1183,32 @@ kbd {
 
 .translation-bubble {
   position: relative;
-  /* The bubble is just the content column now — the card surface (tint + rim) lives on .translation-stage
-     so it reaches the rounded card edge. The bubble draws NO border/background/radius of its own: a second
-     rounded box inset from the material edge is exactly what nested a visible double border before. */
-  width: 100%;
+  /* The bubble IS the visible card: a 348px panel inset within the 396px transparent window so the pin can
+     overhang past its top-right corner into the gutter (image #8). It carries the delineation — 30% tint +
+     0.5px border + the ::after glass rim, radius 14. The blur is the native NSVisualEffectView material,
+     masked to THIS bubble's frame (src-tauri/src/lib.rs), NOT a CSS backdrop-filter — the filter re-samples
+     the desktop on a transparent always-on-top WKWebView and flickers; the OS-composited material does not.
+     The 30% tint also backs the web layer so compositing over the material stays stable. */
+  width: 348px;
   min-height: 88px;
+  border: 0.5px solid var(--bubble-border);
+  border-radius: 14px;
+  background: var(--bubble-bg);
   --countdown-progress: 100%;
+}
+
+.translation-stage.image-small .translation-bubble { width: 512px; }
+.translation-stage.image-medium .translation-bubble { width: 632px; }
+.translation-stage.image-large .translation-bubble { width: 772px; }
+
+.translation-bubble::after {
+  /* The bright glass rim image #8 shows at the card edge: a single lit line just inside the border. */
+  position: absolute;
+  inset: 1px;
+  border: 1px solid var(--bubble-edge);
+  border-radius: 14px;
+  content: "";
+  pointer-events: none;
 }
 
 .translation-bubble.compact {
@@ -1221,18 +1229,17 @@ kbd {
 }
 
 .translation-bubble.has-pin .translation-bubble-inner {
-  /* The pin floats over the top-right corner (see .pin-button), so the translation content reserves NO
-     extra top space — it starts at the stage's top edge like a no-pin toast. The user explicitly wants
-     the translation flush to the top with the pin overhanging, not pushed down by a reserved band. */
-  padding-top: 0;
+  /* Reserve 20px above the content so it clears the pin overhanging the top-right corner — matching #8,
+     where the pin floats over this band rather than pressing into the first line of text. */
+  padding-top: 20px;
 }
 
 .pin-button {
   position: absolute;
-  /* Push the pin to the window's top-right corner for the maximum overhang the full-window material
-     card allows: it perches on the rounded-corner (radius 14) transparent zone so it reads as floating.
-     -16px stays inside the 18px .translation-stage padding (no overflow:hidden clip); the window edge is
-     the hard CSS limit. Sticking out PAST the card edge would need a masked NSVisualEffectView gutter. */
+  /* The pin overhangs the inset card: -16px from the bubble's top-right corner pushes ~14px of the 30px
+     button PAST the card edge into the transparent gutter, so it reads as floating over the corner (image
+     #8). The gutter is real transparent window (the native material is masked to the bubble), and it fits
+     inside the 18px .translation-stage padding so .translation-stage overflow:hidden never clips it. */
   top: -16px;
   right: -16px;
   z-index: 2;
