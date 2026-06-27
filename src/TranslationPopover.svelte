@@ -409,6 +409,16 @@
             }
           ]
         : []),
+      ...(providerValues.has("kargnasManaged")
+        ? [
+            {
+              label: "CCTrans Cloud",
+              value: "kargnasManaged:cloud",
+              provider: "kargnasManaged" as const,
+              modelId: "cloud"
+            }
+          ]
+        : []),
       ...(providerValues.has("openRouter")
         ? favoriteOpenRouterModels.map((option) => ({
             label: openRouterPreviewModelLabel(option),
@@ -439,6 +449,7 @@
   function modelIdForSettings(state: SettingsState) {
     if (state.settings.provider === "openRouter") return state.settings.openRouterTextModel;
     if (state.settings.provider === "appleTranslation") return appleTranslationModelID;
+    if (state.settings.provider === "kargnasManaged") return "cloud";
     return state.settings.localModelID;
   }
 
@@ -595,6 +606,7 @@
   function providerTitleForOption(option: PreviewModelOption) {
     if (option.provider === "openRouter") return "OpenRouter LLM";
     if (option.provider === "appleTranslation") return "Apple Translation";
+    if (option.provider === "kargnasManaged") return "CCTrans Cloud";
     return "Local Model";
   }
 

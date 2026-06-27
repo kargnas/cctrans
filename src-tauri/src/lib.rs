@@ -8,9 +8,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use surfaces::{open_surface_window, AppSurface};
+use tauri::window::{Effect, EffectState, EffectsBuilder};
 #[cfg(target_os = "macos")]
 use tauri::ActivationPolicy;
-use tauri::window::{Effect, EffectState, EffectsBuilder};
 use tauri::{
     AppHandle, LogicalSize, Manager, Monitor, PhysicalPosition, PhysicalSize, WebviewUrl,
     WebviewWindowBuilder,
@@ -308,6 +308,9 @@ enum TranslationProvider {
     // sandboxed Mac App Store variant can offer.
     #[serde(rename = "appleTranslation")]
     AppleTranslation,
+    // CCTrans Cloud: server-chosen managed model, no OpenRouter key.
+    #[serde(rename = "kargnasManaged")]
+    KargnasManaged,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -631,6 +634,21 @@ struct PermissionAppTarget {
     bundle_file_url: String,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct PermissionRequest {
+    action: String,
+    nonce: String,
+    #[serde(rename = "createdAt")]
+    created_at: f64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct PermissionResponse {
+    title: String,
+    message: String,
+    ok: bool,
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 struct RequestLogFile {
     entries: Vec<RequestLogEntryState>,
@@ -906,7 +924,11 @@ fn perform_settings_action(
             open_surface_action(&app, AppSurface::LocalModelSetup, "Model Setup")
         }
         "openPermissionHelper" => {
-            open_surface_action(&app, AppSurface::PermissionHelper, "Permission Helper")
+            if app_variant() == "mas" {
+                request_host_permission(&app, "show")
+            } else {
+                open_surface_action(&app, AppSurface::PermissionHelper, "Permission Helper")
+            }
         }
         "openInputMonitoring" => open_privacy_url(
             "Input Monitoring",
@@ -920,6 +942,7 @@ fn perform_settings_action(
             "Screen Recording",
             "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
         ),
+        "requestScreenRecording" => request_host_permission(&app, "screen"),
         "revealPermissionApp" => reveal_permission_app_impl(&app),
         _ => Err(format!("Unknown settings action: {action}")),
     }
@@ -972,11 +995,8 @@ fn start_permission_app_drag(
 }
 
 #[tauri::command]
-fn open_screen_recording_settings() -> Result<ActionResult, String> {
-    open_privacy_url(
-        "Screen Recording",
-        "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
-    )
+fn open_screen_recording_settings(app: AppHandle) -> Result<ActionResult, String> {
+    request_host_permission(&app, "screen")
 }
 
 #[tauri::command]
@@ -1661,7 +1681,22 @@ pub fn run() {
 const MAS_APP_GROUP_ID: &str = "6YQH3QFFK8.as.kargn.cctrans";
 
 fn sandbox_container_active() -> bool {
-    std::env::var_os("APP_SANDBOX_CONTAINER_ID").is_some()
+    if std::env::var_os("APP_SANDBOX_CONTAINER_ID").is_some() {
+        return true;
+    }
+    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+        return false;
+    };
+    let components = home
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>();
+    components.windows(4).any(|window| {
+        window[0].as_ref() == "Library"
+            && window[1].as_ref() == "Containers"
+            && window[2].starts_with("as.kargn.cctrans")
+            && window[3].as_ref() == "Data"
+    })
 }
 
 fn mas_shared_data_dir() -> Option<PathBuf> {
@@ -1719,6 +1754,10 @@ fn login_requests_dir() -> Option<PathBuf> {
 // bundle in Screen Recording; off-sandbox this is None and the CLI path runs.
 fn screenshot_requests_dir() -> Option<PathBuf> {
     mas_shared_data_dir().map(|dir| dir.join("screenshot-requests"))
+}
+
+fn permission_requests_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    shared_data_dir(app).map(|dir| dir.join("permission-requests"))
 }
 
 static CLAIMED_LEASE: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
@@ -1830,10 +1869,7 @@ fn translation_preview_request() -> Option<TranslationPreviewRequest> {
         }
     }
 
-    enabled.then_some(TranslationPreviewRequest {
-        mode,
-        debug,
-    })
+    enabled.then_some(TranslationPreviewRequest { mode, debug })
 }
 
 fn persistent_translation_url(debug: bool) -> String {
@@ -2185,8 +2221,8 @@ fn apply_preview_model_selection(
     match &settings.provider {
         TranslationProvider::LocalHyMT2 => settings.local_model_id = model_id.to_string(),
         TranslationProvider::OpenRouter => settings.open_router_text_model = model_id.to_string(),
-        // Single-model provider; there is no model id to store.
-        TranslationProvider::AppleTranslation => {}
+        // Single-model / model-less providers; there is no model id to store.
+        TranslationProvider::AppleTranslation | TranslationProvider::KargnasManaged => {}
     }
     Ok(normalize_settings(settings))
 }
@@ -2226,6 +2262,7 @@ fn provider_title(provider: &TranslationProvider) -> &'static str {
         TranslationProvider::LocalHyMT2 => "Local Model",
         TranslationProvider::OpenRouter => "OpenRouter LLM",
         TranslationProvider::AppleTranslation => "Apple Translation",
+        TranslationProvider::KargnasManaged => "CCTrans Cloud",
     }
 }
 
@@ -2238,6 +2275,7 @@ fn selected_model_title(settings: &Settings) -> String {
             model_title(&settings.open_router_text_model, &settings.provider)
         }
         TranslationProvider::AppleTranslation => "Apple Translation".to_string(),
+        TranslationProvider::KargnasManaged => "Managed (server-chosen)".to_string(),
     }
 }
 
@@ -2261,7 +2299,7 @@ fn model_title(model_id: &str, provider: &TranslationProvider) -> String {
 
 fn state_from_disk(app: &AppHandle) -> Result<SettingsState, String> {
     let settings = load_effective_settings(app)?;
-    let defaults = default_settings();
+    let defaults = default_settings_for_current_variant();
     let storage_path = settings_path(app)?.display().to_string();
 
     Ok(SettingsState {
@@ -2288,7 +2326,7 @@ fn app_variant() -> &'static str {
         let is_mas = args
             .windows(2)
             .any(|pair| pair[0] == "--app-variant" && pair[1] == "mas");
-        if is_mas {
+        if is_mas || sandbox_container_active() {
             "mas"
         } else {
             "direct"
@@ -2310,7 +2348,7 @@ fn load_effective_settings(app: &AppHandle) -> Result<Settings, String> {
 }
 
 fn apply_stored_settings(stored: StoredSettings) -> Settings {
-    let mut settings = default_settings();
+    let mut settings = default_settings_for_current_variant();
     if let Some(provider) = stored.provider {
         settings.provider = provider;
     }
@@ -2364,7 +2402,7 @@ fn apply_stored_settings(stored: StoredSettings) -> Settings {
 
 fn write_settings(app: &AppHandle, settings: Settings) -> Result<(), String> {
     let path = settings_path(app)?;
-    let defaults = default_settings();
+    let defaults = default_settings_for_current_variant();
     let stored = StoredSettings::from_effective(&settings, &defaults);
 
     if stored.is_empty() {
@@ -2574,7 +2612,21 @@ fn default_settings() -> Settings {
     }
 }
 
+fn default_settings_for_current_variant() -> Settings {
+    let mut settings = default_settings();
+    if app_variant() == "mas" {
+        // The MAS sandbox cannot run the Python/uv local-model backend. Keep the
+        // helper's default aligned with the Swift host's startup mapping so reset
+        // and first-load never show a disabled local provider as selected.
+        settings.provider = TranslationProvider::AppleTranslation;
+    }
+    settings
+}
+
 fn normalize_settings(mut settings: Settings) -> Settings {
+    if app_variant() == "mas" && settings.provider == TranslationProvider::LocalHyMT2 {
+        settings.provider = TranslationProvider::AppleTranslation;
+    }
     settings.local_hy_mt2_backend_path = normalized_optional(settings.local_hy_mt2_backend_path);
     settings.custom_local_models_path = normalized_optional(settings.custom_local_models_path);
     settings.open_router_text_model = settings.open_router_text_model.trim().to_string();
@@ -2735,6 +2787,7 @@ fn settings_options(app: &AppHandle) -> SettingsOptions {
     let mut providers = vec![
         option("Local Model", "localHyMT2", None),
         option("Apple Translation", "appleTranslation", Some("On-device")),
+        option("CCTrans Cloud", "kargnasManaged", Some("No API key")),
         option("OpenRouter LLM", "openRouter", None),
     ];
     if app_variant() == "mas" {
@@ -3393,6 +3446,7 @@ fn provider_arg(provider: &TranslationProvider) -> &'static str {
         TranslationProvider::LocalHyMT2 => "local",
         TranslationProvider::OpenRouter => "openrouter",
         TranslationProvider::AppleTranslation => "apple",
+        TranslationProvider::KargnasManaged => "managed",
     }
 }
 
@@ -3551,6 +3605,58 @@ fn request_login_item(
         if std::time::Instant::now() >= deadline {
             let _ = fs::remove_file(&request_path);
             return Err("Login host did not respond".to_string());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
+// Privacy prompts must run in the outer CCTrans.app process. The visible
+// helper window is a nested app, so requesting Screen Recording here would
+// register CCTransTauri.app in System Settings instead of CCTrans.app.
+fn request_host_permission(app: &AppHandle, action: &str) -> Result<ActionResult, String> {
+    let dir = permission_requests_dir(app)?;
+    fs::create_dir_all(&dir)
+        .map_err(|error| format!("Could not create permission-requests dir: {error}"))?;
+    let created_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|error| format!("Clock error: {error}"))?
+        .as_secs_f64();
+    let nonce = login_request_nonce();
+    let request = PermissionRequest {
+        action: action.to_string(),
+        nonce: nonce.clone(),
+        created_at,
+    };
+    let body = serde_json::to_string_pretty(&request)
+        .map_err(|error| format!("Could not encode permission request: {error}"))?;
+
+    let tmp_path = dir.join(format!(".tmp-req-{nonce}.json"));
+    let request_path = dir.join(format!("req-{nonce}.json"));
+    fs::write(&tmp_path, &body)
+        .map_err(|error| format!("Could not write permission request: {error}"))?;
+    fs::rename(&tmp_path, &request_path)
+        .map_err(|error| format!("Could not publish permission request: {error}"))?;
+
+    let response_path = dir.join(format!("resp-{nonce}.json"));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    loop {
+        if let Ok(data) = fs::read_to_string(&response_path) {
+            let parsed = serde_json::from_str::<PermissionResponse>(&data);
+            let _ = fs::remove_file(&response_path);
+            let _ = fs::remove_file(&request_path);
+            return parsed
+                .map(|response| ActionResult {
+                    title: response.title,
+                    message: response.message,
+                    ok: response.ok,
+                })
+                .map_err(|error| {
+                    format!("Could not parse permission response: {error}. Output: {data}")
+                });
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = fs::remove_file(&request_path);
+            return Err("CCTrans host did not respond to the permission request.".to_string());
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
@@ -4558,6 +4664,42 @@ mod tests {
         assert_eq!(reloaded.provider, TranslationProvider::OpenRouter);
         assert_eq!(reloaded.open_router_text_model, "anthropic/claude-opus-4.8");
         assert_eq!(reloaded.local_model_id, defaults.local_model_id);
+    }
+
+    #[test]
+    fn managed_provider_survives_settings_roundtrip() {
+        let defaults = default_settings();
+        let mut settings = defaults.clone();
+        settings.provider = TranslationProvider::KargnasManaged;
+
+        let stored = StoredSettings::from_effective(&settings, &defaults);
+        let reloaded = apply_stored_settings(stored);
+
+        assert_eq!(reloaded.provider, TranslationProvider::KargnasManaged);
+        assert_eq!(provider_title(&reloaded.provider), "CCTrans Cloud");
+        assert_eq!(selected_model_title(&reloaded), "Managed (server-chosen)");
+        assert_eq!(provider_arg(&reloaded.provider), "managed");
+    }
+
+    #[test]
+    fn preview_model_selection_updates_managed_provider_without_model_side_effects() {
+        let defaults = default_settings();
+        let mut initial = defaults.clone();
+        initial.local_model_id = "hymt2-transformers-1.8b".to_string();
+        initial.open_router_text_model = "anthropic/claude-opus-4.8".to_string();
+
+        let settings =
+            apply_preview_model_selection(initial, TranslationProvider::KargnasManaged, "cloud")
+                .unwrap();
+        let stored = StoredSettings::from_effective(&settings, &defaults);
+        let reloaded = apply_stored_settings(stored);
+
+        assert_eq!(settings.provider, TranslationProvider::KargnasManaged);
+        assert_eq!(settings.local_model_id, "hymt2-transformers-1.8b");
+        assert_eq!(settings.open_router_text_model, "anthropic/claude-opus-4.8");
+        assert_eq!(reloaded.provider, TranslationProvider::KargnasManaged);
+        assert_eq!(reloaded.local_model_id, "hymt2-transformers-1.8b");
+        assert_eq!(reloaded.open_router_text_model, "anthropic/claude-opus-4.8");
     }
 
     #[test]

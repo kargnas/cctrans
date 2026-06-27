@@ -9,14 +9,40 @@ final class SettingsStore {
     // Suppresses the save() side effect while applying an external file change, so
     // reloading a toast-written override never echoes the same value back to disk.
     private var isApplyingExternalChange = false
+    private var isNormalizingSettings = false
 
     // Invoked on the main queue after an external settings-file change is applied,
     // so the menu-bar app can rebuild its menu to match the shared override file.
     var onExternalChange: (() -> Void)?
 
+    private static var buildVariant: SettingsBuildVariant {
+        #if MAS_BUILD
+        .macAppStore
+        #else
+        .direct
+        #endif
+    }
+
+    private static var codeDefaults: TranslatorSettings {
+        TranslatorSettings.defaults(for: buildVariant)
+    }
+
+    private static func normalize(_ settings: TranslatorSettings) -> TranslatorSettings {
+        settings.normalized(for: buildVariant)
+    }
+
     var settings: TranslatorSettings {
         didSet {
             guard !isApplyingExternalChange else { return }
+            if !isNormalizingSettings {
+                let normalized = Self.normalize(settings)
+                if normalized != settings {
+                    isNormalizingSettings = true
+                    settings = normalized
+                    isNormalizingSettings = false
+                    return
+                }
+            }
             save()
         }
     }
@@ -25,13 +51,13 @@ final class SettingsStore {
         self.defaults = defaults
         if let data = try? Data(contentsOf: settingsURL),
            let decoded = try? JSONDecoder().decode(TranslatorSettings.self, from: data) {
-            settings = decoded
+            settings = Self.normalize(decoded)
         } else if let data = defaults.data(forKey: key),
            let decoded = try? JSONDecoder().decode(TranslatorSettings.self, from: data) {
-            settings = decoded
+            settings = Self.normalize(decoded)
             save()
         } else {
-            settings = TranslatorSettings()
+            settings = Self.codeDefaults
         }
         startWatchingSharedDirectory()
     }
@@ -47,9 +73,9 @@ final class SettingsStore {
         let loaded: TranslatorSettings
         if let data = try? Data(contentsOf: settingsURL),
            let decoded = try? JSONDecoder().decode(TranslatorSettings.self, from: data) {
-            loaded = decoded
+            loaded = Self.normalize(decoded)
         } else {
-            loaded = TranslatorSettings()
+            loaded = Self.codeDefaults
         }
         guard loaded != settings else { return }
         isApplyingExternalChange = true
@@ -81,13 +107,14 @@ final class SettingsStore {
     }
 
     private func save() {
-        guard settings != TranslatorSettings() else {
+        let settingsToSave = Self.normalize(settings)
+        guard settingsToSave != Self.codeDefaults else {
             defaults.removeObject(forKey: key)
             try? FileManager.default.removeItem(at: settingsURL)
             return
         }
 
-        guard let data = try? JSONEncoder().encode(settings) else {
+        guard let data = try? JSONEncoder().encode(settingsToSave) else {
             return
         }
         do {

@@ -22,6 +22,11 @@ public enum TranslationProvider: String, CaseIterable, Codable, Sendable {
     }
 }
 
+public enum SettingsBuildVariant: Sendable {
+    case direct
+    case macAppStore
+}
+
 public enum HyMT2Model: String, CaseIterable, Codable, Sendable {
     case hyMT2_30B = "tencent/Hy-MT2-30B-A3B"
     case hyMT2_18B = "tencent/Hy-MT2-1.8B"
@@ -211,6 +216,32 @@ public struct TranslatorSettings: Codable, Equatable, Sendable {
         try container.encodeIfDifferent(toastCustomPosition, from: defaults.toastCustomPosition, forKey: .toastCustomPosition)
         try container.encodeIfDifferent(toastDuration, from: defaults.toastDuration, forKey: .toastDuration)
         try container.encodeIfDifferent(startMenuBarOnly, from: defaults.startMenuBarOnly, forKey: .startMenuBarOnly)
+    }
+}
+
+public extension TranslatorSettings {
+    static func defaults(for variant: SettingsBuildVariant) -> TranslatorSettings {
+        var settings = TranslatorSettings()
+        switch variant {
+        case .direct:
+            break
+        case .macAppStore:
+            settings.provider = .appleTranslation
+        }
+        return settings
+    }
+
+    func normalized(for variant: SettingsBuildVariant) -> TranslatorSettings {
+        var settings = self
+        switch variant {
+        case .direct:
+            break
+        case .macAppStore:
+            if settings.provider == .localHyMT2 {
+                settings.provider = .appleTranslation
+            }
+        }
+        return settings
     }
 }
 

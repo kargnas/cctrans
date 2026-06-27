@@ -49,6 +49,42 @@ import Testing
     #expect(object.isEmpty)
 }
 
+@Test func macAppStoreDefaultsUseAppleTranslation() {
+    let settings = TranslatorSettings.defaults(for: .macAppStore)
+
+    #expect(settings.provider == .appleTranslation)
+    #expect(settings.targetLanguage == "Korean")
+}
+
+@Test func macAppStoreNormalizationKeepsUnsupportedLocalProviderOutOfHostSettings() {
+    let settings = TranslatorSettings(
+        provider: .localHyMT2,
+        targetLanguage: "Japanese"
+    )
+
+    let normalized = settings.normalized(for: .macAppStore)
+
+    #expect(normalized.provider == .appleTranslation)
+    #expect(normalized.targetLanguage == "Japanese")
+}
+
+@Test func macAppStoreNormalizationMapsMissingProviderPayloadToAppleTranslation() throws {
+    let json = #"{"targetLanguage":"Japanese"}"#
+    let settings = try JSONDecoder().decode(TranslatorSettings.self, from: Data(json.utf8))
+
+    let normalized = settings.normalized(for: .macAppStore)
+
+    #expect(normalized.provider == .appleTranslation)
+    #expect(normalized.targetLanguage == "Japanese")
+}
+
+@Test func directDefaultsAndNormalizationKeepLocalProvider() {
+    let settings = TranslatorSettings.defaults(for: .direct)
+
+    #expect(settings.provider == .localHyMT2)
+    #expect(settings.normalized(for: .direct).provider == .localHyMT2)
+}
+
 @Test func encodingPersistsOnlyUserOverrides() throws {
     let settings = TranslatorSettings(
         provider: .openRouter,

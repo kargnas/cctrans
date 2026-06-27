@@ -1646,7 +1646,9 @@
               <span class="reset-row spacer"></span>
             </div>
             <div class="action-grid single">
-              <button onclick={() => runAction("openPermissionHelper")}><ShieldCheck size={14} />Permission Helper</button>
+              <button onclick={() => runAction("openPermissionHelper")}>
+                <ShieldCheck size={14} />{settingsState.appVariant === "mas" ? "Permissions" : "Permission Helper"}
+              </button>
             </div>
           </div>
         </section>

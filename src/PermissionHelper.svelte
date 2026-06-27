@@ -153,8 +153,8 @@
               {settingsState.permissions.screen ? "Ready" : "Not granted"}
             </span>
             {#if !settingsState.permissions.screen}
-              <button class="small-button inline-btn" onclick={() => action("openScreenRecording")}>
-                <Monitor size={12} />Open Settings
+              <button class="small-button inline-btn" onclick={() => action("requestScreenRecording")}>
+                <Monitor size={12} />Request Access
               </button>
             {:else}
               <span class="reset-row spacer"></span>

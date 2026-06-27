@@ -27,6 +27,8 @@ func oneShotSettings(defaultProvider: TranslationProvider) -> TranslatorSettings
             settings.provider = .openRouter
         case "apple", "apple-translation":
             settings.provider = .appleTranslation
+        case "managed", "kargnasManaged", "cctrans-cloud":
+            settings.provider = .kargnasManaged
         default:
             break
         }

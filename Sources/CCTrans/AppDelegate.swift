@@ -63,6 +63,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var isUserQuitting = false
     private var hasStarted = false
     private var permissionStatusTimer: Timer?
+    private var permissionRequestWatcher: DispatchSourceFileSystemObject?
     // Last status written to permission-status.json; only rewrite the shared file
     // when a grant actually flips, so the steady-state poll never churns the shared
     // directory watchers (SettingsStore / the Tauri helper) every tick.
@@ -152,6 +153,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // then keep it current — the helper runs in a different bundle and cannot
         // read our TCC grants itself.
         writePermissionStatusCache()
+        startPermissionRequestWatcher()
         startPermissionStatusTimer()
         githubStarPrompter.scheduleIfEligible(
             hasWorkspaceRoot: resolveWorkspaceRootURL() != nil,
@@ -207,6 +209,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // linger as a zombie unless the menu-bar app kills it explicitly on quit.
         terminateTauriHelper(matching: "--translation-preview")
         permissionStatusTimer?.invalidate()
+        permissionRequestWatcher?.cancel()
         #if MAS_BUILD
         loginRequestWatcher?.cancel()
         screenshotRequestWatcher?.cancel()
@@ -390,6 +393,149 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
     #endif
+
+    private struct PermissionRequest: Decodable {
+        let action: String
+        let nonce: String
+        let createdAt: Double
+    }
+
+    private struct PermissionResponse: Encodable {
+        let title: String
+        let message: String
+        let ok: Bool
+    }
+
+    private static var permissionRequestsDirectoryURL: URL {
+        SharedAppStorage.directoryURL.appendingPathComponent("permission-requests", isDirectory: true)
+    }
+
+    // The Tauri permission helper is a nested helper app. Route native TCC
+    // requests through this outer host so Screen Recording grants attach to
+    // CCTrans.app, the process that actually captures screenshots.
+    private func startPermissionRequestWatcher() {
+        let dir = AppDelegate.permissionRequestsDirectoryURL
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        servePermissionRequests()
+        let descriptor = open(dir.path, O_EVTONLY)
+        guard descriptor >= 0 else { return }
+        let source = DispatchSource.makeFileSystemObjectSource(
+            fileDescriptor: descriptor,
+            eventMask: [.write, .delete, .rename],
+            queue: .main
+        )
+        source.setEventHandler { [weak self] in
+            self?.servePermissionRequests()
+        }
+        source.setCancelHandler {
+            close(descriptor)
+        }
+        source.resume()
+        permissionRequestWatcher = source
+    }
+
+    private func servePermissionRequests() {
+        let dir = AppDelegate.permissionRequestsDirectoryURL
+        guard let entries = try? FileManager.default.contentsOfDirectory(
+            at: dir,
+            includingPropertiesForKeys: [.contentModificationDateKey]
+        ) else {
+            return
+        }
+        let now = Date().timeIntervalSince1970
+        for url in entries
+        where url.lastPathComponent.hasPrefix("resp-") && url.pathExtension == "json" {
+            let mtime = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?
+                .contentModificationDate?.timeIntervalSince1970 ?? 0
+            if now - mtime > 30 {
+                try? FileManager.default.removeItem(at: url)
+            }
+        }
+        for url in entries
+        where url.lastPathComponent.hasPrefix("req-") && url.pathExtension == "json" {
+            guard let data = try? Data(contentsOf: url),
+                  let request = try? JSONDecoder().decode(PermissionRequest.self, from: data) else {
+                try? FileManager.default.removeItem(at: url)
+                continue
+            }
+            if now - request.createdAt > 30 {
+                try? FileManager.default.removeItem(at: url)
+                continue
+            }
+            let response = handlePermissionRequest(request)
+            let responseURL = dir.appendingPathComponent(
+                "resp-\(request.nonce).json",
+                isDirectory: false
+            )
+            if let encoded = try? JSONEncoder().encode(response) {
+                try? encoded.write(to: responseURL, options: .atomic)
+            }
+            writePermissionStatusCache()
+            try? FileManager.default.removeItem(at: url)
+        }
+    }
+
+    private func handlePermissionRequest(_ request: PermissionRequest) -> PermissionResponse {
+        switch request.action {
+        case "show":
+            showOnboardingWindow()
+            return PermissionResponse(
+                title: "Permissions",
+                message: "Opened the CCTrans permissions window.",
+                ok: true
+            )
+        case "screen":
+            let ready = CGPreflightScreenCaptureAccess() || CGRequestScreenCaptureAccess()
+            return PermissionResponse(
+                title: "Screen Recording",
+                message: ready
+                    ? "Screen Recording is ready for CCTrans.app."
+                    : "macOS did not grant Screen Recording yet. Use System Settings if the prompt was already denied.",
+                ok: ready
+            )
+        case "input":
+            #if MAS_BUILD
+            return PermissionResponse(
+                title: "Keyboard",
+                message: "The App Store build uses pasteboard polling and does not need Input Monitoring.",
+                ok: true
+            )
+            #else
+            let ready = CGPreflightListenEventAccess() || CGRequestListenEventAccess()
+            return PermissionResponse(
+                title: "Keyboard",
+                message: ready
+                    ? "Keyboard monitoring is ready for CCTrans.app."
+                    : "macOS did not grant Input Monitoring yet. Use System Settings if the prompt was already denied.",
+                ok: ready
+            )
+            #endif
+        case "accessibility":
+            #if MAS_BUILD
+            return PermissionResponse(
+                title: "Accessibility",
+                message: "The App Store build does not request Accessibility.",
+                ok: true
+            )
+            #else
+            let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
+            let ready = AXIsProcessTrusted() || AXIsProcessTrustedWithOptions(options)
+            return PermissionResponse(
+                title: "Accessibility",
+                message: ready
+                    ? "Accessibility is ready for CCTrans.app."
+                    : "macOS did not grant Accessibility yet. Use System Settings if the prompt was already denied.",
+                ok: ready
+            )
+            #endif
+        default:
+            return PermissionResponse(
+                title: "Permission",
+                message: "Unknown permission request: \(request.action)",
+                ok: false
+            )
+        }
+    }
 
     private func startUpdaterIfBundled() {
         #if !MAS_BUILD
@@ -642,7 +788,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // also teaches the binding even though status menus only fire it while open.
         menu.addItem(actionItem(title: "Getting Started...", action: #selector(showOnboardingWindow)))
         menu.addItem(menuItem(title: "Settings...", action: #selector(showSettingsWindow), key: ",", target: self))
+        #if MAS_BUILD
+        menu.addItem(actionItem(title: "Permissions...", action: #selector(showPermissionHelper)))
+        #else
         menu.addItem(actionItem(title: "Permission Helper...", action: #selector(showPermissionHelper)))
+        #endif
         #if !MAS_BUILD
         if updaterController != nil {
             menu.addItem(actionItem(title: "Check for Updates...", action: #selector(checkForUpdates)))
@@ -1451,7 +1601,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func showPermissionHelper() {
+        #if MAS_BUILD
+        showOnboardingWindow()
+        #else
         _ = openTauriSurface("permission-helper")
+        #endif
     }
 
     @objc private func showOnboardingWindow() {
@@ -1574,7 +1728,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // tick and no disk/watcher activity.
     private func startPermissionStatusTimer() {
         let timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
-            self?.writePermissionStatusCache()
+            Task { @MainActor [weak self] in
+                self?.writePermissionStatusCache()
+            }
         }
         timer.tolerance = 0.5
         permissionStatusTimer = timer
