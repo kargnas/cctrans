@@ -10,12 +10,12 @@ import Testing
 
 @Test func showsInstallLocationForDevelopmentBundle() {
     let bundleURL = URL(
-        fileURLWithPath: "/Users/kargnas/projects/cctrans-ws/cctrans/dist/CCTrans.app",
+        fileURLWithPath: "/Users/kargnas/projects/cctrans/dist/CCTrans.app",
         isDirectory: true
     )
 
     #expect(AppInstallLocationNotice.menuTitle(forBundleURL: bundleURL) ==
-        "Running from: /Users/kargnas/projects/cctrans-ws/cctrans/dist/CCTrans.app")
+        "Running from: /Users/kargnas/projects/cctrans/dist/CCTrans.app")
 }
 
 @Test func showsInstallLocationForUserApplicationsBundle() {

@@ -2,8 +2,8 @@
 # Apple Distribution -> productbuild .pkg with the installer identity ->
 # upload to App Store Connect.
 #
-# The store listing (metadata, screenshots, review info) lives in the private
-# kargnas/cctrans-ws repo and deploys through its own deliver.yml; both
+# The store listing (metadata, screenshots, review info) lives in a separate
+# private repository and deploys through its own deliver.yml; both
 # sides meet on the ASC version record, so their order does not matter.
 #
 # Manual-only on purpose: MAS releases go through App Review, so they follow a
