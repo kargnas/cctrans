@@ -13,7 +13,7 @@
 - [x] CI 업로드 파이프라인 `.github/workflows/release-mas.yml` (§5–6 자동화;
       프로파일 시크릿 2개와 업로드 자격증명만 채우면 동작)
 - [x] 스토어 메타데이터 7개 로케일 + 리뷰 노트, 스크린샷 5장 (2880×1800)
-      — 2026-06-13 private kargnas/cctrans-store 레포로 이전 (유료 기능 등
+      — 2026-06-13 private kargnas/cctrans-ws 레포로 이전 (유료 기능 등
       미발표 정보가 공개 레포에 남지 않도록)
 - [x] 샌드박스 차단 버그 수정 — helper argv 소실/컨테이너 분리 → App Group 채널
       (docs/mac-app-store.md §3.6). §7의 토스트·설정 UI 항목은 로컬 샌드박스
@@ -23,7 +23,7 @@
       가격 무료 + 전 지역 175개 + 프라이버시 라벨 "Data Not Collected" 게시 완료
 - [x] ASC API 키 "CCTrans CI" (TGTYRP4Z36) — 시크릿 `ASC_API_KEY_ID`/`ASC_API_ISSUER_ID`/`ASC_API_KEY_P8`
 - [x] 메타데이터/스크린샷 ASC 반영 — fastlane deliver (0.3.0, 7로케일).
-      리뷰 연락처는 cctrans-store(private)의 review_information/ 파일로 관리
+      리뷰 연락처는 cctrans-ws(private)의 review_information/ 파일로 관리
 - [x] §5–6 첫 빌드 업로드 — release-mas.yml 디스패치로 0.3.0 .pkg 업로드 성공
       (run 27424016336). 남은 것: TestFlight 처리 확인 → §7 QA → §8 제출 버튼
 
@@ -84,7 +84,7 @@ CCTRANS_MAS_INSTALLER_IDENTITY="3rd Party Mac Developer Installer: Sangrak Choi 
   - 필요 시크릿: `CCTRANS_MAS_PROFILE_BASE64`, `CCTRANS_MAS_HELPER_PROFILE_BASE64`
     (§3에서 발급한 프로파일 base64) + `ASC_API_KEY_ID`/`ASC_API_ISSUER_ID`/`ASC_API_KEY_P8`
     (없으면 `APPLE_ID`/`APPLE_APP_PASSWORD` 폴백)
-  - 메타데이터/스크린샷은 private [kargnas/cctrans-store](https://github.com/kargnas/cctrans-store)에서
+  - 메타데이터/스크린샷은 private [kargnas/cctrans-ws](https://github.com/kargnas/cctrans-ws)에서
     관리 — fastlane/ 변경을 main에 push하면 자동으로 ASC에 반영됨
   - 수동 대안: Transporter.app으로 .pkg 업로드
 - [ ] ASC → TestFlight 탭에서 빌드 처리 완료 대기 (자동 ingest 검사에서 entitlements 문제가 여기서 걸러짐)
