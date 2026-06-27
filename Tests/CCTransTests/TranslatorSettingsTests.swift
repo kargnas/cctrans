@@ -78,6 +78,14 @@ import Testing
     #expect(normalized.targetLanguage == "Japanese")
 }
 
+@Test func macAppStoreNormalizationKeepsManagedProviderForCloudRevenuePath() {
+    let settings = TranslatorSettings(provider: .kargnasManaged)
+
+    let normalized = settings.normalized(for: .macAppStore)
+
+    #expect(normalized.provider == .kargnasManaged)
+}
+
 @Test func directDefaultsAndNormalizationKeepLocalProvider() {
     let settings = TranslatorSettings.defaults(for: .direct)
 

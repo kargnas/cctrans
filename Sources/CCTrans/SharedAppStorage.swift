@@ -1,7 +1,10 @@
 import Foundation
 
 enum SharedAppStorage {
-    static let appIdentifier = "as.kargn.cctrans"
+    static let productAppIdentifier = "as.kargn.cctrans"
+    static var appIdentifier: String {
+        Bundle.main.bundleIdentifier ?? productAppIdentifier
+    }
 
     #if MAS_BUILD
     // Under App Sandbox the menu-bar app and the NSWorkspace-launched Tauri
@@ -14,7 +17,8 @@ enum SharedAppStorage {
 
     static var directoryURL: URL {
         #if MAS_BUILD
-        if let groupURL = FileManager.default.containerURL(
+        if isProductionSandboxedMAS,
+           let groupURL = FileManager.default.containerURL(
             forSecurityApplicationGroupIdentifier: appGroupIdentifier
         ) {
             // Mirrors shared_data_dir() in src-tauri/src/lib.rs — both sides
@@ -41,4 +45,11 @@ enum SharedAppStorage {
             withIntermediateDirectories: true
         )
     }
+
+    #if MAS_BUILD
+    private static var isProductionSandboxedMAS: Bool {
+        appIdentifier == productAppIdentifier
+            && ProcessInfo.processInfo.environment["APP_SANDBOX_CONTAINER_ID"] != nil
+    }
+    #endif
 }

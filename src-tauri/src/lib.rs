@@ -298,7 +298,7 @@ struct Settings {
     start_menu_bar_only: bool,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
 enum TranslationProvider {
     #[serde(rename = "localHyMT2")]
     LocalHyMT2,
@@ -311,6 +311,20 @@ enum TranslationProvider {
     // CCTrans Cloud: server-chosen managed model, no OpenRouter key.
     #[serde(rename = "kargnasManaged")]
     KargnasManaged,
+}
+
+impl std::str::FromStr for TranslationProvider {
+    type Err = ();
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "localHyMT2" => Ok(Self::LocalHyMT2),
+            "openRouter" => Ok(Self::OpenRouter),
+            "appleTranslation" => Ok(Self::AppleTranslation),
+            "kargnasManaged" => Ok(Self::KargnasManaged),
+            _ => Err(()),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -404,6 +418,176 @@ struct StoredSettings {
     toast_duration: Option<f64>,
     #[serde(rename = "startMenuBarOnly")]
     start_menu_bar_only: Option<bool>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AppVariant {
+    Direct,
+    MacAppStore,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SettingsRuntime {
+    variant: AppVariant,
+}
+
+impl SettingsRuntime {
+    fn current() -> Self {
+        static RUNTIME: std::sync::OnceLock<SettingsRuntime> = std::sync::OnceLock::new();
+        *RUNTIME.get_or_init(|| {
+            let args = effective_args();
+            let is_mas = args
+                .windows(2)
+                .any(|pair| pair[0] == "--app-variant" && pair[1] == "mas");
+            let variant = if is_mas || sandbox_container_active() {
+                AppVariant::MacAppStore
+            } else {
+                AppVariant::Direct
+            };
+            SettingsRuntime { variant }
+        })
+    }
+
+    #[cfg(test)]
+    fn for_variant(variant: AppVariant) -> Self {
+        Self { variant }
+    }
+
+    fn app_variant_name(self) -> &'static str {
+        match self.variant {
+            AppVariant::Direct => "direct",
+            AppVariant::MacAppStore => "mas",
+        }
+    }
+
+    fn default_settings(self) -> Settings {
+        let mut settings = default_settings();
+        if self.variant == AppVariant::MacAppStore {
+            settings.provider = TranslationProvider::AppleTranslation;
+        }
+        settings
+    }
+
+    fn supports_provider(self, provider: TranslationProvider) -> bool {
+        match self.variant {
+            AppVariant::Direct => true,
+            AppVariant::MacAppStore => !matches!(provider, TranslationProvider::LocalHyMT2),
+        }
+    }
+
+    fn normalize(self, mut settings: Settings) -> Settings {
+        if !self.supports_provider(settings.provider) {
+            settings.provider = self.default_settings().provider;
+        }
+        settings.local_hy_mt2_backend_path =
+            normalized_optional(settings.local_hy_mt2_backend_path);
+        settings.custom_local_models_path = normalized_optional(settings.custom_local_models_path);
+        settings.open_router_text_model = settings.open_router_text_model.trim().to_string();
+        settings.open_router_vision_model = settings.open_router_vision_model.trim().to_string();
+        settings.favorite_local_model_ids =
+            normalized_string_list(settings.favorite_local_model_ids);
+        settings.favorite_open_router_models =
+            normalized_string_list(settings.favorite_open_router_models);
+        settings.open_router_model_filter =
+            normalized_openrouter_model_filter(settings.open_router_model_filter);
+        settings.source_language = settings.source_language.trim().to_string();
+        settings.target_language = settings.target_language.trim().to_string();
+        if !settings.toast_duration.is_finite() || settings.toast_duration <= 0.0 {
+            settings.toast_duration = default_settings().toast_duration;
+        }
+        settings.toast_custom_position = match (
+            settings.toast_position.clone(),
+            settings.toast_custom_position,
+        ) {
+            (ToastPosition::Custom, Some(position))
+                if position.x.is_finite() && position.y.is_finite() =>
+            {
+                Some(position)
+            }
+            (ToastPosition::Custom, _) => None,
+            _ => None,
+        };
+        settings
+    }
+
+    fn apply_stored(self, stored: StoredSettings) -> Settings {
+        let mut settings = self.default_settings();
+        if let Some(provider) = stored.provider {
+            settings.provider = provider;
+        }
+        settings.local_model_id = stored
+            .local_model_id
+            .or_else(|| stored.hy_mt2_model.map(legacy_model_id))
+            .unwrap_or(settings.local_model_id);
+        settings.local_hy_mt2_backend_path = stored.local_hy_mt2_backend_path;
+        settings.custom_local_models_path = stored.custom_local_models_path;
+        if let Some(value) = stored.open_router_text_model {
+            settings.open_router_text_model = value;
+        }
+        if let Some(value) = stored.open_router_vision_model {
+            settings.open_router_vision_model = value;
+        }
+        if let Some(value) = stored.favorite_local_model_ids {
+            settings.favorite_local_model_ids = value;
+        }
+        if let Some(value) = stored.favorite_open_router_models {
+            settings.favorite_open_router_models = value;
+        }
+        if let Some(value) = stored.open_router_model_filter {
+            settings.open_router_model_filter = value;
+        }
+        if let Some(value) = stored.include_screen_context_for_llm {
+            settings.include_screen_context_for_llm = value;
+        }
+        if let Some(value) = stored.source_language {
+            settings.source_language = value;
+        }
+        if let Some(value) = stored.target_language {
+            settings.target_language = value;
+        }
+        if let Some(value) = stored.has_completed_local_model_selection {
+            settings.has_completed_local_model_selection = value;
+        }
+        if let Some(value) = stored.toast_position {
+            settings.toast_position = value;
+        }
+        if let Some(value) = stored.toast_custom_position {
+            settings.toast_custom_position = Some(value);
+        }
+        if let Some(value) = stored.toast_duration {
+            settings.toast_duration = value;
+        }
+        if let Some(value) = stored.start_menu_bar_only {
+            settings.start_menu_bar_only = value;
+        }
+        self.normalize(settings)
+    }
+
+    fn stored_from_effective(self, settings: &Settings) -> StoredSettings {
+        StoredSettings::from_effective(
+            settings,
+            &self.default_settings(),
+            self.variant == AppVariant::MacAppStore,
+        )
+    }
+
+    fn provider_options(self) -> Vec<SettingOption> {
+        [
+            option("Local Model", "localHyMT2", None),
+            option("Apple Translation", "appleTranslation", Some("On-device")),
+            option("CCTrans Cloud", "kargnasManaged", Some("No API key")),
+            option("OpenRouter LLM", "openRouter", None),
+        ]
+        .into_iter()
+        .filter(|provider| {
+            provider
+                .value
+                .parse::<TranslationProvider>()
+                .map(|provider| self.supports_provider(provider))
+                .unwrap_or(false)
+        })
+        .collect()
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -841,7 +1025,7 @@ fn set_launch_at_login(app: AppHandle, enabled: bool) -> Result<LoginItemState, 
 #[tauri::command]
 fn reset_setting(app: AppHandle, field: String) -> Result<SettingsState, String> {
     let mut settings = load_effective_settings(&app)?;
-    let defaults = default_settings();
+    let defaults = default_settings_for_current_variant();
 
     match field.as_str() {
         "provider" => settings.provider = defaults.provider,
@@ -1001,7 +1185,8 @@ fn open_screen_recording_settings(app: AppHandle) -> Result<ActionResult, String
 
 #[tauri::command]
 fn load_translation_preview(app: AppHandle) -> Result<TranslationPreviewState, String> {
-    let settings = load_effective_settings(&app).unwrap_or_else(|_| default_settings());
+    let settings =
+        load_effective_settings(&app).unwrap_or_else(|_| default_settings_for_current_variant());
     read_translation_preview_state(&app).map(|state| {
         let mut state = state.unwrap_or_else(|| sample_translation_preview(&settings));
         state.toast_duration = settings.toast_duration;
@@ -1269,7 +1454,8 @@ fn show_translation_toast_inner(app: &AppHandle) -> Result<ShowToastResult, Stri
     let window = app
         .get_webview_window("translation")
         .ok_or("Translation window is not available.")?;
-    let settings = load_effective_settings(app).unwrap_or_else(|_| default_settings());
+    let settings =
+        load_effective_settings(app).unwrap_or_else(|_| default_settings_for_current_variant());
     let state = read_translation_preview_state(app)?;
     let (mode, caret) = match &state {
         Some(s) => {
@@ -1454,6 +1640,9 @@ fn run_local_model_benchmark(
     source_language: String,
     target_language: String,
 ) -> Result<BenchmarkResult, String> {
+    if !settings_runtime().supports_provider(TranslationProvider::LocalHyMT2) {
+        return Err("Local model benchmarks are not available in this app variant.".to_string());
+    }
     let mut settings = normalize_settings(settings);
     settings.provider = TranslationProvider::LocalHyMT2;
     settings.source_language = source_language;
@@ -1722,9 +1911,44 @@ fn shared_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
     if let Some(dir) = mas_shared_data_dir() {
         return Ok(dir);
     }
+    if app_variant() == "mas" {
+        if let Some(host_id) = host_app_identifier() {
+            let home = std::env::var("HOME").map_err(|_| "HOME is not set.".to_string())?;
+            return Ok(PathBuf::from(home)
+                .join("Library/Application Support")
+                .join(host_id));
+        }
+    }
     app.path()
         .app_data_dir()
         .map_err(|error| format!("Could not resolve app data directory: {error}"))
+}
+
+fn host_app_identifier() -> Option<String> {
+    let mut args = effective_args().iter();
+    while let Some(arg) = args.next() {
+        if let Some(value) = arg.strip_prefix("--host-app-id=") {
+            return sanitized_bundle_identifier(value);
+        }
+        if arg == "--host-app-id" {
+            return args
+                .next()
+                .and_then(|value| sanitized_bundle_identifier(value));
+        }
+    }
+    None
+}
+
+fn sanitized_bundle_identifier(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty()
+        || !value.chars().all(|character| {
+            character.is_ascii_alphanumeric() || character == '.' || character == '-'
+        })
+    {
+        return None;
+    }
+    Some(value.to_string())
 }
 
 #[derive(Serialize, Deserialize)]
@@ -2208,6 +2432,15 @@ fn apply_preview_target_language(
 }
 
 fn apply_preview_model_selection(
+    settings: Settings,
+    provider: TranslationProvider,
+    model_id: &str,
+) -> Result<Settings, String> {
+    apply_preview_model_selection_for_runtime(settings_runtime(), settings, provider, model_id)
+}
+
+fn apply_preview_model_selection_for_runtime(
+    runtime: SettingsRuntime,
     mut settings: Settings,
     provider: TranslationProvider,
     model_id: &str,
@@ -2224,7 +2457,7 @@ fn apply_preview_model_selection(
         // Single-model / model-less providers; there is no model id to store.
         TranslationProvider::AppleTranslation | TranslationProvider::KargnasManaged => {}
     }
-    Ok(normalize_settings(settings))
+    Ok(runtime.normalize(settings))
 }
 
 fn prepare_translation_preview_for_retranslate(
@@ -2298,12 +2531,13 @@ fn model_title(model_id: &str, provider: &TranslationProvider) -> String {
 }
 
 fn state_from_disk(app: &AppHandle) -> Result<SettingsState, String> {
+    let runtime = settings_runtime();
     let settings = load_effective_settings(app)?;
-    let defaults = default_settings_for_current_variant();
+    let defaults = runtime.default_settings();
     let storage_path = settings_path(app)?.display().to_string();
 
     Ok(SettingsState {
-        app_variant: app_variant().to_string(),
+        app_variant: runtime.app_variant_name().to_string(),
         overrides: override_map(&settings, &defaults),
         settings,
         defaults,
@@ -2320,24 +2554,17 @@ fn state_from_disk(app: &AppHandle) -> Result<SettingsState, String> {
 // with `--app-variant mas` in Mac App Store bundles; everything else is the
 // direct (DMG/brew/dev) build.
 fn app_variant() -> &'static str {
-    static VARIANT: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
-    VARIANT.get_or_init(|| {
-        let args = effective_args();
-        let is_mas = args
-            .windows(2)
-            .any(|pair| pair[0] == "--app-variant" && pair[1] == "mas");
-        if is_mas || sandbox_container_active() {
-            "mas"
-        } else {
-            "direct"
-        }
-    })
+    settings_runtime().app_variant_name()
+}
+
+fn settings_runtime() -> SettingsRuntime {
+    SettingsRuntime::current()
 }
 
 fn load_effective_settings(app: &AppHandle) -> Result<Settings, String> {
     let path = settings_path(app)?;
     if !path.exists() {
-        return Ok(default_settings());
+        return Ok(default_settings_for_current_variant());
     }
 
     let data = fs::read_to_string(&path)
@@ -2348,62 +2575,13 @@ fn load_effective_settings(app: &AppHandle) -> Result<Settings, String> {
 }
 
 fn apply_stored_settings(stored: StoredSettings) -> Settings {
-    let mut settings = default_settings_for_current_variant();
-    if let Some(provider) = stored.provider {
-        settings.provider = provider;
-    }
-    settings.local_model_id = stored
-        .local_model_id
-        .or_else(|| stored.hy_mt2_model.map(legacy_model_id))
-        .unwrap_or(settings.local_model_id);
-    settings.local_hy_mt2_backend_path = stored.local_hy_mt2_backend_path;
-    settings.custom_local_models_path = stored.custom_local_models_path;
-    if let Some(value) = stored.open_router_text_model {
-        settings.open_router_text_model = value;
-    }
-    if let Some(value) = stored.open_router_vision_model {
-        settings.open_router_vision_model = value;
-    }
-    if let Some(value) = stored.favorite_local_model_ids {
-        settings.favorite_local_model_ids = value;
-    }
-    if let Some(value) = stored.favorite_open_router_models {
-        settings.favorite_open_router_models = value;
-    }
-    if let Some(value) = stored.open_router_model_filter {
-        settings.open_router_model_filter = value;
-    }
-    if let Some(value) = stored.include_screen_context_for_llm {
-        settings.include_screen_context_for_llm = value;
-    }
-    if let Some(value) = stored.source_language {
-        settings.source_language = value;
-    }
-    if let Some(value) = stored.target_language {
-        settings.target_language = value;
-    }
-    if let Some(value) = stored.has_completed_local_model_selection {
-        settings.has_completed_local_model_selection = value;
-    }
-    if let Some(value) = stored.toast_position {
-        settings.toast_position = value;
-    }
-    if let Some(value) = stored.toast_custom_position {
-        settings.toast_custom_position = Some(value);
-    }
-    if let Some(value) = stored.toast_duration {
-        settings.toast_duration = value;
-    }
-    if let Some(value) = stored.start_menu_bar_only {
-        settings.start_menu_bar_only = value;
-    }
-    normalize_settings(settings)
+    settings_runtime().apply_stored(stored)
 }
 
 fn write_settings(app: &AppHandle, settings: Settings) -> Result<(), String> {
+    let runtime = settings_runtime();
     let path = settings_path(app)?;
-    let defaults = default_settings_for_current_variant();
-    let stored = StoredSettings::from_effective(&settings, &defaults);
+    let stored = runtime.stored_from_effective(&runtime.normalize(settings));
 
     if stored.is_empty() {
         if path.exists() {
@@ -2444,9 +2622,10 @@ fn replace_file_contents(path: &Path, data: &str) -> Result<(), String> {
 }
 
 impl StoredSettings {
-    fn from_effective(settings: &Settings, defaults: &Settings) -> Self {
+    fn from_effective(settings: &Settings, defaults: &Settings, keep_provider: bool) -> Self {
         Self {
-            provider: (settings.provider != defaults.provider).then(|| settings.provider.clone()),
+            provider: (keep_provider || settings.provider != defaults.provider)
+                .then(|| settings.provider.clone()),
             hy_mt2_model: None,
             local_model_id: (settings.local_model_id != defaults.local_model_id)
                 .then(|| settings.local_model_id.clone()),
@@ -2613,47 +2792,11 @@ fn default_settings() -> Settings {
 }
 
 fn default_settings_for_current_variant() -> Settings {
-    let mut settings = default_settings();
-    if app_variant() == "mas" {
-        // The MAS sandbox cannot run the Python/uv local-model backend. Keep the
-        // helper's default aligned with the Swift host's startup mapping so reset
-        // and first-load never show a disabled local provider as selected.
-        settings.provider = TranslationProvider::AppleTranslation;
-    }
-    settings
+    settings_runtime().default_settings()
 }
 
-fn normalize_settings(mut settings: Settings) -> Settings {
-    if app_variant() == "mas" && settings.provider == TranslationProvider::LocalHyMT2 {
-        settings.provider = TranslationProvider::AppleTranslation;
-    }
-    settings.local_hy_mt2_backend_path = normalized_optional(settings.local_hy_mt2_backend_path);
-    settings.custom_local_models_path = normalized_optional(settings.custom_local_models_path);
-    settings.open_router_text_model = settings.open_router_text_model.trim().to_string();
-    settings.open_router_vision_model = settings.open_router_vision_model.trim().to_string();
-    settings.favorite_local_model_ids = normalized_string_list(settings.favorite_local_model_ids);
-    settings.favorite_open_router_models =
-        normalized_string_list(settings.favorite_open_router_models);
-    settings.open_router_model_filter =
-        normalized_openrouter_model_filter(settings.open_router_model_filter);
-    settings.source_language = settings.source_language.trim().to_string();
-    settings.target_language = settings.target_language.trim().to_string();
-    if !settings.toast_duration.is_finite() || settings.toast_duration <= 0.0 {
-        settings.toast_duration = default_settings().toast_duration;
-    }
-    settings.toast_custom_position = match (
-        settings.toast_position.clone(),
-        settings.toast_custom_position,
-    ) {
-        (ToastPosition::Custom, Some(position))
-            if position.x.is_finite() && position.y.is_finite() =>
-        {
-            Some(position)
-        }
-        (ToastPosition::Custom, _) => None,
-        _ => None,
-    };
-    settings
+fn normalize_settings(settings: Settings) -> Settings {
+    settings_runtime().normalize(settings)
 }
 
 fn normalized_openrouter_model_filter(mut filter: OpenRouterModelFilter) -> OpenRouterModelFilter {
@@ -2784,16 +2927,7 @@ fn override_map(settings: &Settings, defaults: &Settings) -> BTreeMap<String, bo
 }
 
 fn settings_options(app: &AppHandle) -> SettingsOptions {
-    let mut providers = vec![
-        option("Local Model", "localHyMT2", None),
-        option("Apple Translation", "appleTranslation", Some("On-device")),
-        option("CCTrans Cloud", "kargnasManaged", Some("No API key")),
-        option("OpenRouter LLM", "openRouter", None),
-    ];
-    if app_variant() == "mas" {
-        // The sandbox cannot run the external Python local backend.
-        providers.retain(|provider| provider.value != "localHyMT2");
-    }
+    let providers = settings_runtime().provider_options();
     SettingsOptions {
         providers,
         local_models: vec![
@@ -4006,6 +4140,9 @@ fn openrouter_api_key() -> Result<Option<String>, String> {
 }
 
 fn credential_env_path() -> Result<PathBuf, String> {
+    if let Some(dir) = mas_shared_data_dir() {
+        return Ok(dir.join("credentials.env"));
+    }
     let home = std::env::var("HOME").map_err(|_| "HOME is not set.".to_string())?;
     Ok(PathBuf::from(home).join(".config/cctrans/.env"))
 }
@@ -4183,8 +4320,101 @@ mod tests {
     #[test]
     fn stored_settings_omits_defaults() {
         let defaults = default_settings();
-        let stored = StoredSettings::from_effective(&defaults, &defaults);
+        let stored = StoredSettings::from_effective(&defaults, &defaults, false);
         assert!(stored.is_empty());
+    }
+
+    #[test]
+    fn stored_settings_can_keep_default_provider_for_variant_safe_payloads() {
+        let defaults = default_settings_for_current_variant();
+        let stored = StoredSettings::from_effective(&defaults, &defaults, true);
+        assert_eq!(stored.provider, Some(defaults.provider));
+    }
+
+    #[test]
+    fn mas_runtime_defaults_and_options_stay_provider_aligned() {
+        let runtime = SettingsRuntime::for_variant(AppVariant::MacAppStore);
+
+        assert_eq!(
+            runtime.default_settings().provider,
+            TranslationProvider::AppleTranslation
+        );
+
+        let providers: Vec<_> = runtime
+            .provider_options()
+            .into_iter()
+            .map(|option| option.value)
+            .collect();
+
+        assert_eq!(
+            providers,
+            vec![
+                "appleTranslation".to_string(),
+                "kargnasManaged".to_string(),
+                "openRouter".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn mas_runtime_normalizes_stale_local_provider_payloads() {
+        let runtime = SettingsRuntime::for_variant(AppVariant::MacAppStore);
+
+        let settings = runtime.apply_stored(StoredSettings {
+            provider: Some(TranslationProvider::LocalHyMT2),
+            ..StoredSettings::default()
+        });
+
+        assert_eq!(settings.provider, TranslationProvider::AppleTranslation);
+    }
+
+    #[test]
+    fn mas_runtime_keeps_cloud_provider_payloads() {
+        let runtime = SettingsRuntime::for_variant(AppVariant::MacAppStore);
+
+        let settings = runtime.apply_stored(StoredSettings {
+            provider: Some(TranslationProvider::KargnasManaged),
+            ..StoredSettings::default()
+        });
+
+        assert_eq!(settings.provider, TranslationProvider::KargnasManaged);
+    }
+
+    #[test]
+    fn mas_runtime_persists_default_provider_for_host_helper_alignment() {
+        let runtime = SettingsRuntime::for_variant(AppVariant::MacAppStore);
+        let defaults = runtime.default_settings();
+        let stored = runtime.stored_from_effective(&defaults);
+
+        assert_eq!(stored.provider, Some(TranslationProvider::AppleTranslation));
+    }
+
+    #[test]
+    fn mas_preview_model_selection_cannot_leave_local_provider_selected() {
+        let runtime = SettingsRuntime::for_variant(AppVariant::MacAppStore);
+        let settings = apply_preview_model_selection_for_runtime(
+            runtime,
+            runtime.default_settings(),
+            TranslationProvider::LocalHyMT2,
+            "hymt2-transformers-1.8b",
+        )
+        .unwrap();
+
+        assert_eq!(settings.provider, TranslationProvider::AppleTranslation);
+    }
+
+    #[test]
+    fn mas_preview_model_selection_keeps_cloud_provider_selected() {
+        let runtime = SettingsRuntime::for_variant(AppVariant::MacAppStore);
+        let settings = apply_preview_model_selection_for_runtime(
+            runtime,
+            runtime.default_settings(),
+            TranslationProvider::KargnasManaged,
+            "cloud",
+        )
+        .unwrap();
+
+        assert_eq!(settings.provider, TranslationProvider::KargnasManaged);
     }
 
     #[test]
@@ -4309,7 +4539,7 @@ mod tests {
         settings.provider = TranslationProvider::OpenRouter;
         settings.open_router_text_model = "custom/text-model".to_string();
 
-        let stored = StoredSettings::from_effective(&settings, &defaults);
+        let stored = StoredSettings::from_effective(&settings, &defaults, false);
         assert_eq!(stored.provider, Some(TranslationProvider::OpenRouter));
         assert_eq!(
             stored.open_router_text_model.as_deref(),
@@ -4326,7 +4556,7 @@ mod tests {
         settings.toast_position = ToastPosition::Custom;
         settings.toast_custom_position = Some(ToastCustomPosition { x: 128.0, y: 256.0 });
 
-        let stored = StoredSettings::from_effective(&settings, &defaults);
+        let stored = StoredSettings::from_effective(&settings, &defaults, false);
 
         assert_eq!(stored.toast_position, Some(ToastPosition::Custom));
         assert_eq!(
@@ -4347,7 +4577,7 @@ mod tests {
             .max_completion_price_per_million = 6.5;
         settings.open_router_model_filter.modality_mode = OpenRouterModalityMode::Others;
 
-        let stored = StoredSettings::from_effective(&settings, &defaults);
+        let stored = StoredSettings::from_effective(&settings, &defaults, false);
         let reloaded = apply_stored_settings(stored);
 
         assert_eq!(
@@ -4657,7 +4887,7 @@ mod tests {
             "anthropic/claude-opus-4.8",
         )
         .unwrap();
-        let stored = StoredSettings::from_effective(&settings, &defaults);
+        let stored = StoredSettings::from_effective(&settings, &defaults, false);
 
         let reloaded = apply_stored_settings(stored);
 
@@ -4672,7 +4902,7 @@ mod tests {
         let mut settings = defaults.clone();
         settings.provider = TranslationProvider::KargnasManaged;
 
-        let stored = StoredSettings::from_effective(&settings, &defaults);
+        let stored = StoredSettings::from_effective(&settings, &defaults, false);
         let reloaded = apply_stored_settings(stored);
 
         assert_eq!(reloaded.provider, TranslationProvider::KargnasManaged);
@@ -4691,7 +4921,7 @@ mod tests {
         let settings =
             apply_preview_model_selection(initial, TranslationProvider::KargnasManaged, "cloud")
                 .unwrap();
-        let stored = StoredSettings::from_effective(&settings, &defaults);
+        let stored = StoredSettings::from_effective(&settings, &defaults, false);
         let reloaded = apply_stored_settings(stored);
 
         assert_eq!(settings.provider, TranslationProvider::KargnasManaged);
@@ -4724,7 +4954,7 @@ mod tests {
             "hymt2-transformers-1.8b",
         )
         .unwrap();
-        let stored = StoredSettings::from_effective(&settings, &defaults);
+        let stored = StoredSettings::from_effective(&settings, &defaults, false);
 
         let reloaded = apply_stored_settings(stored);
 

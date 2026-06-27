@@ -17,6 +17,11 @@
   <array>
     <string>6YQH3QFFK8.as.kargn.cctrans</string>
   </array>
+  <!-- CCTrans Cloud production auth. Local unsigned MAS-dev runs use
+       CCTRANS_DEV_TOKEN instead because App Attest requires a signed build with
+       the App Attest capability in its provisioning profile. -->
+  <key>com.apple.developer.devicecheck.appattest-environment</key>
+  <string>production</string>
   <!-- build-mas.zsh appends com.apple.application-identifier and
        com.apple.developer.team-identifier here (required to match the
        embedded provisioning profile) when CCTRANS_TEAM_ID is set. They are

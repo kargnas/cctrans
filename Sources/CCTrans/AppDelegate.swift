@@ -60,7 +60,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var didRegisterScreenshotHotKey = false
     private var currentTextTranslationUsesLocalBackend = false
     private var lastReadyLocalModelID: String?
-    private var isUserQuitting = false
     private var hasStarted = false
     private var permissionStatusTimer: Timer?
     private var permissionRequestWatcher: DispatchSourceFileSystemObject?
@@ -192,7 +191,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        isUserQuitting ? .terminateNow : .terminateCancel
+        // Do not veto system-driven termination. macOS TCC asks to quit/reopen
+        // after Screen Recording changes; canceling here leaves the grant stale.
+        .terminateNow
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -486,11 +487,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             )
         case "screen":
             let ready = CGPreflightScreenCaptureAccess() || CGRequestScreenCaptureAccess()
+            if !ready {
+                openScreenRecordingSettings()
+            }
             return PermissionResponse(
                 title: "Screen Recording",
                 message: ready
                     ? "Screen Recording is ready for CCTrans.app."
-                    : "macOS did not grant Screen Recording yet. Use System Settings if the prompt was already denied.",
+                    : "macOS did not grant Screen Recording yet. Opened System Settings for the existing grant.",
                 ok: ready
             )
         case "input":
@@ -1003,11 +1007,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func translationModelMenu() -> NSMenu {
         let menu = NSMenu()
-        let localMenu = NSMenu()
         let openRouterMenu = NSMenu()
         let settings = settingsStore.settings
         let defaults = TranslatorSettings()
 
+        #if !MAS_BUILD
+        let localMenu = NSMenu()
         localMenu.addItem(checkableItem(
             title: "Default (\(LocalModelRegistry.defaultModel().title))",
             checked: settings.provider == .localHyMT2 && settings.localModelID == defaults.localModelID,
@@ -1023,6 +1028,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 representedObject: "localHyMT2:\(model.id)"
             ))
         }
+        menu.addItem(submenuItem(title: "Local Model", submenu: localMenu))
+        #endif
 
         openRouterMenu.addItem(checkableItem(
             title: "Default (\(OpenRouterModelCatalog.title(for: defaults.openRouterTextModel)))",
@@ -1040,9 +1047,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ))
         }
 
-        #if !MAS_BUILD
-        menu.addItem(submenuItem(title: "Local Model", submenu: localMenu))
-        #endif
         menu.addItem(checkableItem(
             title: "Apple Translation · On-device",
             checked: settings.provider == .appleTranslation,
@@ -1050,7 +1054,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             representedObject: "appleTranslation:"
         ))
         // CCTrans Cloud (kargn.as managed): translate with no OpenRouter key. Model-less,
-        // so a flat item like Apple Translation. Shown in every build (no MAS gate).
+        // so a flat item like Apple Translation. Keep it available in the Mac App
+        // Store build; signed builds authenticate with App Attest.
         menu.addItem(checkableItem(
             title: "CCTrans Cloud · No API key",
             checked: settings.provider == .kargnasManaged,
@@ -1409,12 +1414,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // The Svelte settings/permission surfaces hide sandbox-incompatible
         // options (Python local models, Accessibility) based on this flag.
         launchArguments.append(contentsOf: ["--app-variant", "mas"])
-        // Sandboxed callers cannot pass argv through NSWorkspace (macOS
-        // documents OpenConfiguration.arguments as ignored), so the helper
-        // claims a one-shot launch file from the App Group directory instead.
-        guard writeHelperLaunchFile(arguments: launchArguments) else {
-            print("Could not write helper launch file; not launching the Tauri helper.")
-            return false
+        launchArguments.append(contentsOf: ["--host-app-id", SharedAppStorage.appIdentifier])
+        if isRunningInAppSandbox {
+            // Sandboxed callers cannot pass argv through NSWorkspace (macOS
+            // documents OpenConfiguration.arguments as ignored), so the helper
+            // claims a one-shot launch file from the App Group directory instead.
+            guard writeHelperLaunchFile(arguments: launchArguments) else {
+                print("Could not write helper launch file; not launching the Tauri helper.")
+                return false
+            }
         }
         #endif
 
@@ -1432,6 +1440,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func terminateTauriHelper(matching match: String) {
         #if MAS_BUILD
+        guard isRunningInAppSandbox else {
+            terminateTauriHelperWithPkill(matching: match)
+            return
+        }
         // The sandbox forbids signaling other processes (pkill is a no-op)
         // and helper argv is empty anyway, so match against the claimed
         // launch files instead. Deleting the file doubles as the shutdown
@@ -1458,6 +1470,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         #else
+        terminateTauriHelperWithPkill(matching: match)
+        #endif
+    }
+
+    private func terminateTauriHelperWithPkill(matching match: String) {
         // Match the helper binary name, not this bundle's absolute path: a helper left over
         // from another checkout or an old install path (e.g. the pre-rebrand transtoast
         // workspace) watches the same shared state file, so a path-scoped pkill would let it
@@ -1466,7 +1483,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         process.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
         process.arguments = ["-f", "cctrans-tauri.*\(match)"]
         try? process.run()
-        #endif
+    }
+
+    private var isRunningInAppSandbox: Bool {
+        ProcessInfo.processInfo.environment["APP_SANDBOX_CONTAINER_ID"] != nil
     }
 
     #if MAS_BUILD
@@ -1632,7 +1652,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let model = OnboardingModel(
                 translationDownload: translationDownload,
                 onOpenSettings: { [weak self] in self?.showSettingsWindow() },
-                onQuit: { [weak self] in self?.quit() }
+                onQuit: { [weak self] in self?.quit() },
+                onPermissionStatusChanged: { [weak self] in self?.writePermissionStatusCache() }
             )
             onboardingController = OnboardingWindowController(model: model)
         }
@@ -1737,7 +1758,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func quit() {
-        isUserQuitting = true
         NSApp.terminate(nil)
     }
 
@@ -1780,14 +1800,5 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 #if !MAS_BUILD
-extension AppDelegate: SPUUpdaterDelegate {
-    nonisolated func updaterWillRelaunchApplication(_ updater: SPUUpdater) {
-        // Sparkle terminates the app to install an update ("Install and Relaunch").
-        // applicationShouldTerminate cancels termination unless the user chose Quit,
-        // which would silently abort the install; treat Sparkle's relaunch as a quit.
-        MainActor.assumeIsolated {
-            isUserQuitting = true
-        }
-    }
-}
+extension AppDelegate: SPUUpdaterDelegate {}
 #endif

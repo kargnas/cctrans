@@ -215,6 +215,7 @@
       provider !== "kargnasManaged"
     )
       return;
+    if (!providerAvailable(settingsState, provider)) return;
 
     const next: Settings = { ...settingsState.settings, provider };
     if (provider === "localHyMT2") {
@@ -238,7 +239,7 @@
       closeTranslationModelMenu();
       return;
     }
-    activeTranslationModelProvider = settingsState.settings.provider;
+    activeTranslationModelProvider = activeProviderFor(settingsState);
     openTranslationModelMenu = scope;
   }
 
@@ -320,6 +321,7 @@
 
   async function useLocalModel(modelID: string) {
     if (!settingsState) return;
+    if (!providerAvailable(settingsState, "localHyMT2")) return;
     await saveSettings({ ...settingsState.settings, provider: "localHyMT2", localModelID: modelID });
   }
 
@@ -545,6 +547,16 @@
     if (settings.provider === "appleTranslation") return "System (on-device)";
     if (settings.provider === "kargnasManaged") return "Managed (server-chosen)";
     return openRouterModelLabel(settings.openRouterTextModel);
+  }
+
+  function providerAvailable(state: SettingsState | null, provider: TranslationProvider) {
+    return state?.options.providers.some((option) => option.value === provider) ?? false;
+  }
+
+  function activeProviderFor(state: SettingsState) {
+    return providerAvailable(state, state.settings.provider)
+      ? state.settings.provider
+      : ((state.options.providers[0]?.value as TranslationProvider | undefined) ?? "appleTranslation");
   }
 
   function formatPrice(model: OpenRouterModelOption) {
@@ -934,7 +946,7 @@
     {#if openTranslationModelMenu === scope}
       <div class="nested-model-menu" role="menu" aria-label="Translation Model">
         <div class="nested-model-providers" role="group" aria-label="Model providers">
-          {#if state.appVariant !== "mas"}
+          {#if providerAvailable(state, "localHyMT2")}
             <!-- The Python local backend cannot run inside the MAS sandbox. -->
             <button
               type="button"
@@ -957,16 +969,18 @@
             <span>Apple Translation</span>
             <ChevronRight size={13} />
           </button>
-          <button
-            type="button"
-            class:active={activeTranslationModelProvider === "kargnasManaged"}
-            onmouseenter={() => (activeTranslationModelProvider = "kargnasManaged")}
-            onclick={() => (activeTranslationModelProvider = "kargnasManaged")}
-          >
-            <Cloud size={14} />
-            <span>CCTrans Cloud</span>
-            <ChevronRight size={13} />
-          </button>
+          {#if providerAvailable(state, "kargnasManaged")}
+            <button
+              type="button"
+              class:active={activeTranslationModelProvider === "kargnasManaged"}
+              onmouseenter={() => (activeTranslationModelProvider = "kargnasManaged")}
+              onclick={() => (activeTranslationModelProvider = "kargnasManaged")}
+            >
+              <Cloud size={14} />
+              <span>CCTrans Cloud</span>
+              <ChevronRight size={13} />
+            </button>
+          {/if}
           <button
             type="button"
             class:active={activeTranslationModelProvider === "openRouter"}
@@ -1086,7 +1100,7 @@
         <span>Excluded Apps</span>
       </button>
       <div class="sidebar-separator"></div>
-      {#if settingsState.appVariant !== "mas"}
+      {#if providerAvailable(settingsState, "localHyMT2")}
         <!-- Advanced holds only Local Runtime settings, useless in the MAS sandbox (the Python/MLX
              local backend cannot run there); hide it to match the gated Local model UI below. -->
         <button class:active={activeSection === "advanced"} onclick={() => (activeSection = "advanced")}>
@@ -1345,7 +1359,7 @@
             </label>
           </div>
 
-          {#if settingsState.appVariant !== "mas"}
+          {#if providerAvailable(settingsState, "localHyMT2")}
           <!-- The Python/MLX local backend cannot run in the MAS sandbox, so local model picks are
                hidden there to match the model dropdown's gated Local category — otherwise "Use this"
                would set a provider that silently fails (or gets remapped to Apple on next launch). -->

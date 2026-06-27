@@ -2,6 +2,7 @@ import AppKit
 import ApplicationServices
 import CoreGraphics
 import SwiftUI
+import UniformTypeIdentifiers
 
 // A native, main-process onboarding/status window.
 //
@@ -23,26 +24,32 @@ final class OnboardingModel: ObservableObject {
         let detail: String
         var granted: Bool
         let request: () -> Void
+        let fallback: (() -> Void)?
     }
 
     @Published var permissions: [Permission] = []
+    @Published private var attemptedRequests: Set<String> = []
     // Non-nil only when Apple Translation is the active provider; lets onboarding
     // offer a language-pack download from this visible window (the invisible
     // keep-alive host cannot present Apple's download sheet).
     let translationDownload: TranslationDownloadModel?
     let onOpenSettings: () -> Void
     let onQuit: () -> Void
+    let onPermissionStatusChanged: () -> Void
+    let appBundleURL = Bundle.main.bundleURL
     // Set by the window controller so the SwiftUI "Done" button can close the window.
     var onDismiss: () -> Void = {}
 
     init(
         translationDownload: TranslationDownloadModel?,
         onOpenSettings: @escaping () -> Void,
-        onQuit: @escaping () -> Void
+        onQuit: @escaping () -> Void,
+        onPermissionStatusChanged: @escaping () -> Void
     ) {
         self.translationDownload = translationDownload
         self.onOpenSettings = onOpenSettings
         self.onQuit = onQuit
+        self.onPermissionStatusChanged = onPermissionStatusChanged
         refresh()
     }
 
@@ -67,20 +74,19 @@ final class OnboardingModel: ObservableObject {
             request: {
                 _ = CGRequestListenEventAccess()
                 Self.openPrivacySettings("Privacy_ListenEvent")
-            }
+            },
+            fallback: { Self.openPrivacySettings("Privacy_ListenEvent") }
         ))
         #endif
         rows.append(Permission(
             id: "screen",
             title: "Screen Recording",
-            detail: "Captures the selected region for screenshot translation.",
+            detail: attemptedRequests.contains("screen")
+                ? "If no macOS prompt appeared, enable CCTrans in Screen Recording settings."
+                : "Captures the selected region for screenshot translation.",
             granted: CGPreflightScreenCaptureAccess(),
-            request: {
-                // App Review 5.1.1(iv): do NOT redirect to System Settings around the prompt. Just
-                // trigger the native TCC request; a previously-denied user reaches Settings through
-                // the user-initiated Screen Recording button, not an automatic redirect.
-                _ = CGRequestScreenCaptureAccess()
-            }
+            request: { [weak self] in self?.requestScreenRecordingAccess() },
+            fallback: { Self.openPrivacySettings("Privacy_ScreenCapture") }
         ))
         #if !MAS_BUILD
         // Accessibility is requested ONLY on direct-distribution builds. The MAS build reads
@@ -95,10 +101,35 @@ final class OnboardingModel: ObservableObject {
             request: {
                 let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
                 _ = AXIsProcessTrustedWithOptions(options)
+            },
+            fallback: {
+                let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
+                _ = AXIsProcessTrustedWithOptions(options)
             }
         ))
         #endif
         permissions = rows
+        onPermissionStatusChanged()
+    }
+
+    func didAttempt(_ permission: Permission) -> Bool {
+        attemptedRequests.contains(permission.id)
+    }
+
+    func revealAppBundle() {
+        NSWorkspace.shared.activateFileViewerSelecting([appBundleURL])
+    }
+
+    private func requestScreenRecordingAccess() {
+        attemptedRequests.insert("screen")
+        if !CGPreflightScreenCaptureAccess() {
+            _ = CGRequestScreenCaptureAccess()
+        }
+        refresh()
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(700))
+            self?.refresh()
+        }
     }
 
     private static func openPrivacySettings(_ anchor: String) {
@@ -136,7 +167,10 @@ struct OnboardingView: View {
             GroupBox("Permissions") {
                 VStack(spacing: 10) {
                     ForEach(model.permissions) { permission in
-                        PermissionRowView(permission: permission)
+                        PermissionRowView(
+                            permission: permission,
+                            didAttempt: model.didAttempt(permission)
+                        )
                     }
                     if model.allGranted {
                         Text("All set — CCTrans is ready.")
@@ -146,6 +180,13 @@ struct OnboardingView: View {
                     }
                 }
                 .padding(6)
+            }
+
+            if !model.allGranted {
+                AppBundleDragCard(
+                    appBundleURL: model.appBundleURL,
+                    onReveal: model.revealAppBundle
+                )
             }
 
             if let translationDownload = model.translationDownload {
@@ -165,12 +206,50 @@ struct OnboardingView: View {
         }
         .padding(20)
         // Taller when the translation row is present so nothing clips.
-        .frame(width: 460, height: model.translationDownload == nil ? 540 : 620)
+        .frame(width: 500, height: model.translationDownload == nil ? 620 : 700)
+    }
+}
+
+private struct AppBundleDragCard: View {
+    let appBundleURL: URL
+    let onReveal: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(nsImage: NSWorkspace.shared.icon(forFile: appBundleURL.path))
+                .resizable()
+                .frame(width: 42, height: 42)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(appBundleURL.lastPathComponent).bold()
+                Text("Drag this app into the open Privacy list if macOS does not add it automatically.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(appBundleURL.path)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            Spacer()
+            Button("Reveal") { onReveal() }
+        }
+        .padding(12)
+        .background(Color(NSColor.controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Color(NSColor.separatorColor), lineWidth: 1)
+        )
+        .onDrag {
+            NSItemProvider(contentsOf: appBundleURL)
+                ?? NSItemProvider(object: appBundleURL.absoluteString as NSString)
+        }
     }
 }
 
 private struct PermissionRowView: View {
     let permission: OnboardingModel.Permission
+    let didAttempt: Bool
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -182,10 +261,16 @@ private struct PermissionRowView: View {
             }
             Spacer()
             if !permission.granted {
-                // App Review 5.1.1(iv): the priming button shown before the OS Screen
-                // Recording prompt must not say "Grant"/"Allow"; Apple asks for neutral
-                // wording like "Continue"/"Next".
-                Button("Continue") { permission.request() }
+                VStack(alignment: .trailing, spacing: 6) {
+                    // App Review 5.1.1(iv): the priming button shown before the OS Screen
+                    // Recording prompt must not say "Grant"/"Allow"; Apple asks for neutral
+                    // wording like "Continue"/"Next".
+                    Button("Continue") { permission.request() }
+                    if didAttempt, let fallback = permission.fallback {
+                        Button("Open Settings") { fallback() }
+                            .font(.caption)
+                    }
+                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)

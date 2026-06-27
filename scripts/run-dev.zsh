@@ -4,8 +4,9 @@ set -euo pipefail
 ROOT="${0:A:h}/.."
 ROOT="${ROOT:A}"
 APP_NAME="CCTrans"
-APP_DIR="$ROOT/dist/$APP_NAME.app"
-BUNDLE_ID="as.kargn.cctrans"
+APP_BUNDLE_NAME="CCTrans Dev"
+APP_DIR="$ROOT/dist/$APP_BUNDLE_NAME.app"
+BUNDLE_ID="as.kargn.cctrans.dev"
 APP_EXEC="$APP_DIR/Contents/MacOS/$APP_NAME"
 DEBUG_EXEC="$ROOT/.build/arm64-apple-macosx/debug/$APP_NAME"
 TAURI_HELPER_EXEC="$APP_DIR/Contents/Resources/CCTransTauri.app/Contents/MacOS/cctrans-tauri"
@@ -13,8 +14,13 @@ TAURI_HELPER_EXEC="$APP_DIR/Contents/Resources/CCTransTauri.app/Contents/MacOS/c
 cd "$ROOT"
 
 # Build and run the signed app bundle in development so macOS TCC permissions
-# use the stable bundle id instead of SwiftPM's ad-hoc debug executable id.
-"$ROOT/scripts/build-app.zsh" >/dev/null
+# use a stable development bundle id instead of SwiftPM's ad-hoc debug executable
+# id or the installed production app's id.
+CCTRANS_APP_BUNDLE_NAME="$APP_BUNDLE_NAME" \
+CCTRANS_APP_DISPLAY_NAME="$APP_BUNDLE_NAME" \
+CCTRANS_BUNDLE_ID="$BUNDLE_ID" \
+CCTRANS_HELPER_BUNDLE_ID="$BUNDLE_ID.helper" \
+  "$ROOT/scripts/build-app.zsh" >/dev/null
 
 osascript -e "tell application id \"$BUNDLE_ID\" to quit" >/dev/null 2>&1 || true
 while IFS= read -r pid; do

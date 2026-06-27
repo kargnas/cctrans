@@ -11,8 +11,11 @@ set -euo pipefail
 #
 # Two modes:
 #   Local verification (default): ad-hoc or Apple Development signing, no
-#     identifier entitlements, no .pkg. Confirms the bundle shape and that
-#     com.apple.security.app-sandbox lands on every executable.
+#     identifier entitlements, no .pkg. Confirms the MAS compile/bundle shape.
+#     By default this local mode strips sandbox/app-group entitlements so running
+#     the ad-hoc bundle does not trigger macOS "access data from other apps"
+#     prompts against the production App Group. Set CCTRANS_MAS_LOCAL_SANDBOX=1
+#     when specifically testing sandbox entitlements with real profiles.
 #   Submission: set CCTRANS_MAS_SIGN_IDENTITY ("Apple Distribution: ..."),
 #     CCTRANS_TEAM_ID, CCTRANS_MAS_PROFILE (Mac App Store provisioning profile
 #     for as.kargn.cctrans), CCTRANS_MAS_HELPER_PROFILE (Mac App Store
@@ -23,13 +26,7 @@ set -euo pipefail
 
 ROOT="${0:A:h}/.."
 APP_NAME="CCTrans"
-BUNDLE_ID="as.kargn.cctrans"
-HELPER_BUNDLE_ID="${CCTRANS_MAS_HELPER_BUNDLE_ID:-$BUNDLE_ID.helper}"
 DIST_DIR="$ROOT/dist-mas"
-APP_DIR="$DIST_DIR/$APP_NAME.app"
-CONTENTS_DIR="$APP_DIR/Contents"
-MACOS_DIR="$CONTENTS_DIR/MacOS"
-RESOURCES_DIR="$CONTENTS_DIR/Resources"
 APP_VERSION="${CCTRANS_VERSION:-0.1.0}"
 APP_BUILD_NUMBER="${CCTRANS_BUILD_NUMBER:-$APP_VERSION}"
 SIGN_IDENTITY="${CCTRANS_MAS_SIGN_IDENTITY:-}"
@@ -37,6 +34,25 @@ TEAM_ID="${CCTRANS_TEAM_ID:-}"
 PROFILE_PATH="${CCTRANS_MAS_PROFILE:-}"
 HELPER_PROFILE_PATH="${CCTRANS_MAS_HELPER_PROFILE:-}"
 INSTALLER_IDENTITY="${CCTRANS_MAS_INSTALLER_IDENTITY:-}"
+LOCAL_SANDBOX="${CCTRANS_MAS_LOCAL_SANDBOX:-0}"
+LOCAL_VERIFICATION=0
+if [[ -z "$PROFILE_PATH" && -z "$HELPER_PROFILE_PATH" && -z "$TEAM_ID" && "$LOCAL_SANDBOX" != "1" ]]; then
+  LOCAL_VERIFICATION=1
+fi
+if [[ "$LOCAL_VERIFICATION" == "1" ]]; then
+  APP_BUNDLE_NAME="${CCTRANS_MAS_APP_BUNDLE_NAME:-CCTrans MAS Dev}"
+  APP_DISPLAY_NAME="${CCTRANS_MAS_APP_DISPLAY_NAME:-$APP_BUNDLE_NAME}"
+  BUNDLE_ID="${CCTRANS_MAS_BUNDLE_ID:-as.kargn.cctrans.mas-dev}"
+else
+  APP_BUNDLE_NAME="${CCTRANS_MAS_APP_BUNDLE_NAME:-$APP_NAME}"
+  APP_DISPLAY_NAME="${CCTRANS_MAS_APP_DISPLAY_NAME:-$APP_BUNDLE_NAME}"
+  BUNDLE_ID="${CCTRANS_MAS_BUNDLE_ID:-as.kargn.cctrans}"
+fi
+HELPER_BUNDLE_ID="${CCTRANS_MAS_HELPER_BUNDLE_ID:-$BUNDLE_ID.helper}"
+APP_DIR="$DIST_DIR/$APP_BUNDLE_NAME.app"
+CONTENTS_DIR="$APP_DIR/Contents"
+MACOS_DIR="$CONTENTS_DIR/MacOS"
+RESOURCES_DIR="$CONTENTS_DIR/Resources"
 ENTITLEMENTS_SRC="$ROOT/scripts/mas/CCTrans.entitlements"
 HELPER_ENTITLEMENTS_SRC="$ROOT/scripts/mas/CCTransTauri.entitlements"
 # Inherited-sandbox CLI helper: a copy of the main binary the Tauri helper
@@ -73,9 +89,9 @@ cat > "$CONTENTS_DIR/Info.plist" <<PLIST
   <key>CFBundleIdentifier</key>
   <string>$BUNDLE_ID</string>
   <key>CFBundleName</key>
-  <string>$APP_NAME</string>
+  <string>$APP_BUNDLE_NAME</string>
   <key>CFBundleDisplayName</key>
-  <string>$APP_NAME</string>
+  <string>$APP_DISPLAY_NAME</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleIconFile</key>
@@ -128,6 +144,19 @@ if [[ -n "$TEAM_ID" ]]; then
   /usr/libexec/PlistBuddy -c "Add :com.apple.application-identifier string $TEAM_ID.$HELPER_BUNDLE_ID" "$HELPER_ENTITLEMENTS"
   /usr/libexec/PlistBuddy -c "Add :com.apple.developer.team-identifier string $TEAM_ID" "$HELPER_ENTITLEMENTS"
 fi
+USE_SANDBOX_ENTITLEMENTS=1
+if [[ "$LOCAL_VERIFICATION" == "1" ]]; then
+  USE_SANDBOX_ENTITLEMENTS=0
+  cat > "$APP_ENTITLEMENTS" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "https://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict/>
+</plist>
+PLIST
+  cp "$APP_ENTITLEMENTS" "$HELPER_ENTITLEMENTS"
+  CLI_ENTITLEMENTS="$APP_ENTITLEMENTS"
+fi
 
 if [[ -z "$SIGN_IDENTITY" ]]; then
   # Local verification fallback: Apple Development if present, else ad-hoc.
@@ -162,14 +191,19 @@ codesign --verify --deep --strict "$APP_DIR"
 
 # Fail the build if the CLI helper did not end up with the inherit entitlement —
 # without it the helper would crash on first fork-exec under the App Sandbox.
-if ! codesign -d --entitlements - --xml "$CLI_HELPER_DEST" 2>/dev/null \
-    | plutil -convert xml1 -o - - 2>/dev/null \
-    | grep -q "com.apple.security.inherit"; then
-  echo "ERROR: cctrans-cli is missing com.apple.security.inherit after signing." >&2
-  exit 1
+if [[ "$USE_SANDBOX_ENTITLEMENTS" == "1" ]]; then
+  if ! codesign -d --entitlements - --xml "$CLI_HELPER_DEST" 2>/dev/null \
+      | plutil -convert xml1 -o - - 2>/dev/null \
+      | grep -q "com.apple.security.inherit"; then
+    echo "ERROR: cctrans-cli is missing com.apple.security.inherit after signing." >&2
+    exit 1
+  fi
 fi
 
 echo "Signed with: $SIGN_IDENTITY"
+if [[ "$USE_SANDBOX_ENTITLEMENTS" == "0" ]]; then
+  echo "Local MAS verification mode: sandbox/app-group entitlements stripped."
+fi
 echo "$APP_DIR"
 
 if [[ -n "$INSTALLER_IDENTITY" ]]; then

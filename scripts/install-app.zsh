@@ -38,9 +38,26 @@ done
 APP_DIR="$ROOT/dist/$APP_NAME.app"
 DEST="$INSTALL_DIR/$APP_NAME.app"
 
+install_app_bundle() {
+  local source_app="$1"
+  local dest_app="$2"
+
+  if rm -rf "$dest_app" 2>/dev/null && ditto "$source_app" "$dest_app" 2>/dev/null; then
+    return 0
+  fi
+
+  echo "Administrator permission required to replace: $dest_app"
+  /usr/bin/osascript - "$source_app" "$dest_app" <<'APPLESCRIPT'
+on run argv
+  set sourcePath to item 1 of argv
+  set destPath to item 2 of argv
+  do shell script "/bin/rm -rf " & quoted form of destPath & " && /usr/bin/ditto " & quoted form of sourcePath & " " & quoted form of destPath with administrator privileges
+end run
+APPLESCRIPT
+}
+
 mkdir -p "$INSTALL_DIR"
-rm -rf "$DEST"
-ditto "$APP_DIR" "$DEST"
+install_app_bundle "$APP_DIR" "$DEST"
 
 echo "Installed: $DEST"
 echo "Open System Settings permissions if this is the first install on this Mac:"

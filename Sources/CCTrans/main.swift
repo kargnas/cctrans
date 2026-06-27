@@ -2,8 +2,11 @@ import AppKit
 import CCTransCore
 
 // Must run before SettingsStore/CredentialsProvider touch disk, including the
-// one-shot CLI paths below.
+// one-shot CLI paths below. App Store builds must not probe legacy non-container
+// paths: macOS treats that as cross-app data access and prompts on launch.
+#if !MAS_BUILD
 LegacyBrandMigration.run()
+#endif
 
 func argumentValue(after flag: String) -> String? {
     guard let index = CommandLine.arguments.firstIndex(of: flag) else {

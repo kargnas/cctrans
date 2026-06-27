@@ -3,10 +3,12 @@ set -euo pipefail
 
 ROOT="${0:A:h}/.."
 APP_NAME="CCTrans"
-BUNDLE_ID="as.kargn.cctrans"
+APP_BUNDLE_NAME="${CCTRANS_APP_BUNDLE_NAME:-$APP_NAME}"
+APP_DISPLAY_NAME="${CCTRANS_APP_DISPLAY_NAME:-$APP_BUNDLE_NAME}"
+BUNDLE_ID="${CCTRANS_BUNDLE_ID:-as.kargn.cctrans}"
 HELPER_BUNDLE_ID="${CCTRANS_HELPER_BUNDLE_ID:-$BUNDLE_ID.helper}"
 DIST_DIR="$ROOT/dist"
-APP_DIR="$DIST_DIR/$APP_NAME.app"
+APP_DIR="$DIST_DIR/$APP_BUNDLE_NAME.app"
 CONTENTS_DIR="$APP_DIR/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
@@ -67,9 +69,9 @@ cat > "$CONTENTS_DIR/Info.plist" <<PLIST
   <key>CFBundleIdentifier</key>
   <string>$BUNDLE_ID</string>
   <key>CFBundleName</key>
-  <string>$APP_NAME</string>
+  <string>$APP_BUNDLE_NAME</string>
   <key>CFBundleDisplayName</key>
-  <string>$APP_NAME</string>
+  <string>$APP_DISPLAY_NAME</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleIconFile</key>
