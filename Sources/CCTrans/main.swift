@@ -267,7 +267,8 @@ if CommandLine.arguments.contains("--translate-text-once") {
         // retranslate and by dev-token smoke tests) can reach CCTrans Cloud.
         managedClient: CctransManagedClient(
             attestor: CctransAppAttestor.shared,
-            appTransactionProvider: { await CctransAppTransactionProvider.shared.signedAppTransaction() }
+            appTransactionProvider: { await CctransAppTransactionProvider.shared.signedAppTransaction() },
+            appReceiptProvider: { await CctransAppTransactionProvider.shared.appStoreReceipt() }
         ),
         openRouterModelCapabilities: SharedOpenRouterModelCache.capabilities(for:)
     ).translateText(

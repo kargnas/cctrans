@@ -128,6 +128,40 @@ struct CctransManagedClientTests {
         #expect(body["challenge"] == nil)
     }
 
+    @Test func appReceiptPathSendsReceiptBodyWithoutChallenge() async throws {
+        let captured = RequestCapture()
+        let client = CctransManagedClient(
+            session: makeManagedSession { request in
+                captured.record(request)
+                if request.url?.path.hasSuffix("/translate") == true {
+                    return (200, json(["ok": true, "result": ["kind": "text", "text": "영수증", "imageUrl": NSNull()]]))
+                }
+                return (404, Data())
+            },
+            attestor: MockAttestor(isSupported: false),
+            appTransactionProvider: { nil },
+            appReceiptProvider: { "base64-app-store-receipt" }
+        )
+
+        let outcome = try await client.translate(
+            mode: "text", text: "Hello", imageDataURL: nil, targetCode: "ko", devToken: nil
+        )
+
+        #expect(outcome == .success(kind: "text", text: "영수증", imageURL: nil))
+        let translate = try #require(captured.request(path: "/translate"))
+        #expect(translate.value(forHTTPHeaderField: "X-Cctrans-App-Transaction") == nil)
+        #expect(translate.value(forHTTPHeaderField: "X-Cctrans-Key-Id") == nil)
+        #expect(translate.value(forHTTPHeaderField: "X-Cctrans-Assertion") == nil)
+        #expect(translate.value(forHTTPHeaderField: "X-Cctrans-Dev-Token") == nil)
+        #expect(captured.request(path: "/attest/challenge") == nil)
+        let body = try #require(translate.jsonBody)
+        #expect(body["mode"] as? String == "text")
+        #expect(body["text"] as? String == "Hello")
+        #expect(body["target"] as? String == "ko")
+        #expect(body["app_receipt"] as? String == "base64-app-store-receipt")
+        #expect(body["challenge"] == nil)
+    }
+
     // MARK: App Attest path — production. Orchestrates challenge → register → assert → translate.
 
     @Test func attestPathRegistersOnceThenSignsBodyWithAssertion() async throws {

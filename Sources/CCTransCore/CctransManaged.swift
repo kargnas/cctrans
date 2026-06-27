@@ -74,6 +74,9 @@ public enum CctransManagedError: LocalizedError, Sendable, Equatable {
 ///     is signed, so a cheap-path body cannot be swapped for an expensive one.
 ///   - StoreKit AppTransaction (`X-Cctrans-App-Transaction`): the production path for
 ///     native macOS App Store builds, where ASC rejects the App Attest entitlement.
+///   - App Store receipt (`app_receipt` body field): fallback for macOS TestFlight
+///     builds where `AppTransaction.shared` can be unavailable even though the app
+///     has a valid local App Store receipt.
 public final class CctransManagedClient: @unchecked Sendable {
     public static let defaultBaseURL = "https://kargn.as/v1/cctrans"
 
@@ -81,18 +84,21 @@ public final class CctransManagedClient: @unchecked Sendable {
     private let baseURL: String
     private let attestor: (any CctransAttesting)?
     private let appTransactionProvider: (@Sendable () async -> String?)?
+    private let appReceiptProvider: (@Sendable () async -> String?)?
 
     public init(
         session: URLSession = .shared,
         baseURL: String = defaultBaseURL,
         attestor: (any CctransAttesting)? = nil,
-        appTransactionProvider: (@Sendable () async -> String?)? = nil
+        appTransactionProvider: (@Sendable () async -> String?)? = nil,
+        appReceiptProvider: (@Sendable () async -> String?)? = nil
     ) {
         self.session = session
         // Normalize so `baseURL + "/translate"` never produces a double slash.
         self.baseURL = baseURL.hasSuffix("/") ? String(baseURL.dropLast()) : baseURL
         self.attestor = attestor
         self.appTransactionProvider = appTransactionProvider
+        self.appReceiptProvider = appReceiptProvider
     }
 
     /// Send a single translation. `mode` is `"text"`, `"vision"`, or `"image"`;
@@ -107,7 +113,7 @@ public final class CctransManagedClient: @unchecked Sendable {
         if let devToken, !devToken.isEmpty {
             // Dev/QA bypass. The body mirrors the real wire shape (minus challenge) so
             // the engine + paywall paths are exercised identically to production.
-            let body = try encodeBody(challenge: nil, mode: mode, text: text, image: imageDataURL, target: targetCode)
+            let body = try encodeBody(challenge: nil, mode: mode, text: text, image: imageDataURL, target: targetCode, appReceipt: nil)
             var request = try makeRequest(path: "/translate")
             request.setValue(devToken, forHTTPHeaderField: "X-Cctrans-Dev-Token")
             request.httpBody = body
@@ -115,9 +121,16 @@ public final class CctransManagedClient: @unchecked Sendable {
         }
 
         if let appTransaction = await appTransactionProvider?(), !appTransaction.isEmpty {
-            let body = try encodeBody(challenge: nil, mode: mode, text: text, image: imageDataURL, target: targetCode)
+            let body = try encodeBody(challenge: nil, mode: mode, text: text, image: imageDataURL, target: targetCode, appReceipt: nil)
             var request = try makeRequest(path: "/translate")
             request.setValue(appTransaction, forHTTPHeaderField: "X-Cctrans-App-Transaction")
+            request.httpBody = body
+            return try await sendTranslate(request)
+        }
+
+        if let appReceipt = await appReceiptProvider?(), !appReceipt.isEmpty {
+            let body = try encodeBody(challenge: nil, mode: mode, text: text, image: imageDataURL, target: targetCode, appReceipt: appReceipt)
+            var request = try makeRequest(path: "/translate")
             request.httpBody = body
             return try await sendTranslate(request)
         }
@@ -131,7 +144,7 @@ public final class CctransManagedClient: @unchecked Sendable {
         // The assertion signs the EXACT bytes we transmit, and the challenge must be
         // inside them. Encode once, sign that buffer, send the identical buffer — the
         // server re-hashes the raw received body, so any divergence fails verification.
-        let body = try encodeBody(challenge: challenge, mode: mode, text: text, image: imageDataURL, target: targetCode)
+        let body = try encodeBody(challenge: challenge, mode: mode, text: text, image: imageDataURL, target: targetCode, appReceipt: nil)
         let clientDataHash = Data(SHA256.hash(data: body))
         let assertion = try await attestor.generateAssertion(keyID, clientDataHash: clientDataHash)
 
@@ -185,7 +198,8 @@ public final class CctransManagedClient: @unchecked Sendable {
         mode: String,
         text: String?,
         image: String?,
-        target: String
+        target: String,
+        appReceipt: String?
     ) throws -> Data {
         // JSONSerialization key order is not guaranteed, but we sign and send the same
         // buffer, and the server hashes the raw received bytes — so ordering is irrelevant.
@@ -198,6 +212,9 @@ public final class CctransManagedClient: @unchecked Sendable {
         }
         if let image {
             payload["image"] = image
+        }
+        if let appReceipt {
+            payload["app_receipt"] = appReceipt
         }
         return try JSONSerialization.data(withJSONObject: payload)
     }

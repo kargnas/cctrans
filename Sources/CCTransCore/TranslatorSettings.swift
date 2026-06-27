@@ -8,9 +8,10 @@ public enum TranslationProvider: String, CaseIterable, Codable, Sendable {
     // build's local option (the Python-backed localHyMT2 cannot run there).
     case appleTranslation
     // kargn.as managed cloud: translate through the author's server with no
-    // OpenRouter key. Anonymous device identity uses StoreKit AppTransaction on
-    // macOS App Store builds, App Attest where available, or a dev token for
-    // testing. All limits/costs live server-side; the client is a thin proxy (§3).
+    // OpenRouter key. Anonymous device identity uses StoreKit AppTransaction or
+    // App Store receipt on macOS App Store builds, App Attest where available, or
+    // a dev token for testing. All limits/costs live server-side; the client is a
+    // thin proxy (§3).
     case kargnasManaged
 
     public var title: String {

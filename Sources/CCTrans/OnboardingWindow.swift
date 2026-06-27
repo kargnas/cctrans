@@ -126,6 +126,9 @@ final class OnboardingModel: ObservableObject {
             _ = CGRequestScreenCaptureAccess()
         }
         refresh()
+        if !CGPreflightScreenCaptureAccess() {
+            Self.openPrivacySettings("Privacy_ScreenCapture")
+        }
         Task { @MainActor [weak self] in
             try? await Task.sleep(for: .milliseconds(700))
             self?.refresh()
@@ -216,12 +219,11 @@ private struct AppBundleDragCard: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            Image(nsImage: NSWorkspace.shared.icon(forFile: appBundleURL.path))
-                .resizable()
+            DraggableAppIcon(appBundleURL: appBundleURL)
                 .frame(width: 42, height: 42)
             VStack(alignment: .leading, spacing: 3) {
                 Text(appBundleURL.lastPathComponent).bold()
-                Text("Drag this app into the open Privacy list if macOS does not add it automatically.")
+                Text("Drag the app icon into the open Privacy list if macOS does not add it automatically.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -240,10 +242,59 @@ private struct AppBundleDragCard: View {
             RoundedRectangle(cornerRadius: 8)
                 .stroke(Color(NSColor.separatorColor), lineWidth: 1)
         )
-        .onDrag {
-            NSItemProvider(contentsOf: appBundleURL)
-                ?? NSItemProvider(object: appBundleURL.absoluteString as NSString)
+    }
+}
+
+private struct DraggableAppIcon: NSViewRepresentable {
+    let appBundleURL: URL
+
+    func makeNSView(context: Context) -> AppIconDragView {
+        AppIconDragView(appBundleURL: appBundleURL)
+    }
+
+    func updateNSView(_ nsView: AppIconDragView, context: Context) {
+        nsView.appBundleURL = appBundleURL
+    }
+}
+
+private final class AppIconDragView: NSImageView, NSDraggingSource {
+    var appBundleURL: URL {
+        didSet {
+            image = NSWorkspace.shared.icon(forFile: appBundleURL.path)
         }
+    }
+
+    init(appBundleURL: URL) {
+        self.appBundleURL = appBundleURL
+        super.init(frame: .zero)
+        image = NSWorkspace.shared.icon(forFile: appBundleURL.path)
+        imageScaling = .scaleProportionallyUpOrDown
+        isEditable = false
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        let item = NSPasteboardItem()
+        item.setString(appBundleURL.absoluteString, forType: .fileURL)
+        item.setPropertyList([appBundleURL.path], forType: NSPasteboard.PasteboardType("NSFilenamesPboardType"))
+
+        let draggingItem = NSDraggingItem(pasteboardWriter: item)
+        draggingItem.setDraggingFrame(bounds, contents: image)
+        beginDraggingSession(with: [draggingItem], event: event, source: self)
+    }
+
+    func draggingSession(
+        _ session: NSDraggingSession,
+        sourceOperationMaskFor context: NSDraggingContext
+    ) -> NSDragOperation {
+        .copy
+    }
+
+    func ignoreModifierKeys(for session: NSDraggingSession) -> Bool {
+        true
     }
 }
 
