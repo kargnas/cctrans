@@ -24,7 +24,7 @@ struct CredentialsProvider {
             // Managed-provider dev bypass (QA only). Put `CCTRANS_DEV_TOKEN=cctdev_…`
             // in ~/.config/cctrans/.env for direct builds, or pass it via the
             // environment for local MAS QA. Signed builds leave it unset and fall
-            // back to App Attest. Never commit this value.
+            // back to platform store identity. Never commit this value.
             cctransDevToken: environment["CCTRANS_DEV_TOKEN"]
         )
     }

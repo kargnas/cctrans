@@ -5,11 +5,10 @@ import Testing
 
 /// CCTrans Cloud (kargn.as managed) wire-contract tests.
 ///
-/// The dev-token path and the App Attest path share the SAME REST machinery — same body
-/// encoder, same `/translate` endpoint, same response parser. These tests lock that: the
-/// only difference between dev and production is the auth header (dev token vs key-id +
-/// assertion) and the absence of a challenge on the dev path. That parity is the whole
-/// point of the dev token — QA exercises the real engine + paywall, not a divergent stub.
+/// The managed auth paths share the SAME REST machinery — same body encoder, same
+/// `/translate` endpoint, same response parser. These tests lock that: the only
+/// difference is the auth header and whether a challenge is required. That parity is the
+/// whole point of the dev token — QA exercises the real engine + paywall, not a divergent stub.
 @Suite(.serialized)
 struct CctransManagedClientTests {
     // MARK: Dev-token path (QA bypass) — must mirror production exactly bar the auth header
@@ -95,6 +94,38 @@ struct CctransManagedClientTests {
         await #expect(throws: CctransManagedError.attestUnavailable) {
             try await client.translate(mode: "text", text: "Hi", imageDataURL: nil, targetCode: "ko", devToken: nil)
         }
+    }
+
+    @Test func appTransactionPathSendsJWSHeaderWithoutChallenge() async throws {
+        let captured = RequestCapture()
+        let client = CctransManagedClient(
+            session: makeManagedSession { request in
+                captured.record(request)
+                if request.url?.path.hasSuffix("/translate") == true {
+                    return (200, json(["ok": true, "result": ["kind": "text", "text": "앱거래", "imageUrl": NSNull()]]))
+                }
+                return (404, Data())
+            },
+            attestor: MockAttestor(isSupported: false),
+            appTransactionProvider: { "signed-app-transaction-jws" }
+        )
+
+        let outcome = try await client.translate(
+            mode: "text", text: "Hello", imageDataURL: nil, targetCode: "ko", devToken: nil
+        )
+
+        #expect(outcome == .success(kind: "text", text: "앱거래", imageURL: nil))
+        let translate = try #require(captured.request(path: "/translate"))
+        #expect(translate.value(forHTTPHeaderField: "X-Cctrans-App-Transaction") == "signed-app-transaction-jws")
+        #expect(translate.value(forHTTPHeaderField: "X-Cctrans-Key-Id") == nil)
+        #expect(translate.value(forHTTPHeaderField: "X-Cctrans-Assertion") == nil)
+        #expect(translate.value(forHTTPHeaderField: "X-Cctrans-Dev-Token") == nil)
+        #expect(captured.request(path: "/attest/challenge") == nil)
+        let body = try #require(translate.jsonBody)
+        #expect(body["mode"] as? String == "text")
+        #expect(body["text"] as? String == "Hello")
+        #expect(body["target"] as? String == "ko")
+        #expect(body["challenge"] == nil)
     }
 
     // MARK: App Attest path — production. Orchestrates challenge → register → assert → translate.

@@ -1,8 +1,8 @@
 import Foundation
 import CryptoKit
 
-/// Native App Attest bridge. `CCTransCore` stays platform-light, so the macOS
-/// `DCAppAttestService` implementation is injected from the app shell (this mirrors
+/// Native App Attest bridge. `CCTransCore` stays platform-light, so native
+/// `DCAppAttestService` implementations are injected from the app shell (this mirrors
 /// how `AppleTranslationBacking` injects the on-device translation host). The HTTP
 /// orchestration (challenge → register → assert round-trips) lives in
 /// `CctransManagedClient`; this protocol exposes only the Secure-Enclave primitives
@@ -50,7 +50,7 @@ public enum CctransManagedError: LocalizedError, Sendable, Equatable {
     public var errorDescription: String? {
         switch self {
         case .attestUnavailable:
-            "CCTrans Cloud needs a signed App Store build to verify this device. Choose another provider, or set a dev token for testing."
+            "CCTrans Cloud needs an App Store build or a dev token to verify this device. Choose another provider, or set a dev token for testing."
         case let .invalidURL(url):
             "Invalid CCTrans Cloud URL: \(url)"
         case let .httpStatus(status, body):
@@ -70,24 +70,29 @@ public enum CctransManagedError: LocalizedError, Sendable, Equatable {
 ///     assertion; the server skips App Attest when its gate is on. Used by unsigned
 ///     dev builds so the full path can be exercised before a signed build exists.
 ///   - App Attest (`X-Cctrans-Key-Id` + `X-Cctrans-Assertion`): the production path on
-///     signed builds. Each request body is signed, so a cheap-path body cannot be
-///     swapped for an expensive one.
+///     platforms where App Attest is an accepted store entitlement. Each request body
+///     is signed, so a cheap-path body cannot be swapped for an expensive one.
+///   - StoreKit AppTransaction (`X-Cctrans-App-Transaction`): the production path for
+///     native macOS App Store builds, where ASC rejects the App Attest entitlement.
 public final class CctransManagedClient: @unchecked Sendable {
     public static let defaultBaseURL = "https://kargn.as/v1/cctrans"
 
     private let session: URLSession
     private let baseURL: String
     private let attestor: (any CctransAttesting)?
+    private let appTransactionProvider: (@Sendable () async -> String?)?
 
     public init(
         session: URLSession = .shared,
         baseURL: String = defaultBaseURL,
-        attestor: (any CctransAttesting)? = nil
+        attestor: (any CctransAttesting)? = nil,
+        appTransactionProvider: (@Sendable () async -> String?)? = nil
     ) {
         self.session = session
         // Normalize so `baseURL + "/translate"` never produces a double slash.
         self.baseURL = baseURL.hasSuffix("/") ? String(baseURL.dropLast()) : baseURL
         self.attestor = attestor
+        self.appTransactionProvider = appTransactionProvider
     }
 
     /// Send a single translation. `mode` is `"text"`, `"vision"`, or `"image"`;
@@ -105,6 +110,14 @@ public final class CctransManagedClient: @unchecked Sendable {
             let body = try encodeBody(challenge: nil, mode: mode, text: text, image: imageDataURL, target: targetCode)
             var request = try makeRequest(path: "/translate")
             request.setValue(devToken, forHTTPHeaderField: "X-Cctrans-Dev-Token")
+            request.httpBody = body
+            return try await sendTranslate(request)
+        }
+
+        if let appTransaction = await appTransactionProvider?(), !appTransaction.isEmpty {
+            let body = try encodeBody(challenge: nil, mode: mode, text: text, image: imageDataURL, target: targetCode)
+            var request = try makeRequest(path: "/translate")
+            request.setValue(appTransaction, forHTTPHeaderField: "X-Cctrans-App-Transaction")
             request.httpBody = body
             return try await sendTranslate(request)
         }

@@ -134,11 +134,6 @@ jobs:
               exit 1
             fi
           done
-          if ! codesign -d --entitlements - dist-mas/CCTrans.app 2>/dev/null | grep -q 'com.apple.developer.devicecheck.appattest-environment'; then
-            echo "Missing App Attest environment entitlement on main app" >&2
-            codesign -d --entitlements - dist-mas/CCTrans.app >&2 || true
-            exit 1
-          fi
           codesign --verify --deep --strict dist-mas/CCTrans.app
           ls -la "dist-mas/CCTrans-mas-${{ inputs.version }}.pkg"
 

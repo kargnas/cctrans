@@ -67,20 +67,15 @@ Main app (`scripts/mas/CCTrans.entitlements`, new):
 ```xml
 <key>com.apple.security.app-sandbox</key><true/>
 <key>com.apple.security.network.client</key><true/>
-<key>com.apple.developer.devicecheck.appattest-environment</key>
-<string>production</string>
 ```
 
 Notes:
 
-- CCTrans Cloud uses App Attest, not StoreKit sandbox Apple Accounts. Local
+- CCTrans Cloud uses signed StoreKit AppTransaction JWS on native macOS App
+  Store builds. ASC rejects `com.apple.developer.devicecheck.appattest-environment`
+  on macOS uploads, so do not add App Attest to the MAS entitlements. Local
   unsigned MAS-dev builds cannot impersonate an App Store-signed install by
-  signing into an Apple ID; use `CCTRANS_DEV_TOKEN` for local QA, or a
-  TestFlight/App Store-signed build for the production App Attest path.
-- The App Attest capability must be enabled on the main app identifier and the
-  Mac App Store provisioning profile must be regenerated after adding it. The
-  release workflow fails if the signed main app lacks
-  `com.apple.developer.devicecheck.appattest-environment`.
+  signing into an Apple ID; use `CCTRANS_DEV_TOKEN` for local QA.
 - Screen Recording and Notifications are TCC prompts, not entitlements;
   nothing to declare beyond using the APIs.
 - No file-access entitlements needed: settings, logs, and overrides under
@@ -217,7 +212,7 @@ Mirror `build-app.zsh`, with these differences:
 6. Validate locally before upload:
 
   ```sh
-  codesign -dvv --entitlements - dist-mas/CCTrans.app   # sandbox + App Attest on main app
+  codesign -dvv --entitlements - dist-mas/CCTrans.app   # sandbox + app group on main app
   xcrun stapler validate ...   # not needed: MAS pkgs are NOT notarized
   ```
 

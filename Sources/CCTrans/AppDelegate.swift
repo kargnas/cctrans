@@ -31,10 +31,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let credentialsProvider = CredentialsProvider()
     private let translationService = TranslationService(
         appleBackend: AppleTranslationHost.shared,
-        // CCTrans Cloud client. Native App Attest proves the device on signed builds; an
-        // optional dev token (read from env in CredentialsProvider) covers QA on unsigned
-        // builds. Default base URL + URLSession.shared — all strategy lives server-side.
-        managedClient: CctransManagedClient(attestor: CctransAppAttestor.shared),
+        // CCTrans Cloud client. MAS uses the signed StoreKit AppTransaction because
+        // ASC rejects App Attest entitlements on native macOS apps; direct/dev builds
+        // use App Attest when available or an optional dev token from CredentialsProvider.
+        managedClient: CctransManagedClient(
+            attestor: CctransAppAttestor.shared,
+            appTransactionProvider: { await CctransAppTransactionProvider.shared.signedAppTransaction() }
+        ),
         openRouterModelCapabilities: SharedOpenRouterModelCache.capabilities(for:)
     )
     private let requestLogStore = RequestLogStore()
@@ -1055,7 +1058,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ))
         // CCTrans Cloud (kargn.as managed): translate with no OpenRouter key. Model-less,
         // so a flat item like Apple Translation. Keep it available in the Mac App
-        // Store build; signed builds authenticate with App Attest.
+        // Store build; signed macOS builds authenticate with StoreKit AppTransaction.
         menu.addItem(checkableItem(
             title: "CCTrans Cloud · No API key",
             checked: settings.provider == .kargnasManaged,

@@ -106,10 +106,11 @@ The settings UI must cover current AppKit behavior before adding new behavior:
   normalization must stay aligned with that same contract. When changing provider availability,
   add tests that cover missing settings files, stale unsupported Local provider payloads, Cloud
   provider preservation, reset behavior, and Svelte option gating.
-- CCTrans Cloud must remain available in MAS. Production Cloud auth is App Attest
-  with the App Attest environment entitlement on the main app; local MAS-dev QA
-  uses `CCTRANS_DEV_TOKEN` seeded into the mas-dev shared credentials file. Do
-  not confuse this with StoreKit sandbox Apple Account testing.
+- CCTrans Cloud must remain available in MAS. Native macOS App Store builds
+  authenticate with the signed StoreKit AppTransaction JWS; ASC rejects the App
+  Attest entitlement on macOS uploads. Local MAS-dev QA uses `CCTRANS_DEV_TOKEN`
+  seeded into the mas-dev shared credentials file. Do not confuse this with
+  StoreKit sandbox Apple Account testing.
 - Translation Model: one model-first selector that groups `Local Model` and `OpenRouter LLM` choices. Selecting any model must also select the matching provider.
 - Every model selector must include a `Default` option that resolves to the app-recommended model for that provider.
 - Source Language: `Auto` plus supported language list.
