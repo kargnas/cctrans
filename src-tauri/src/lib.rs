@@ -1911,21 +1911,25 @@ fn shared_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
     if let Some(dir) = mas_shared_data_dir() {
         return Ok(dir);
     }
-    if app_variant() == "mas" {
-        if let Some(host_id) = host_app_identifier() {
-            let home = std::env::var("HOME").map_err(|_| "HOME is not set.".to_string())?;
-            return Ok(PathBuf::from(home)
-                .join("Library/Application Support")
-                .join(host_id));
-        }
+    if let Some(host_id) = host_app_identifier() {
+        let home = std::env::var("HOME").map_err(|_| "HOME is not set.".to_string())?;
+        return Ok(host_application_support_dir(&PathBuf::from(home), &host_id));
     }
     app.path()
         .app_data_dir()
         .map_err(|error| format!("Could not resolve app data directory: {error}"))
 }
 
+fn host_application_support_dir(home: &Path, host_id: &str) -> PathBuf {
+    home.join("Library/Application Support").join(host_id)
+}
+
 fn host_app_identifier() -> Option<String> {
-    let mut args = effective_args().iter();
+    host_app_identifier_from_args(effective_args())
+}
+
+fn host_app_identifier_from_args(args: &[String]) -> Option<String> {
+    let mut args = args.iter();
     while let Some(arg) = args.next() {
         if let Some(value) = arg.strip_prefix("--host-app-id=") {
             return sanitized_bundle_identifier(value);
@@ -4387,6 +4391,34 @@ mod tests {
         let stored = runtime.stored_from_effective(&defaults);
 
         assert_eq!(stored.provider, Some(TranslationProvider::AppleTranslation));
+    }
+
+    #[test]
+    fn host_app_id_args_select_host_shared_settings_dir() {
+        let args = vec![
+            "--surface".to_string(),
+            "settings".to_string(),
+            "--host-app-id".to_string(),
+            "as.kargn.cctrans.dev".to_string(),
+        ];
+        let host_id = host_app_identifier_from_args(&args).expect("host app id");
+        let dir = host_application_support_dir(Path::new("/Users/example"), &host_id);
+
+        assert_eq!(host_id, "as.kargn.cctrans.dev");
+        assert_eq!(
+            dir,
+            PathBuf::from("/Users/example/Library/Application Support/as.kargn.cctrans.dev")
+        );
+    }
+
+    #[test]
+    fn host_app_id_args_reject_invalid_bundle_ids() {
+        let args = vec![
+            "--host-app-id".to_string(),
+            "../as.kargn.cctrans".to_string(),
+        ];
+
+        assert_eq!(host_app_identifier_from_args(&args), None);
     }
 
     #[test]

@@ -1408,11 +1408,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let workspaceRootURL = resolveWorkspaceRootURL() {
             launchArguments.append(contentsOf: ["--workspace-root", workspaceRootURL.path])
         }
+        // The helper is a nested app with its own bundle id, but settings,
+        // permissions, and toast state belong to the outer host app.
+        launchArguments.append(contentsOf: ["--host-app-id", SharedAppStorage.appIdentifier])
         #if MAS_BUILD
         // The Svelte settings/permission surfaces hide sandbox-incompatible
         // options (Python local models, Accessibility) based on this flag.
         launchArguments.append(contentsOf: ["--app-variant", "mas"])
-        launchArguments.append(contentsOf: ["--host-app-id", SharedAppStorage.appIdentifier])
         if isRunningInAppSandbox {
             // Sandboxed callers cannot pass argv through NSWorkspace (macOS
             // documents OpenConfiguration.arguments as ignored), so the helper
