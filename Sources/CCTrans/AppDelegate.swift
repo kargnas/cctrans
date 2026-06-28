@@ -181,14 +181,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if runsPopoverSmoke {
             showTranslationPopoverSmoke()
-        } else {
-            #if !MAS_BUILD
-            // First-run local-model onboarding only applies where the local
-            // backend exists; the MAS build starts on OpenRouter directly.
-            if !settingsStore.settings.hasCompletedLocalModelSelection {
-                showLocalModelSetup()
-            }
-            #endif
         }
         if !runsPopoverSmoke, !CommandLine.arguments.contains("--show-permission-helper") {
             showOnboardingOnLaunchIfNeeded()
