@@ -1,4 +1,9 @@
 <p align="center">
+  <strong>Download CCTrans from the Mac App Store:</strong>
+  <a href="https://apps.apple.com/app/cctrans/id6779669255">apps.apple.com/app/cctrans/id6779669255</a>
+</p>
+
+<p align="center">
   <video src="https://github.com/user-attachments/assets/73040130-a74a-414c-9353-caa9319cab4c" controls muted playsinline preload="metadata"></video>
 </p>
 
@@ -18,6 +23,8 @@ Press `Cmd+C` twice in any app — the copied text pops up as a translation toas
 - **Or run it all on the smartest LLMs** — CCTrans captures your screen along with the copied text, so the model sees the surrounding context and translates what you actually mean.
 
 ## Install
+
+The easiest way to install CCTrans is from the [Mac App Store](https://apps.apple.com/app/cctrans/id6779669255).
 
 ```sh
 brew install --cask kargnas/tap/cctrans
@@ -113,7 +120,7 @@ Every code push to `main` releases itself: a 10-minute cooldown collects follow-
 
 - [docs/local-runtimes.md](docs/local-runtimes.md) — local backend protocol, custom model JSON, benchmark results
 - [docs/other-mac-setup.md](docs/other-mac-setup.md) — installing on a second Mac
-- [docs/mac-app-store.md](docs/mac-app-store.md) — Mac App Store release plan (not submitted yet)
+- [docs/mac-app-store.md](docs/mac-app-store.md) — Mac App Store release notes and packaging details
 - [AGENTS.md](AGENTS.md) — contract for coding agents working on this repo
 - **Request Logs...** in the menu bar — last 200 requests with token usage, model, attached image size, and duplicate suspects
 
