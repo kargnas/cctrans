@@ -100,12 +100,17 @@ After completed development or documentation work is verified and committed, run
 
 The settings UI must cover current AppKit behavior before adding new behavior:
 
-- Distribution-specific settings behavior must have one runtime source of truth. In Rust/Tauri,
-  load/save/reset/default/options/preview flows must route through the shared settings runtime
-  profile, not separate `appVariant` checks or raw direct defaults. In Swift, MAS defaults and
-  normalization must stay aligned with that same contract. When changing provider availability,
-  add tests that cover missing settings files, stale unsupported Local provider payloads, Cloud
-  provider preservation, reset behavior, and Svelte option gating.
+- Provider/model settings are a single product contract, not separate host/helper/UI opinions.
+  **MUST** keep provider availability, defaults, normalization, persistence, reset behavior,
+  and preview/model-selection behavior behind one Settings Contract module. Swift host code,
+  Tauri/Rust commands, and Svelte UI must consume that contract instead of re-declaring
+  distribution rules, defaults, or fallback provider choices.
+- **MUST NOT** add a provider/model branch in only one surface. If MAS, dev, direct,
+  TestFlight, or App Store behavior differs, express the difference in the shared Settings
+  Contract first, then expose the same resolved state to every surface.
+- Regressions must be tested at the user-visible contract level: a provider/model selected
+  in one surface must be the provider/model shown and used by every other surface after save,
+  reload, reset, helper launch, and app restart.
 - CCTrans Cloud must remain available in MAS. Native macOS App Store builds
   prefer signed StoreKit AppTransaction JWS and fall back to the local App Store
   receipt for TestFlight/macOS cases where `AppTransaction.shared` is unavailable;
