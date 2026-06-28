@@ -904,6 +904,8 @@ struct TranslationPreviewState {
     source_language: String,
     #[serde(rename = "targetLanguage")]
     target_language: String,
+    #[serde(rename = "didReverseBecauseLanguagesMatched", default)]
+    did_reverse_because_languages_matched: bool,
     #[serde(rename = "originalText")]
     original_text: String,
     #[serde(rename = "translatedText")]
@@ -1537,6 +1539,7 @@ fn start_translation_toast_watcher(app: AppHandle) {
                 String,
                 String,
                 String,
+                bool,
             )> = None;
             loop {
                 std::thread::sleep(std::time::Duration::from_millis(180));
@@ -1562,6 +1565,7 @@ fn start_translation_toast_watcher(app: AppHandle) {
                     state.translated_text.clone(),
                     state.error_text.clone().unwrap_or_default(),
                     state.model.clone(),
+                    state.did_reverse_because_languages_matched,
                 );
                 if last_fingerprint.as_ref() == Some(&fingerprint) {
                     continue;
@@ -2399,6 +2403,7 @@ fn sample_translation_preview(settings: &Settings) -> TranslationPreviewState {
         mode: "translated".to_string(),
         source_language: "English".to_string(),
         target_language: settings.target_language.clone(),
+        did_reverse_because_languages_matched: false,
         original_text: "The future belongs to those who believe in the beauty of their dreams."
             .to_string(),
         translated_text: "미래는 자신의 꿈의 아름다움을 믿는 사람들의 것이다.".to_string(),
@@ -2469,6 +2474,7 @@ fn prepare_translation_preview_for_retranslate(
     settings: &Settings,
     target_language: Option<String>,
 ) {
+    let explicit_target_language = target_language.is_some();
     let target_language = target_language
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
@@ -2481,13 +2487,50 @@ fn prepare_translation_preview_for_retranslate(
             }
         });
 
-    state.target_language = target_language;
+    let (resolved_target, did_reverse) =
+        if !explicit_target_language && state.did_reverse_because_languages_matched {
+            (target_language, true)
+        } else {
+            resolve_preview_target_language(&state.source_language, &target_language)
+        };
+    state.target_language = resolved_target;
+    state.did_reverse_because_languages_matched = did_reverse;
     state.toast_duration = settings.toast_duration;
     state.provider_title = provider_title(&settings.provider).to_string();
     state.model = selected_model_title(settings);
     state.model_warning = None;
     state.cost_credits = None;
     state.translated_image_url = None;
+}
+
+fn resolve_preview_target_language(
+    source_language: &str,
+    preferred_target: &str,
+) -> (String, bool) {
+    let source = normalized_language_name(source_language);
+    let preferred = normalized_language_name(preferred_target);
+    if source != preferred {
+        return (preferred, false);
+    }
+    if source == "Korean" {
+        return ("English".to_string(), true);
+    }
+    if source == "English" {
+        return ("Korean".to_string(), true);
+    }
+    ("English".to_string(), true)
+}
+
+fn normalized_language_name(value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return "Auto".to_string();
+    }
+    language_options(true)
+        .into_iter()
+        .find(|option| option.value.eq_ignore_ascii_case(trimmed))
+        .map(|option| option.value)
+        .unwrap_or_else(|| trimmed.to_string())
 }
 
 fn default_toast_duration_value() -> f64 {
@@ -4528,6 +4571,7 @@ mod tests {
         assert!(state.caret_y.is_none());
         assert!(state.model_warning.is_none());
         assert!(state.translated_image_url.is_none());
+        assert!(!state.did_reverse_because_languages_matched);
         assert!(!state.anchor_bottom);
     }
 
@@ -4537,6 +4581,7 @@ mod tests {
             "mode":"translated","sourceLanguage":"English","targetLanguage":"Korean",
             "originalText":"hi","translatedText":"안녕","errorText":null,
             "providerTitle":"Local Model","model":"m","costCredits":null,"permissionAction":null,
+            "didReverseBecauseLanguagesMatched":true,
             "translatedImageURL":"data:image/png;base64,abc",
             "modelWarning":"Vision model used","requestSequence":7,
             "caretX":10.0,"caretY":20.0,"caretW":2.0,"caretH":18.0,"anchorBottom":true
@@ -4545,6 +4590,7 @@ mod tests {
         assert_eq!(state.request_sequence, 7);
         assert_eq!(state.caret_x, Some(10.0));
         assert_eq!(state.model_warning.as_deref(), Some("Vision model used"));
+        assert!(state.did_reverse_because_languages_matched);
         assert_eq!(
             state.translated_image_url.as_deref(),
             Some("data:image/png;base64,abc")
@@ -4553,6 +4599,7 @@ mod tests {
         let encoded = serde_json::to_string(&state).unwrap();
         assert!(encoded.contains("\"modelWarning\":\"Vision model used\""));
         assert!(encoded.contains("\"translatedImageURL\":\"data:image/png;base64,abc\""));
+        assert!(encoded.contains("\"didReverseBecauseLanguagesMatched\":true"));
         assert!(encoded.contains("\"requestSequence\":7"));
         assert!(encoded.contains("\"anchorBottom\":true"));
     }
@@ -5025,6 +5072,33 @@ mod tests {
         assert_eq!(state.model_warning, None);
         assert_eq!(state.cost_credits, None);
         assert_eq!(state.toast_duration, 8.0);
+    }
+
+    #[test]
+    fn preview_retranslate_marks_auto_reversed_target_language() {
+        let settings = default_settings();
+        let mut state = sample_translation_preview(&settings);
+        state.source_language = "Korean".to_string();
+        state.target_language = "Korean".to_string();
+
+        prepare_translation_preview_for_retranslate(&mut state, &settings, None);
+
+        assert_eq!(state.target_language, "English");
+        assert!(state.did_reverse_because_languages_matched);
+    }
+
+    #[test]
+    fn preview_model_retranslate_preserves_auto_reverse_indicator() {
+        let settings = default_settings();
+        let mut state = sample_translation_preview(&settings);
+        state.source_language = "Korean".to_string();
+        state.target_language = "English".to_string();
+        state.did_reverse_because_languages_matched = true;
+
+        prepare_translation_preview_for_retranslate(&mut state, &settings, None);
+
+        assert_eq!(state.target_language, "English");
+        assert!(state.did_reverse_because_languages_matched);
     }
 
     #[test]

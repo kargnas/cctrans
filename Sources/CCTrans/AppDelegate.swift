@@ -13,6 +13,7 @@ struct TranslationPreviewPayload: Encodable {
     var mode: String
     var sourceLanguage: String
     var targetLanguage: String
+    var didReverseBecauseLanguagesMatched: Bool = false
     var originalText: String
     var translatedText: String
     var translatedImageURL: String? = nil
@@ -1173,6 +1174,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             mode: "loading",
             sourceLanguage: languages.sourceLanguage,
             targetLanguage: languages.targetLanguage,
+            didReverseBecauseLanguagesMatched: languages.didReverseBecauseLanguagesMatched,
             originalText: originalText,
             translatedText: "",
             errorText: nil,
@@ -1193,6 +1195,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             mode: "translated",
             sourceLanguage: result.sourceLanguage ?? result.detectedSourceLanguage ?? languages.sourceLanguage,
             targetLanguage: result.targetLanguage ?? languages.targetLanguage,
+            didReverseBecauseLanguagesMatched: languages.didReverseBecauseLanguagesMatched,
             originalText: inputText,
             translatedText: result.text,
             translatedImageURL: result.imageURL,
@@ -1225,6 +1228,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             mode: "translated",
             sourceLanguage: languages.sourceLanguage,
             targetLanguage: languages.targetLanguage,
+            didReverseBecauseLanguagesMatched: languages.didReverseBecauseLanguagesMatched,
             originalText: originalText,
             translatedText: partial,
             errorText: nil,
@@ -1241,10 +1245,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settings: TranslatorSettings? = nil
     ) {
         let settings = settings ?? settingsStore.settings
+        let languages = resolvedLanguages(for: originalText, settings: settings)
         showTranslationPopover(TranslationPreviewPayload(
             mode: "error",
-            sourceLanguage: settings.sourceLanguage,
-            targetLanguage: settings.targetLanguage,
+            sourceLanguage: languages.sourceLanguage,
+            targetLanguage: languages.targetLanguage,
+            didReverseBecauseLanguagesMatched: languages.didReverseBecauseLanguagesMatched,
             originalText: originalText,
             translatedText: "",
             errorText: error.localizedDescription,

@@ -2,7 +2,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { onMount } from "svelte";
-  import { Check, Copy, Cpu, ExternalLink, Eye, Languages, Pin, ShieldCheck, TriangleAlert, X } from "@lucide/svelte";
+  import { ArrowLeftRight, Check, Copy, Cpu, ExternalLink, Eye, Languages, Pin, ShieldCheck, TriangleAlert, X } from "@lucide/svelte";
   import { fallbackTranslationState, type ShowToastResult, type TranslationMode, type TranslationPreviewState } from "./lib/translation";
   import { fallbackState, type OpenRouterModelOption, type SettingsState, type TranslationProvider } from "./lib/settings";
 
@@ -82,9 +82,11 @@
     openInPreview: "Preview로 열기",
     pin: "Pin translation",
     unpin: "Unpin translation",
+    autoReversed: "Auto-reversed because source matched target",
     imageExpenseWarning: "이미지 번역 결과는 비싸기 때문에 자동으로 이 번역결과 창을 닫지 않고 유저가 직접 닫을 때 까지 기다립니다."
   };
   const targetLanguage = $derived(preview.targetLanguage);
+  const languageWasAutoReversed = $derived(preview.didReverseBecauseLanguagesMatched);
   const modelName = $derived(preview.model.trim() || preview.providerTitle.trim() || "Unknown model");
   const modelWarning = $derived(preview.modelWarning?.trim() ?? "");
   const costLabel = $derived(formatCostCredits(preview.costCredits));
@@ -353,6 +355,7 @@
         next.errorText !== preview.errorText ||
         next.originalText !== preview.originalText ||
         next.targetLanguage !== preview.targetLanguage ||
+        next.didReverseBecauseLanguagesMatched !== preview.didReverseBecauseLanguagesMatched ||
         next.providerTitle !== preview.providerTitle ||
         next.model !== preview.model ||
         next.costCredits !== preview.costCredits ||
@@ -867,7 +870,11 @@
         <div class="progress-track" aria-hidden="true"><span class="progress-fill"></span></div>
         <footer class="bubble-footer">
           <div class="footer-meta">
-            <span class="language"><Languages size={14} /><span class="language-text">{targetLanguage}</span></span>
+            <span class="language">
+              <Languages size={14} />
+              {#if languageWasAutoReversed}<span class="auto-reverse-icon" aria-label={uiStrings.autoReversed} title={uiStrings.autoReversed}><ArrowLeftRight size={11} /></span>{/if}
+              <span class="language-text">{targetLanguage}</span>
+            </span>
             {#if modelMetadata}<span class="model-label">{modelMetadata}</span>{/if}
           </div>
           <div class="action-row">
@@ -889,6 +896,7 @@
         <footer class="bubble-footer error-footer">
           <label class="language-select-shell" aria-label="Target language">
             <Languages size={14} />
+            {#if languageWasAutoReversed}<span class="auto-reverse-icon" aria-label={uiStrings.autoReversed} title={uiStrings.autoReversed}><ArrowLeftRight size={11} /></span>{/if}
             <select class="language-select" aria-label="Target language" value={selectedTargetLanguage} onchange={selectTargetLanguage} disabled={isChangingLanguage || isChangingModel}>
               {#each targetLanguageOptions as option}
                 <option value={option.value}>{option.label}</option>
@@ -937,6 +945,7 @@
         <footer class="bubble-footer">
           <label class="language-select-shell" aria-label="Target language">
             <Languages size={14} />
+            {#if languageWasAutoReversed}<span class="auto-reverse-icon" aria-label={uiStrings.autoReversed} title={uiStrings.autoReversed}><ArrowLeftRight size={11} /></span>{/if}
             <select class="language-select" aria-label="Target language" value={selectedTargetLanguage} onchange={selectTargetLanguage} disabled={isChangingLanguage || isChangingModel}>
               {#each targetLanguageOptions as option}
                 <option value={option.value}>{option.label}</option>

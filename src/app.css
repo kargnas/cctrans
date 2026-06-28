@@ -1373,6 +1373,21 @@ kbd {
   white-space: nowrap;
 }
 
+.auto-reverse-icon {
+  display: inline-flex;
+  flex: 0 0 15px;
+  width: 15px;
+  height: 15px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  color: var(--favorite-ink);
+}
+
+.auto-reverse-icon svg {
+  flex: 0 0 auto;
+}
+
 .language-text {
   min-width: 0;
   overflow: hidden;
@@ -1383,7 +1398,7 @@ kbd {
   display: inline-flex;
   align-items: center;
   min-width: 102px;
-  max-width: 134px;
+  max-width: 148px;
   height: 28px;
   gap: 6px;
   border: 1px solid var(--glass-border);

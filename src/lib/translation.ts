@@ -4,6 +4,7 @@ export type TranslationPreviewState = {
   mode: TranslationMode;
   sourceLanguage: string;
   targetLanguage: string;
+  didReverseBecauseLanguagesMatched: boolean;
   originalText: string;
   translatedText: string;
   translatedImageURL?: string | null;
@@ -26,6 +27,7 @@ export const fallbackTranslationState: TranslationPreviewState = {
   mode: "translated",
   sourceLanguage: "English",
   targetLanguage: "Korean",
+  didReverseBecauseLanguagesMatched: false,
   originalText: "The future belongs to those who believe in the beauty of their dreams.",
   translatedText: "미래는 자신의 꿈의 아름다움을 믿는 사람들의 것이다.",
   translatedImageURL: null,
