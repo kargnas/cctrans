@@ -230,6 +230,43 @@ struct OpenRouterScreenContextTests {
         #expect(result.model == "google/gemini-3.1-flash-image-preview")
     }
 
+    @Test func screenshotImageOutputRequestOmitsTemperatureAndClampsMaxTokensToCachedLimit() async throws {
+        let settings = TranslatorSettings(
+            provider: .openRouter,
+            openRouterTextModel: "google/gemini-3.1-flash-image",
+            openRouterVisionModel: "google/gemini-3.1-flash-lite"
+        )
+        let capabilities = OpenRouterModelCapabilities(
+            inputModalities: ["text", "image"],
+            outputModalities: ["image", "text"],
+            maxCompletionTokens: 32_768,
+            contextWindow: 131_072
+        )
+        let service = TranslationService(
+            session: stubbedOpenRouterSession { request in
+                let body = try #require(request.jsonBody)
+                #expect(body["model"] as? String == "google/gemini-3.1-flash-image")
+                // Regression guard for the HTTP 400 this reproduced: the old hardcoded
+                // "gemini -> 65535" max_tokens overflowed this endpoint's combined
+                // prompt+completion window, and the unconditional temperature broke
+                // OpenAI image models. Both must be gone from the image-output request.
+                #expect(body["max_tokens"] as? Int == 32_768)
+                #expect(body["temperature"] == nil)
+
+                return openRouterImageResponse(content: "번역됨", imageURL: "data:image/png;base64,x")
+            },
+            openRouterModelCapabilities: { modelID in
+                modelID == "google/gemini-3.1-flash-image" ? capabilities : nil
+            }
+        )
+
+        _ = try await service.translateImage(
+            pngData: Data([0x89, 0x50, 0x4E, 0x47]),
+            settings: settings,
+            credentials: TranslatorCredentials(openRouterAPIKey: "test-key", huggingFaceToken: nil)
+        )
+    }
+
     @Test func screenshotTranslationRejectsKnownTextOnlyVisionModel() async throws {
         let settings = TranslatorSettings(
             provider: .openRouter,

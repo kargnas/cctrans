@@ -305,8 +305,18 @@ public final class TranslationService: @unchecked Sendable {
                 ],
             ],
             "max_tokens": maxTokens(for: selectedModel.id),
-            "temperature": 0.1,
         ]
+        // Some image-generation models (e.g. OpenAI's gpt-5-image family) reject the
+        // `temperature` param entirely with HTTP 400 REGARDLESS of whether this particular
+        // request asks for image output (wantsImageOutput can be false here when the model
+        // is only used as a vision-model fallback, e.g. --openrouter-vision-model). The
+        // cached model list has no supported_parameters field to check per-model, so
+        // temperature is omitted for any model whose capabilities report image output
+        // support at all, rather than hardcoding a model name list. Text-only models are
+        // unaffected and keep requesting temperature as before.
+        if modelCapabilities?.supportsImageOutput != true {
+            body["temperature"] = 0.1
+        }
         if wantsImageOutput, let requestedModalities = modelCapabilities?.requestedOutputModalities {
             body["modalities"] = requestedModalities
         } else {
@@ -967,6 +977,20 @@ public final class TranslationService: @unchecked Sendable {
     }
 
     private func maxTokens(for model: String) -> Int {
+        // Prefer the cached per-model completion limit over the old "model name contains
+        // gemini -> 65535" guess: image-capable Gemini endpoints share ONE combined
+        // prompt+completion context window (unlike text models, which budget completion
+        // separately from a much larger context window), so requesting the flat 65535 on
+        // top of even a small image prompt overflows the endpoint and returns HTTP 400.
+        // Clamping to the model's context window is a last-resort sanity floor for the rare
+        // case the cache's completion limit and context window disagree.
+        if let capabilities = openRouterModelCapabilities(model), let cachedMax = capabilities.maxCompletionTokens {
+            if let contextWindow = capabilities.contextWindow {
+                return min(cachedMax, contextWindow)
+            }
+            return cachedMax
+        }
+
         let normalized = model.lowercased()
         if normalized.contains("gemini") {
             return 65_535

@@ -81,11 +81,27 @@ public struct OpenRouterModelSpec: Codable, Equatable, Sendable, Identifiable {
 public struct OpenRouterModelCapabilities: Equatable, Sendable {
     public var inputModalities: [String]
     public var outputModalities: [String]
+    // OpenRouter's `top_provider.max_completion_tokens` for this model, when known from the
+    // cached models list. Used to size `max_tokens` per-model instead of a hardcoded guess
+    // (see TranslationService.maxTokens(for:)). nil when the model isn't in the cache yet.
+    public var maxCompletionTokens: Int?
+    // The model's combined context window. Some endpoints (notably Gemini image models)
+    // share one window across prompt + completion tokens rather than budgeting completion
+    // separately, so this is used to clamp maxCompletionTokens when it would otherwise leave
+    // no room for the prompt.
+    public var contextWindow: Int?
 
-    public init(inputModalities: [String], outputModalities: [String]) {
+    public init(
+        inputModalities: [String],
+        outputModalities: [String],
+        maxCompletionTokens: Int? = nil,
+        contextWindow: Int? = nil
+    ) {
         self.inputModalities = Self.normalized(inputModalities)
         let output = Self.normalized(outputModalities)
         self.outputModalities = output.isEmpty ? ["text"] : output
+        self.maxCompletionTokens = maxCompletionTokens
+        self.contextWindow = contextWindow
     }
 
     public var supportsVision: Bool {

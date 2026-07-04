@@ -6,6 +6,8 @@ enum SharedOpenRouterModelCache {
         var value: String
         var modalities: [String]?
         var outputModalities: [String]?
+        var maxCompletionTokens: Int?
+        var contextWindow: Int?
     }
 
     static func capabilities(for modelID: String) -> OpenRouterModelCapabilities? {
@@ -22,7 +24,9 @@ enum SharedOpenRouterModelCache {
 
         return OpenRouterModelCapabilities(
             inputModalities: model.modalities ?? [],
-            outputModalities: model.outputModalities ?? ["text"]
+            outputModalities: model.outputModalities ?? ["text"],
+            maxCompletionTokens: model.maxCompletionTokens,
+            contextWindow: model.contextWindow
         )
     }
 }
