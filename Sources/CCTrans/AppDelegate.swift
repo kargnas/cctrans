@@ -196,10 +196,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         // An accessory app has no Dock icon, so a Finder / Launchpad / TestFlight
-        // "Open" on the already-running instance would otherwise do nothing
-        // visible. Re-show the onboarding/status window so reopening always
-        // surfaces the app instead of appearing dead.
-        showOnboardingWindow()
+        // "Open" on the already-running instance would otherwise do nothing visible.
+        // Surface the useful window (Settings when ready, Welcome when a grant is
+        // missing) so reopening never appears dead.
+        surfaceLaunchWindow()
         return true
     }
 
@@ -1667,17 +1667,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func showOnboardingOnLaunchIfNeeded() {
-        // App Review (Guideline 2.1) needs a visible window on launch; a menu-bar-only
-        // accessory reads as "nothing happened" and gets rejected. So the Welcome window
-        // surfaces on every launch — it adapts to permission state (grant steps when a
-        // permission is missing, "all set" when granted). Power users can opt into a quiet
-        // menu-bar-only start, but only once permissions are granted: a missing permission
-        // means the app cannot work, so we always show the window then (which also keeps a
-        // reviewer's fresh-install first launch visible regardless of the setting).
+        // startMenuBarOnly opts into a quiet start, but only once permissions are granted:
+        // a missing permission means the app cannot work, so the grant window still shows
+        // (which also keeps a reviewer's fresh-install first launch visible for App Review
+        // Guideline 2.1 — a fresh install has no Screen Recording grant yet).
         if settingsStore.settings.startMenuBarOnly, !requiredPermissionsMissing() {
             return
         }
-        showOnboardingWindow()
+        surfaceLaunchWindow()
+    }
+
+    // Show whichever window is useful for the current permission state: the Welcome window
+    // walks through a missing grant, but once everything is granted it only reads "all set",
+    // so open Settings instead. Shared by launch and Dock/Finder reopen so both stay
+    // consistent and neither surfaces the dead-end Welcome window when nothing is left to do.
+    private func surfaceLaunchWindow() {
+        if requiredPermissionsMissing() {
+            showOnboardingWindow()
+        } else {
+            showSettingsWindow()
+        }
     }
 
     private func requiredPermissionsMissing() -> Bool {
