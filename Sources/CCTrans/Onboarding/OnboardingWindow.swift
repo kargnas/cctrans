@@ -95,16 +95,30 @@ final class OnboardingFlowModel: ObservableObject {
     func refresh() {
         var rows: [Permission] = []
         #if !MAS_BUILD
-        // Input Monitoring is requested ONLY on direct-distribution builds. App Review
-        // Guideline 2.4.5 forbids requesting it to drive a hotkey, so the MAS build omits
-        // this card and detects the double ⌘C through PasteboardMonitor (clipboard-
-        // changeCount polling), which needs no permission at all.
-        // macOS treats Accessibility as a superset of Input Monitoring: with AX
-        // granted, CGPreflightListenEventAccess() reads true and a listen-only
-        // CGEventTap works even though CCTrans has no row in the Input
-        // Monitoring pane (verified against TCC.db). The pill is functionally
-        // correct then, but say WHY, or the missing list entry looks like a bug.
-        let inputGranted = CGPreflightListenEventAccess()
+        // Accessibility leads the list on direct builds: macOS treats it as a
+        // superset of Input Monitoring (with AX granted,
+        // CGPreflightListenEventAccess() reads true and a listen-only CGEventTap
+        // works even with no row in the Input Monitoring pane — verified against
+        // TCC.db). One AX grant therefore flips the Input row to Ready too, so
+        // it is the highest-leverage first action. Both cards are compile-gated
+        // off the MAS build (App Review 2.4.5): no AX symbol may link there, and
+        // ⌘C detection runs permission-free through PasteboardMonitor.
+        rows.append(Permission(
+            id: "ax",
+            symbol: "accessibility",
+            title: "Accessibility",
+            detail: attemptedRequests.contains("ax")
+                ? "If no macOS prompt appeared, enable CCTrans in Accessibility settings."
+                : "Reads the text selection and unlocks keyboard detection — grant this one first.",
+            granted: AXIsProcessTrusted(),
+            request: { [weak self] in self?.requestAccessibilityAccess() },
+            fallback: { Self.openPrivacySettings("Privacy_Accessibility") }
+        ))
+        // OR with AX: CGPreflight's per-process cache can lag a fresh AX grant,
+        // but keyboard detection already works then (listen tap via AX, or the
+        // NSEvent-monitor fallback) — so an AX grant flips this row to Ready
+        // immediately instead of waiting for a relaunch.
+        let inputGranted = CGPreflightListenEventAccess() || AXIsProcessTrusted()
         let inputViaAccessibility = inputGranted && AXIsProcessTrusted()
         rows.append(Permission(
             id: "input",
@@ -131,23 +145,6 @@ final class OnboardingFlowModel: ObservableObject {
             request: { [weak self] in self?.requestScreenRecordingAccess() },
             fallback: { Self.openPrivacySettings("Privacy_ScreenCapture") }
         ))
-        #if !MAS_BUILD
-        // Accessibility is requested ONLY on direct-distribution builds. The MAS build reads
-        // the selection through the sandbox and the caret-anchor feature was removed, so it must
-        // not reference the Accessibility API at all (App Review 2.4.5). Compile-gated (not the
-        // old runtime `if !isMAS`) so the AX symbols never link into the store binary.
-        rows.append(Permission(
-            id: "ax",
-            symbol: "accessibility",
-            title: "Accessibility",
-            detail: attemptedRequests.contains("ax")
-                ? "If no macOS prompt appeared, enable CCTrans in Accessibility settings."
-                : "Lets CCTrans read the current text selection.",
-            granted: AXIsProcessTrusted(),
-            request: { [weak self] in self?.requestAccessibilityAccess() },
-            fallback: { Self.openPrivacySettings("Privacy_Accessibility") }
-        ))
-        #endif
         // The window controller re-runs this on app activation and on a timer, so
         // skip the publish (and the cache write) when nothing actually changed —
         // the shared-dir cache write would otherwise wake the settings watchers

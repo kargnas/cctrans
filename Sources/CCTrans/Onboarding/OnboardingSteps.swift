@@ -455,6 +455,13 @@ final class AppIconDragView: NSImageView, NSDraggingSource {
         fatalError("init(coder:) has not been implemented")
     }
 
+    // Hovering shows the open hand so the icon reads as grabbable; the system
+    // swaps to closedHand on its own once a drag session begins.
+    override func resetCursorRects() {
+        discardCursorRects()
+        addCursorRect(bounds, cursor: .openHand)
+    }
+
     override func mouseDragged(with event: NSEvent) {
         let item = NSPasteboardItem()
         item.setString(appBundleURL.absoluteString, forType: .fileURL)

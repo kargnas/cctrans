@@ -22,8 +22,12 @@ final class PrivacyDragOverlayController {
     // (and vanishes briefly during Space transitions); don't close until it has
     // been missing past this deadline.
     private var missingDeadline = Date.distantPast
+    // Re-anchor only when the Settings window actually moved; snapping every
+    // tick would fight the user after they drag the chip aside manually.
+    private var lastSettingsFrame: NSRect?
 
-    private let panelSize = NSSize(width: 340, height: 84)
+    // Height covers chip + the bouncing up-arrow strip above it.
+    private let panelSize = NSSize(width: 340, height: 112)
 
     func show(appBundleURL: URL, isSatisfied: @escaping () -> Bool) {
         self.isSatisfied = isSatisfied
@@ -83,7 +87,10 @@ final class PrivacyDragOverlayController {
         }
         if let frame = Self.settingsWindowFrame() {
             missingDeadline = Date().addingTimeInterval(2)
-            position(nextTo: frame)
+            if frame != lastSettingsFrame {
+                lastSettingsFrame = frame
+                position(nextTo: frame)
+            }
         } else if Date() > missingDeadline {
             // User closed System Settings; the chip has nothing to point at.
             close()
@@ -109,14 +116,20 @@ final class PrivacyDragOverlayController {
         let screen = NSScreen.screens.first { $0.frame.intersects(settingsFrame) } ?? NSScreen.main
         guard let visible = screen?.visibleFrame else { return }
 
-        // Prefer hugging the right edge of Settings (the Privacy app list lives
-        // in the right pane); flip to the left edge when there's no room.
-        var x = settingsFrame.maxX + 12
-        if x + panelSize.width > visible.maxX {
-            x = settingsFrame.minX - panelSize.width - 12
-        }
-        // Vertically near the top of the pane, where the list rows start.
-        var y = settingsFrame.maxY - panelSize.height - 140
+        // Overlay INSIDE the Settings window, right under the Privacy app list.
+        // Offsets measured from the real pane (AX probe): sidebar is 215pt wide,
+        // the app list starts ~105pt from the window top and a typical list
+        // (~6 rows × 47pt) ends near 385pt. AX can't be used live here — during
+        // onboarding this app has no AX grant yet (and the MAS build must not
+        // link AX at all) — so a fixed drop zone at 400pt sits just below
+        // typical lists; longer lists slide under it, and the chip stays
+        // movable (isMovableByWindowBackground) for that case.
+        let sidebarWidth: CGFloat = 215
+        let listBottomOffset: CGFloat = 400
+        let paneLeft = settingsFrame.minX + sidebarWidth
+        let paneWidth = settingsFrame.width - sidebarWidth
+        var x = paneLeft + (paneWidth - panelSize.width) / 2
+        var y = settingsFrame.maxY - listBottomOffset - panelSize.height
         x = max(visible.minX + 8, min(x, visible.maxX - panelSize.width - 8))
         y = max(visible.minY + 8, min(y, visible.maxY - panelSize.height - 8))
         panel.setFrameOrigin(NSPoint(x: x, y: y))
@@ -154,32 +167,56 @@ final class PrivacyDragOverlayController {
 private struct PrivacyDragOverlayView: View {
     let appBundleURL: URL
     let onClose: () -> Void
+    @State private var bounce = false
 
     var body: some View {
-        HStack(spacing: 10) {
-            DraggableAppIcon(appBundleURL: appBundleURL)
-                .frame(width: 44, height: 44)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Drag into the list")
-                    .font(.callout).bold()
-                Text("Drop the CCTrans icon into the Privacy list, then turn it on.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+        VStack(spacing: 6) {
+            // The chip sits BELOW the Privacy app list, so the affordance arrow
+            // bounces upward, pointing at the drop target.
+            Image(systemName: "arrow.up")
+                .font(.callout.weight(.bold))
+                .foregroundStyle(Color.accentColor)
+                .offset(y: bounce ? -4 : 2)
+                .animation(.easeInOut(duration: 0.7).repeatForever(autoreverses: true), value: bounce)
+
+            HStack(spacing: 10) {
+                DraggableAppIcon(appBundleURL: appBundleURL)
+                    .frame(width: 44, height: 44)
+                    // Grab-hand badge on the icon itself: marks the icon (not the
+                    // whole chip) as the thing to pick up. Hover shows the real
+                    // open-hand cursor too (AppIconDragView.resetCursorRects).
+                    .overlay(alignment: .bottomTrailing) {
+                        Image(systemName: "hand.point.up.left.fill")
+                            .font(.system(size: 13))
+                            .foregroundStyle(.white)
+                            .padding(3)
+                            .background(Color.accentColor, in: Circle())
+                            .offset(x: 5, y: 5)
+                            .allowsHitTesting(false)
+                    }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Drag into the list above")
+                        .font(.callout).bold()
+                    Text("Drop the CCTrans icon into the Privacy list, then turn it on.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+                Button(action: onClose) {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
             }
-            Spacer(minLength: 0)
-            Button(action: onClose) {
-                Image(systemName: "xmark.circle.fill")
-                    .foregroundStyle(.secondary)
-            }
-            .buttonStyle(.plain)
+            .padding(12)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+            .overlay(
+                RoundedRectangle(cornerRadius: 12)
+                    .stroke(Color(NSColor.separatorColor), lineWidth: 1)
+            )
         }
-        .padding(12)
         .frame(width: 340)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
-        .overlay(
-            RoundedRectangle(cornerRadius: 12)
-                .stroke(Color(NSColor.separatorColor), lineWidth: 1)
-        )
+        .onAppear { bounce = true }
     }
 }
