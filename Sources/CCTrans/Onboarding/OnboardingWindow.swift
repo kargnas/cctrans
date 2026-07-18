@@ -285,6 +285,31 @@ final class OnboardingFlowModel: ObservableObject {
     private static func openPrivacySettings(_ anchor: String) {
         guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(anchor)") else { return }
         NSWorkspace.shared.open(url)
+        // macOS frequently does NOT auto-add the app to the opened Privacy list,
+        // and System Settings now covers the wizard — float a draggable app chip
+        // next to the Settings window so the drop is possible right there. The
+        // chip self-dismisses once the matching grant lands.
+        PrivacyDragOverlayController.shared.show(
+            appBundleURL: Bundle.main.bundleURL,
+            isSatisfied: satisfiedCheck(for: anchor)
+        )
+    }
+
+    private static func satisfiedCheck(for anchor: String) -> () -> Bool {
+        switch anchor {
+        case "Privacy_ScreenCapture":
+            return { CGPreflightScreenCaptureAccess() }
+        #if !MAS_BUILD
+        // Input/AX panes are only ever opened on direct builds (their permission
+        // cards are compiled out on MAS, where these APIs must not link).
+        case "Privacy_ListenEvent":
+            return { CGPreflightListenEventAccess() }
+        case "Privacy_Accessibility":
+            return { AXIsProcessTrusted() }
+        #endif
+        default:
+            return { false }
+        }
     }
 }
 

@@ -422,7 +422,9 @@ private struct AppBundleDragCard: View {
     }
 }
 
-private struct DraggableAppIcon: NSViewRepresentable {
+// Internal (not private): also the drag source inside PrivacyDragOverlay's
+// floating chip, so both surfaces share one drag implementation.
+struct DraggableAppIcon: NSViewRepresentable {
     let appBundleURL: URL
 
     func makeNSView(context: Context) -> AppIconDragView {
@@ -434,7 +436,7 @@ private struct DraggableAppIcon: NSViewRepresentable {
     }
 }
 
-private final class AppIconDragView: NSImageView, NSDraggingSource {
+final class AppIconDragView: NSImageView, NSDraggingSource {
     var appBundleURL: URL {
         didSet {
             image = NSWorkspace.shared.icon(forFile: appBundleURL.path)

@@ -1608,6 +1608,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func openScreenRecordingSettings() {
         let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!
         NSWorkspace.shared.open(url)
+        // Same affordance as the wizard's Settings links: a floating drag chip
+        // beside System Settings, because macOS may not list the app there yet.
+        PrivacyDragOverlayController.shared.show(
+            appBundleURL: Bundle.main.bundleURL,
+            isSatisfied: { CGPreflightScreenCaptureAccess() }
+        )
         print("Opened Screen Recording settings.")
     }
 
