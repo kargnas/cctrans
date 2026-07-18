@@ -1644,10 +1644,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // Show whichever window is useful right now, shared by launch and Dock/Finder
     // reopen so both stay consistent: the full wizard until the user has pressed
     // Done at least once (any interrupted run — TCC's Quit & Reopen, traffic
-    // light — simply re-shows the whole flow, with a Next button after the
-    // permissions step), then just the permissions step while a required grant is
-    // missing, and Settings once nothing is left to do (never the dead-end
-    // "all set" window).
+    // light — simply re-shows the flow; the model resumes at the permissions
+    // step when a grant already exists), then just the permissions step while a
+    // required grant is missing, and Settings once nothing is left to do (never
+    // the dead-end "all set" window).
     private func surfaceLaunchWindow() {
         if !settingsStore.settings.hasCompletedOnboarding {
             presentOnboarding(mode: .fullFlow)

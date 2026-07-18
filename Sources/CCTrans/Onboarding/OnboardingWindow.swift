@@ -18,8 +18,14 @@ import SwiftUI
 //      grant requested apply to the right TCC identity (the helper's did not).
 @MainActor
 final class OnboardingFlowModel: ObservableObject {
+    // Permissions are the LAST step: granting Screen Recording / Input
+    // Monitoring makes macOS quit & reopen the app, which killed the wizard
+    // mid-flow when permissions came first. At the end there is nothing left to
+    // lose — model choice is already persisted, the try-out is done (double-⌘C
+    // works permission-free via pasteboard polling), and the relaunch re-shows
+    // the wizard with the granted pills green.
     enum Step: Int, CaseIterable, Identifiable {
-        case permissions, model, tryIt
+        case model, tryIt, permissions
         var id: Int { rawValue }
     }
 
@@ -41,7 +47,7 @@ final class OnboardingFlowModel: ObservableObject {
         let fallback: (() -> Void)?
     }
 
-    @Published var step: Step = .permissions
+    @Published var step: Step = .model
     @Published var permissions: [Permission] = []
     @Published private var attemptedRequests: Set<String> = []
     // Mirrors settingsStore.settings.provider so the SwiftUI grid can react; the
@@ -85,6 +91,14 @@ final class OnboardingFlowModel: ObservableObject {
             translationDownload = Self.makeTranslationDownloadModel(settings: settingsStore.settings)
         }
         refresh()
+        // permissionsOnly renders just the permissions step. The full flow starts
+        // at model — unless a permission is already granted, which means the user
+        // reached the permissions step before (typically the TCC Quit & Reopen
+        // relaunch right after their first grant): resume there instead of
+        // replaying model/try-it. Back still reaches the earlier steps.
+        if mode == .permissionsOnly || permissions.contains(where: { $0.granted }) {
+            step = .permissions
+        }
     }
 
     var allGranted: Bool { permissions.allSatisfy { $0.granted } }
@@ -397,15 +411,13 @@ private struct OnboardingLeftPane: View {
     }
 
     private var canGoBack: Bool {
-        model.mode == .fullFlow && model.step != .permissions
+        model.mode == .fullFlow && model.step != .model
     }
 
     @ViewBuilder
     private var primaryButton: some View {
-        if model.mode == .permissionsOnly {
-            Button("Done") { finish() }
-                .keyboardShortcut(.defaultAction)
-        } else if model.step == .tryIt {
+        // permissions is now the LAST step, so it carries Done in both modes.
+        if model.mode == .permissionsOnly || model.step == .permissions {
             Button("Done") { finish() }
                 .keyboardShortcut(.defaultAction)
         } else {
