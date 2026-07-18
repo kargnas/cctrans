@@ -456,12 +456,43 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
     private(set) var flowModel: OnboardingFlowModel?
     private var activationObserver: NSObjectProtocol?
     private var refreshTimer: Timer?
+    private var appIsTerminating = false
+
+    // Granting Screen Recording / Input Monitoring makes macOS quit & reopen the
+    // whole app, killing this window mid-wizard. The marker is written while the
+    // window is open and cleared only on a USER close (Done, traffic light) — so
+    // after any process death with the wizard up (TCC relaunch, SIGKILL), the next
+    // launch sees the marker and brings the window straight back. A separate
+    // helper process cannot solve this instead: TCC preflight/request only mean
+    // anything in the process that taps the keyboard, and that process must die
+    // for the grant to apply anyway.
+    private static let resumeMarkerURL = SharedAppStorage.fileURL("onboarding-resume")
+
+    static var hasResumeMarker: Bool {
+        FileManager.default.fileExists(atPath: resumeMarkerURL.path)
+    }
+
+    private static func writeResumeMarker() {
+        try? SharedAppStorage.ensureDirectoryExists()
+        try? Data().write(to: resumeMarkerURL)
+    }
+
+    private static func clearResumeMarker() {
+        try? FileManager.default.removeItem(at: resumeMarkerURL)
+    }
+
+    // Called from applicationShouldTerminate: the imminent window close is the
+    // app quitting (TCC's Quit & Reopen), not the user finishing the wizard.
+    func noteAppTerminating() {
+        appIsTerminating = true
+    }
 
     func show(flowModel: OnboardingFlowModel) {
         self.flowModel = flowModel
         flowModel.onDismiss = { [weak self] in self?.window?.close() }
         flowModel.refresh()
         startLivePermissionRefresh()
+        Self.writeResumeMarker()
 
         let hosting = NSHostingController(rootView: OnboardingRootView(model: flowModel))
         if let window {
@@ -488,6 +519,11 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
 
     func windowWillClose(_ notification: Notification) {
         stopLivePermissionRefresh()
+        // A close during app termination is TCC's Quit & Reopen, not the user
+        // finishing: keep the resume marker (and don't mark onboarding complete)
+        // so the relaunch reopens the wizard where the grant flow left off.
+        guard !appIsTerminating else { return }
+        Self.clearResumeMarker()
         // Closing the wizard (traffic light, Cmd+W) counts as finishing it, matching
         // the Done button so a completed run is not re-shown on the next launch.
         flowModel?.persistCompletionIfNeeded()

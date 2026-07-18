@@ -179,9 +179,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        // The wizard window is about to close because the APP is quitting (TCC's
+        // Quit & Reopen after a grant), not because the user finished it — tell
+        // the controller so the close does not persist onboarding completion.
+        onboardingController?.noteAppTerminating()
         // Do not veto system-driven termination. macOS TCC asks to quit/reopen
         // after Screen Recording changes; canceling here leaves the grant stale.
-        .terminateNow
+        return .terminateNow
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -1631,7 +1635,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // install has neither the completion flag nor a Screen Recording grant).
         if settingsStore.settings.startMenuBarOnly,
            settingsStore.settings.hasCompletedOnboarding,
-           !requiredPermissionsMissing() {
+           !requiredPermissionsMissing(),
+           // A leftover resume marker means the app died with the wizard open
+           // (TCC's Quit & Reopen after a grant) — bring it back even on a
+           // quiet start so the flow continues where the relaunch cut it off.
+           !OnboardingWindowController.hasResumeMarker {
             return
         }
         surfaceLaunchWindow()
@@ -1644,7 +1652,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func surfaceLaunchWindow() {
         if !settingsStore.settings.hasCompletedOnboarding {
             presentOnboarding(mode: .fullFlow)
-        } else if requiredPermissionsMissing() {
+        } else if requiredPermissionsMissing() || OnboardingWindowController.hasResumeMarker {
+            // The marker case reopens the window even when the grant that caused
+            // the relaunch was the last one missing: the user left mid-flow, so
+            // show the green pills and let Done (which clears the marker) close it.
             presentOnboarding(mode: .permissionsOnly)
         } else {
             showSettingsWindow()
