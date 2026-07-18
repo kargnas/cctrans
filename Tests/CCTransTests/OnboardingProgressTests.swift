@@ -9,6 +9,7 @@ struct OnboardingProgressTests {
         let fixture = try makeFixture()
 
         #expect(fixture.store.load() == .model)
+        #expect(fixture.store.loadStoredCheckpoint() == nil)
     }
 
     @Test
@@ -28,6 +29,7 @@ struct OnboardingProgressTests {
             .write(to: fixture.fileURL)
 
         #expect(fixture.store.load() == .model)
+        #expect(fixture.store.loadStoredCheckpoint() == nil)
     }
 
     @Test
@@ -46,6 +48,15 @@ struct OnboardingProgressTests {
         #expect(OnboardingCheckpoint.permissions.next == .tryIt)
         #expect(OnboardingCheckpoint.tryIt.next == .completed)
         #expect(OnboardingCheckpoint.completed.next == nil)
+    }
+
+    @Test
+    func explicitModelCheckpointIsDistinguishableFromMissingStorage() throws {
+        let fixture = try makeFixture()
+
+        try fixture.store.save(.model)
+
+        #expect(fixture.store.loadStoredCheckpoint() == .model)
     }
 
     private func makeFixture() throws -> Fixture {
@@ -162,7 +173,7 @@ struct OnboardingProviderPolicyTests {
             current: .localHyMT2,
             startsAtModel: true,
             hasCompletedOnboarding: false,
-            hadPersistedSettingsAtLaunch: false
+            hadExistingAppStateAtLaunch: false
         ) == .appleTranslation)
     }
 
@@ -172,8 +183,18 @@ struct OnboardingProviderPolicyTests {
             current: .openRouter,
             startsAtModel: true,
             hasCompletedOnboarding: false,
-            hadPersistedSettingsAtLaunch: true
+            hadExistingAppStateAtLaunch: true
         ) == .openRouter)
+    }
+
+    @Test
+    func defaultOnlyExistingInstallPreservesEffectiveProvider() {
+        #expect(OnboardingProviderPolicy.initialProvider(
+            current: .localHyMT2,
+            startsAtModel: true,
+            hasCompletedOnboarding: false,
+            hadExistingAppStateAtLaunch: true
+        ) == .localHyMT2)
     }
 
     @Test
@@ -182,7 +203,7 @@ struct OnboardingProviderPolicyTests {
             current: .localHyMT2,
             startsAtModel: false,
             hasCompletedOnboarding: false,
-            hadPersistedSettingsAtLaunch: false
+            hadExistingAppStateAtLaunch: false
         ) == .localHyMT2)
     }
 }
@@ -203,6 +224,12 @@ struct OnboardingCompletionMarkerPolicyTests {
             hasCompletedOnboarding: false,
             sharedSettingsWriteSucceeded: true
         ) == false)
+        #expect(OnboardingCompletionMarkerPolicy.canDismiss(
+            sharedSettingsWriteSucceeded: true
+        ))
+        #expect(OnboardingCompletionMarkerPolicy.canDismiss(
+            sharedSettingsWriteSucceeded: false
+        ) == false)
     }
 }
 
@@ -218,5 +245,26 @@ struct OnboardingCredentialValueTests {
         #expect(OnboardingCredentialValue.isSafe("secret\nHF_TOKEN=injected") == false)
         #expect(OnboardingCredentialValue.isSafe("secret\rHF_TOKEN=injected") == false)
         #expect(OnboardingCredentialValue.isSafe("secret\0suffix") == false)
+    }
+}
+
+@Suite
+struct OwnerOnlyAtomicFileWriterTests {
+    @Test
+    func writesReplacementWithOwnerOnlyPermissions() throws {
+        let directoryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: directoryURL,
+            withIntermediateDirectories: true
+        )
+        let fileURL = directoryURL.appendingPathComponent("credentials.env")
+
+        try OwnerOnlyAtomicFileWriter.write(Data("secret".utf8), to: fileURL)
+
+        #expect(try Data(contentsOf: fileURL) == Data("secret".utf8))
+        let attributes = try FileManager.default.attributesOfItem(atPath: fileURL.path)
+        let permissions = try #require(attributes[.posixPermissions] as? NSNumber)
+        #expect(permissions.intValue & 0o777 == 0o600)
     }
 }

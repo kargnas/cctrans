@@ -33,10 +33,14 @@ public struct OnboardingProgressStore: Sendable {
     }
 
     public func load() -> OnboardingCheckpoint {
+        loadStoredCheckpoint() ?? .model
+    }
+
+    public func loadStoredCheckpoint() -> OnboardingCheckpoint? {
         guard let data = try? Data(contentsOf: fileURL),
               let payload = try? JSONDecoder().decode(Payload.self, from: data),
               payload.version == 1 else {
-            return .model
+            return nil
         }
         return payload.checkpoint
     }

@@ -15,11 +15,11 @@ public enum OnboardingProviderPolicy {
         current: TranslationProvider,
         startsAtModel: Bool,
         hasCompletedOnboarding: Bool,
-        hadPersistedSettingsAtLaunch: Bool
+        hadExistingAppStateAtLaunch: Bool
     ) -> TranslationProvider {
         guard startsAtModel,
               !hasCompletedOnboarding,
-              !hadPersistedSettingsAtLaunch else {
+              !hadExistingAppStateAtLaunch else {
             return current
         }
         return .appleTranslation
@@ -32,6 +32,10 @@ public enum OnboardingCompletionMarkerPolicy {
         sharedSettingsWriteSucceeded: Bool
     ) -> Bool {
         hasCompletedOnboarding && sharedSettingsWriteSucceeded
+    }
+
+    public static func canDismiss(sharedSettingsWriteSucceeded: Bool) -> Bool {
+        sharedSettingsWriteSucceeded
     }
 }
 
