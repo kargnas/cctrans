@@ -1687,6 +1687,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // install has neither the completion flag nor a Screen Recording grant).
         if settingsStore.settings.startMenuBarOnly,
            settingsStore.settings.hasCompletedOnboarding,
+           onboardingProgressStore.loadStoredCheckpoint() == nil,
            !requiredPermissionsMissing() {
             return
         }
@@ -1714,7 +1715,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // model/permissions/try-it checkpoint, completed onboarding shows only a
     // missing permissions surface, and Settings opens once nothing remains.
     private func surfaceLaunchWindow() {
-        if !settingsStore.settings.hasCompletedOnboarding {
+        if let checkpoint = onboardingProgressStore.loadStoredCheckpoint(),
+           checkpoint != .completed {
+            presentOnboarding(mode: .fullFlow, resumeProgress: true)
+        } else if !settingsStore.settings.hasCompletedOnboarding {
             presentOnboarding(mode: .fullFlow, resumeProgress: true)
         } else if requiredPermissionsMissing() {
             presentOnboarding(mode: .permissionsOnly, resumeProgress: false)

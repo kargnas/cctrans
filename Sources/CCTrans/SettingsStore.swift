@@ -10,7 +10,7 @@ final class SettingsStore {
     // reloading a toast-written override never echoes the same value back to disk.
     private var isApplyingExternalChange = false
     private var isNormalizingSettings = false
-    private(set) var hadPersistedSettingsAtLaunch: Bool
+    private(set) var hadExistingAppStateAtLaunch: Bool
     private(set) var lastSharedSaveSucceeded = true
 
     // Invoked on the main queue after an external settings-file change is applied,
@@ -51,9 +51,14 @@ final class SettingsStore {
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
+        // Override files intentionally disappear at code defaults, so directory
+        // existence is the durable migration signal for default-only upgrades.
+        let appDataDirectoryExisted = FileManager.default.fileExists(
+            atPath: SharedAppStorage.directoryURL.path
+        )
         let sharedData = try? Data(contentsOf: settingsURL)
         let legacyData = defaults.data(forKey: key)
-        hadPersistedSettingsAtLaunch = sharedData != nil || legacyData != nil
+        hadExistingAppStateAtLaunch = appDataDirectoryExisted || sharedData != nil || legacyData != nil
 
         if let data = sharedData,
            let decoded = try? JSONDecoder().decode(TranslatorSettings.self, from: data) {

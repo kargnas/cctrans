@@ -115,7 +115,7 @@ final class OnboardingFlowModel: ObservableObject {
             current: settingsStore.settings.provider,
             startsAtModel: mode == .fullFlow && initialStep == .model,
             hasCompletedOnboarding: settingsStore.settings.hasCompletedOnboarding,
-            hadPersistedSettingsAtLaunch: settingsStore.hadPersistedSettingsAtLaunch
+            hadExistingAppStateAtLaunch: settingsStore.hadExistingAppStateAtLaunch
         )
 
         if selectedProvider == .appleTranslation {
@@ -228,10 +228,9 @@ final class OnboardingFlowModel: ObservableObject {
     }
 
     func saveOpenRouterKey() {
-        let trimmed = openRouterKeyInput.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        guard !openRouterKeyInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         do {
-            try OpenRouterKeyStore.write(trimmed)
+            try OpenRouterKeyStore.write(openRouterKeyInput)
             openRouterKeySaved = true
             openRouterKeyError = nil
             openRouterKeyWarning = false
@@ -312,6 +311,12 @@ final class OnboardingFlowModel: ObservableObject {
             settingsStore.settings = settings
         }
         let sharedSettingsWriteSucceeded = settingsStore.persistCurrentSettings()
+        guard OnboardingCompletionMarkerPolicy.canDismiss(
+            sharedSettingsWriteSucceeded: sharedSettingsWriteSucceeded
+        ) else {
+            progressError = "Onboarding is saved, but settings couldn’t be finalized. Click Done to retry."
+            return false
+        }
         if OnboardingCompletionMarkerPolicy.shouldClearMarker(
             hasCompletedOnboarding: settingsStore.settings.hasCompletedOnboarding,
             sharedSettingsWriteSucceeded: sharedSettingsWriteSucceeded
