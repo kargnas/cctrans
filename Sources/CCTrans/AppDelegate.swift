@@ -103,16 +103,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         hasStarted = true
 
-        #if MAS_BUILD
-        // The sandbox cannot run the external Python/uv local-model backend
-        // (child processes inherit the sandbox and lose the venv/HF caches),
-        // so the MAS build maps it to Apple Translation: also local/offline,
-        // and it works with zero setup.
-        if settingsStore.settings.provider == .localHyMT2 {
-            settingsStore.settings.provider = .appleTranslation
-        }
-        #endif
-
         lifetimeActivity = ProcessInfo.processInfo.beginActivity(
             options: [.automaticTerminationDisabled, .suddenTerminationDisabled],
             reason: "CCTrans must keep monitoring clipboard and shortcuts without a regular window."

@@ -466,9 +466,13 @@ impl SettingsRuntime {
 
     fn default_settings(self) -> Settings {
         let mut settings = default_settings();
-        if self.variant == AppVariant::MacAppStore {
-            settings.provider = TranslationProvider::AppleTranslation;
-        }
+        // Every variant declares its effective default provider explicitly; the
+        // base default (KargnasManaged) is only the fail-safe for code paths
+        // that never went through a variant.
+        settings.provider = match self.variant {
+            AppVariant::Direct => TranslationProvider::LocalHyMT2,
+            AppVariant::MacAppStore => TranslationProvider::AppleTranslation,
+        };
         settings
     }
 
@@ -2822,7 +2826,12 @@ fn close_settings_window(app: AppHandle) -> Result<(), String> {
 
 fn default_settings() -> Settings {
     Settings {
-        provider: TranslationProvider::LocalHyMT2,
+        // Base (variant-less) default. KargnasManaged is the one provider valid
+        // in every distribution variant, so a path that forgets the variant
+        // mapping degrades to a working provider instead of leaking the
+        // Python-backed local provider into the MAS build. Effective defaults
+        // live in SettingsRuntime::default_settings (direct=local, mas=apple).
+        provider: TranslationProvider::KargnasManaged,
         local_model_id: "hymt2-mlx-1.8b-4bit".to_string(),
         local_hy_mt2_backend_path: None,
         custom_local_models_path: None,
@@ -4989,7 +4998,9 @@ mod tests {
 
     #[test]
     fn managed_provider_survives_settings_roundtrip() {
-        let defaults = default_settings();
+        // Variant defaults, not the base ones: production writes diff against
+        // the current variant's defaults (stored_from_effective).
+        let defaults = default_settings_for_current_variant();
         let mut settings = defaults.clone();
         settings.provider = TranslationProvider::KargnasManaged;
 
@@ -5004,7 +5015,7 @@ mod tests {
 
     #[test]
     fn preview_model_selection_updates_managed_provider_without_model_side_effects() {
-        let defaults = default_settings();
+        let defaults = default_settings_for_current_variant();
         let mut initial = defaults.clone();
         initial.local_model_id = "hymt2-transformers-1.8b".to_string();
         initial.open_router_text_model = "anthropic/claude-opus-4.8".to_string();

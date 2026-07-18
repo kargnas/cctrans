@@ -2,10 +2,12 @@ import CCTransCore
 import Foundation
 import Testing
 
-@Test func defaultsToLocalModelAutoSourceAndKorean() {
+@Test func defaultsToManagedProviderAutoSourceAndKorean() {
     let settings = TranslatorSettings()
 
-    #expect(settings.provider == .localHyMT2)
+    // Base default is the variant-safe managed provider; the effective
+    // per-variant defaults (direct=localHyMT2, mas=apple) are asserted below.
+    #expect(settings.provider == .kargnasManaged)
     #expect(settings.hyMT2Model == .hyMT2_30B)
     #expect(settings.localModelID == LocalModelRegistry.defaultModelID)
     #expect(settings.openRouterTextModel == "deepseek/deepseek-v4-flash")
@@ -18,7 +20,17 @@ import Testing
     #expect(settings.hasCompletedLocalModelSelection == false)
     #expect(settings.toastPosition == .bottomRight)
     #expect(settings.toastCustomPosition == nil)
-    #expect(settings.toastDuration == 4)
+    // Matches the Rust toast default (default_settings().toast_duration).
+    #expect(settings.toastDuration == 6)
+}
+
+@Test func absentProviderKeyDecodesAsHistoricalLocalDefault() throws {
+    // Wire compatibility: settings-overrides.json files written while the code
+    // default was localHyMT2 omit the provider key entirely. Decoding must keep
+    // resolving that absence to localHyMT2, independent of the in-memory default.
+    let settings = try JSONDecoder().decode(TranslatorSettings.self, from: Data("{}".utf8))
+
+    #expect(settings.provider == .localHyMT2)
 }
 
 @Test func decodesLegacySettingsWithScreenContextKey() throws {
@@ -42,11 +54,24 @@ import Testing
     #expect(settings.includeScreenContextForLLM == true)
 }
 
-@Test func encodingOmitsDefaultSettings() throws {
-    let data = try JSONEncoder().encode(TranslatorSettings())
+@Test func encodingOmitsDirectVariantDefaults() throws {
+    // Direct-variant defaults are byte-identical to the wire defaults, so a
+    // fresh direct install serializes to an empty overrides file.
+    let data = try JSONEncoder().encode(TranslatorSettings.defaults(for: .direct))
     let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
 
     #expect(object.isEmpty)
+}
+
+@Test func encodingWritesProviderWhenItDiffersFromWireDefault() throws {
+    // The in-memory base default (kargnasManaged) differs from the wire
+    // default (absent key = localHyMT2), so it must be written explicitly —
+    // otherwise a reload would silently flip the provider back to local.
+    let data = try JSONEncoder().encode(TranslatorSettings())
+    let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+
+    #expect(object["provider"] as? String == "kargnasManaged")
+    #expect(object.count == 1)
 }
 
 @Test func macAppStoreDefaultsUseAppleTranslation() {

@@ -32,9 +32,11 @@ export const fallbackTranslationState: TranslationPreviewState = {
   translatedText: "미래는 자신의 꿈의 아름다움을 믿는 사람들의 것이다.",
   translatedImageURL: null,
   errorText: null,
-  providerTitle: "Local Model",
-  model: "Hy-MT2 1.8B 4-bit",
+  // Variant-neutral placeholder: this state can render on any variant before
+  // load_translation_preview returns, and "Local Model" does not exist on MAS.
+  providerTitle: "CCTrans Cloud",
+  model: "Managed (server-chosen)",
   modelWarning: null,
   costCredits: null,
-  toastDuration: 4
+  toastDuration: 6
 };
