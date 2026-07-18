@@ -33,32 +33,27 @@ final class PrivacyDragOverlayController {
         self.isSatisfied = isSatisfied
         missingDeadline = Date().addingTimeInterval(4)
 
+        // A fresh panel per show; the previous one (if any) is ordered out first.
+        close()
         let hosting = NSHostingController(rootView: PrivacyDragOverlayView(
             appBundleURL: appBundleURL,
             onClose: { [weak self] in self?.close() }
         ))
-
-        let panel: NSPanel
-        if let existing = self.panel {
-            panel = existing
-            panel.contentViewController = hosting
-        } else {
-            panel = NSPanel(contentViewController: hosting)
-            // Non-activating: dragging from the chip must not steal focus from
-            // System Settings, or the Privacy list would lose its scroll/selection.
-            panel.styleMask = [.borderless, .nonactivatingPanel]
-            panel.isOpaque = false
-            panel.backgroundColor = .clear
-            panel.hasShadow = true
-            panel.level = .floating
-            // NSPanel hides on app deactivate by default — fatal here, since the
-            // user is by definition IN System Settings while this chip matters.
-            panel.hidesOnDeactivate = false
-            panel.isReleasedWhenClosed = false
-            panel.isMovableByWindowBackground = true
-            panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-            self.panel = panel
-        }
+        let panel = NSPanel(contentViewController: hosting)
+        // Non-activating: dragging from the chip must not steal focus from
+        // System Settings, or the Privacy list would lose its scroll/selection.
+        panel.styleMask = [.borderless, .nonactivatingPanel]
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = true
+        panel.level = .floating
+        // NSPanel hides on app deactivate by default — fatal here, since the
+        // user is by definition IN System Settings while this chip matters.
+        panel.hidesOnDeactivate = false
+        panel.isReleasedWhenClosed = false
+        panel.isMovableByWindowBackground = true
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        self.panel = panel
         panel.setContentSize(panelSize)
         reposition()
         panel.orderFrontRegardless()
@@ -69,6 +64,7 @@ final class PrivacyDragOverlayController {
         timer?.invalidate()
         timer = nil
         panel?.orderOut(nil)
+        panel = nil
     }
 
     private func startTracking() {

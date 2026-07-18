@@ -476,7 +476,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case "screen":
             let ready = CGPreflightScreenCaptureAccess() || CGRequestScreenCaptureAccess()
             if !ready {
-                openScreenRecordingSettings()
+                OnboardingFlowModel.openPrivacySettings("Privacy_ScreenCapture")
             }
             return PermissionResponse(
                 title: "Screen Recording",
@@ -1591,42 +1591,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func showRequestLogs() {
         _ = openTauriSurface("request-logs")
-    }
-
-    // Every Privacy pane opened from the app shows the floating drag chip:
-    // macOS may not list the app in that pane yet, and the chip is the only
-    // discoverable way to add it. The chip self-dismisses on grant.
-    @objc private func openInputMonitoringSettings() {
-        let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent")!
-        NSWorkspace.shared.open(url)
-        PrivacyDragOverlayController.shared.show(
-            appBundleURL: Bundle.main.bundleURL,
-            // AX satisfies keyboard listening too, and CGPreflight's process
-            // cache can stay false right after a grant — OR keeps the chip
-            // from surviving a grant that already works.
-            isSatisfied: { CGPreflightListenEventAccess() || AXIsProcessTrusted() }
-        )
-        print("Opened Input Monitoring settings.")
-    }
-
-    @objc private func openAccessibilitySettings() {
-        let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!
-        NSWorkspace.shared.open(url)
-        PrivacyDragOverlayController.shared.show(
-            appBundleURL: Bundle.main.bundleURL,
-            isSatisfied: { AXIsProcessTrusted() }
-        )
-        print("Opened Accessibility settings.")
-    }
-
-    @objc private func openScreenRecordingSettings() {
-        let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!
-        NSWorkspace.shared.open(url)
-        PrivacyDragOverlayController.shared.show(
-            appBundleURL: Bundle.main.bundleURL,
-            isSatisfied: { CGPreflightScreenCaptureAccess() }
-        )
-        print("Opened Screen Recording settings.")
     }
 
     @objc private func requestKeyboardPermission() {

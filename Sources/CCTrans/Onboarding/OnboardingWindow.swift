@@ -219,6 +219,9 @@ final class OnboardingFlowModel: ObservableObject {
         return "The quick brown fox jumps over the lazy dog."
     }
 
+    // Grants that land after these requests (dialog, Settings toggle) are picked
+    // up by the window controller's activation observer + 2s poll — no extra
+    // delayed refresh needed here.
     private func requestScreenRecordingAccess() {
         attemptedRequests.insert("screen")
         if !CGPreflightScreenCaptureAccess() {
@@ -228,7 +231,6 @@ final class OnboardingFlowModel: ObservableObject {
         if !CGPreflightScreenCaptureAccess() {
             Self.openPrivacySettings("Privacy_ScreenCapture")
         }
-        scheduleDelayedRefresh()
     }
 
     #if !MAS_BUILD
@@ -245,7 +247,6 @@ final class OnboardingFlowModel: ObservableObject {
         if !CGPreflightListenEventAccess() {
             Self.openPrivacySettings("Privacy_ListenEvent")
         }
-        scheduleDelayedRefresh()
     }
 
     private func requestAccessibilityAccess() {
@@ -255,19 +256,8 @@ final class OnboardingFlowModel: ObservableObject {
         let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
         _ = AXIsProcessTrustedWithOptions(options)
         refresh()
-        scheduleDelayedRefresh()
     }
     #endif
-
-    // TCC grants land asynchronously (dialog, Settings toggle); one delayed
-    // re-read catches the common "granted a second later" case without waiting
-    // for the next activation refresh.
-    private func scheduleDelayedRefresh() {
-        Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .milliseconds(700))
-            self?.refresh()
-        }
-    }
 
     // Moved here from AppDelegate: the download model is created at provider-
     // selection time now, not at window construction, so switching to Apple
@@ -288,7 +278,9 @@ final class OnboardingFlowModel: ObservableObject {
         )
     }
 
-    private static func openPrivacySettings(_ anchor: String) {
+    // Internal: also the recovery path for the Tauri "screen" permission action
+    // in AppDelegate, so every Privacy pane open goes through one place.
+    static func openPrivacySettings(_ anchor: String) {
         guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(anchor)") else { return }
         NSWorkspace.shared.open(url)
         // macOS frequently does NOT auto-add the app to the opened Privacy list,
