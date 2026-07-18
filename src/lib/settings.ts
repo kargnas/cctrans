@@ -41,6 +41,7 @@ export type Settings = {
   sourceLanguage: string;
   targetLanguage: string;
   hasCompletedLocalModelSelection: boolean;
+  hasCompletedOnboarding: boolean;
   toastPosition: ToastPosition;
   toastCustomPosition: { x: number; y: number } | null;
   toastDuration: number;
@@ -142,6 +143,7 @@ export const fallbackState: SettingsState = {
     sourceLanguage: "Auto",
     targetLanguage: "Korean",
     hasCompletedLocalModelSelection: false,
+    hasCompletedOnboarding: false,
     toastPosition: "bottomRight",
     toastCustomPosition: null,
     toastDuration: 4,
@@ -168,6 +170,7 @@ export const fallbackState: SettingsState = {
     sourceLanguage: "Auto",
     targetLanguage: "Korean",
     hasCompletedLocalModelSelection: false,
+    hasCompletedOnboarding: false,
     toastPosition: "bottomRight",
     toastCustomPosition: null,
     toastDuration: 4,

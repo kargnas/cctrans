@@ -106,6 +106,8 @@ public struct TranslatorSettings: Codable, Equatable, Sendable {
     public var sourceLanguage: String
     public var targetLanguage: String
     public var hasCompletedLocalModelSelection: Bool
+    // Whether the user finished the onboarding wizard; gates whether a launch re-runs the full onboarding.
+    public var hasCompletedOnboarding: Bool
     public var toastPosition: ToastPosition
     public var toastCustomPosition: ToastCustomPosition?
     public var toastDuration: TimeInterval
@@ -128,6 +130,7 @@ public struct TranslatorSettings: Codable, Equatable, Sendable {
         sourceLanguage: String = TranslationLanguage.auto,
         targetLanguage: String = "Korean",
         hasCompletedLocalModelSelection: Bool = false,
+        hasCompletedOnboarding: Bool = false,
         toastPosition: ToastPosition = .bottomRight,
         toastCustomPosition: ToastCustomPosition? = nil,
         toastDuration: TimeInterval = 4,
@@ -146,6 +149,7 @@ public struct TranslatorSettings: Codable, Equatable, Sendable {
         self.sourceLanguage = sourceLanguage
         self.targetLanguage = targetLanguage
         self.hasCompletedLocalModelSelection = hasCompletedLocalModelSelection
+        self.hasCompletedOnboarding = hasCompletedOnboarding
         self.toastPosition = toastPosition
         self.toastCustomPosition = toastCustomPosition
         self.toastDuration = toastDuration
@@ -166,6 +170,7 @@ public struct TranslatorSettings: Codable, Equatable, Sendable {
         case sourceLanguage
         case targetLanguage
         case hasCompletedLocalModelSelection
+        case hasCompletedOnboarding
         case toastPosition
         case toastCustomPosition
         case toastDuration
@@ -190,6 +195,7 @@ public struct TranslatorSettings: Codable, Equatable, Sendable {
         sourceLanguage = try container.decodeIfPresent(String.self, forKey: .sourceLanguage) ?? TranslationLanguage.auto
         targetLanguage = try container.decodeIfPresent(String.self, forKey: .targetLanguage) ?? "Korean"
         hasCompletedLocalModelSelection = try container.decodeIfPresent(Bool.self, forKey: .hasCompletedLocalModelSelection) ?? false
+        hasCompletedOnboarding = try container.decodeIfPresent(Bool.self, forKey: .hasCompletedOnboarding) ?? false
         toastPosition = try container.decodeIfPresent(ToastPosition.self, forKey: .toastPosition) ?? .bottomRight
         toastCustomPosition = try container.decodeIfPresent(ToastCustomPosition.self, forKey: .toastCustomPosition)
         toastDuration = try container.decodeIfPresent(TimeInterval.self, forKey: .toastDuration) ?? Self().toastDuration
@@ -214,6 +220,7 @@ public struct TranslatorSettings: Codable, Equatable, Sendable {
         try container.encodeIfDifferent(sourceLanguage, from: defaults.sourceLanguage, forKey: .sourceLanguage)
         try container.encodeIfDifferent(targetLanguage, from: defaults.targetLanguage, forKey: .targetLanguage)
         try container.encodeIfDifferent(hasCompletedLocalModelSelection, from: defaults.hasCompletedLocalModelSelection, forKey: .hasCompletedLocalModelSelection)
+        try container.encodeIfDifferent(hasCompletedOnboarding, from: defaults.hasCompletedOnboarding, forKey: .hasCompletedOnboarding)
         try container.encodeIfDifferent(toastPosition, from: defaults.toastPosition, forKey: .toastPosition)
         try container.encodeIfDifferent(toastCustomPosition, from: defaults.toastCustomPosition, forKey: .toastCustomPosition)
         try container.encodeIfDifferent(toastDuration, from: defaults.toastDuration, forKey: .toastDuration)

@@ -286,6 +286,8 @@ struct Settings {
     target_language: String,
     #[serde(rename = "hasCompletedLocalModelSelection")]
     has_completed_local_model_selection: bool,
+    #[serde(rename = "hasCompletedOnboarding")]
+    has_completed_onboarding: bool,
     #[serde(rename = "toastPosition")]
     toast_position: ToastPosition,
     #[serde(rename = "toastCustomPosition")]
@@ -410,6 +412,8 @@ struct StoredSettings {
     target_language: Option<String>,
     #[serde(rename = "hasCompletedLocalModelSelection")]
     has_completed_local_model_selection: Option<bool>,
+    #[serde(rename = "hasCompletedOnboarding")]
+    has_completed_onboarding: Option<bool>,
     #[serde(rename = "toastPosition")]
     toast_position: Option<ToastPosition>,
     #[serde(rename = "toastCustomPosition")]
@@ -547,6 +551,9 @@ impl SettingsRuntime {
         }
         if let Some(value) = stored.has_completed_local_model_selection {
             settings.has_completed_local_model_selection = value;
+        }
+        if let Some(value) = stored.has_completed_onboarding {
+            settings.has_completed_onboarding = value;
         }
         if let Some(value) = stored.toast_position {
             settings.toast_position = value;
@@ -2709,6 +2716,9 @@ impl StoredSettings {
             has_completed_local_model_selection: (settings.has_completed_local_model_selection
                 != defaults.has_completed_local_model_selection)
                 .then_some(settings.has_completed_local_model_selection),
+            has_completed_onboarding: (settings.has_completed_onboarding
+                != defaults.has_completed_onboarding)
+                .then_some(settings.has_completed_onboarding),
             toast_position: (settings.toast_position != defaults.toast_position)
                 .then(|| settings.toast_position.clone()),
             toast_custom_position: (settings.toast_custom_position
@@ -2738,6 +2748,7 @@ impl StoredSettings {
             && self.source_language.is_none()
             && self.target_language.is_none()
             && self.has_completed_local_model_selection.is_none()
+            && self.has_completed_onboarding.is_none()
             && self.toast_position.is_none()
             && self.toast_custom_position.is_none()
             && self.toast_duration.is_none()
@@ -2831,6 +2842,7 @@ fn default_settings() -> Settings {
         source_language: "Auto".to_string(),
         target_language: "Korean".to_string(),
         has_completed_local_model_selection: false,
+        has_completed_onboarding: false,
         toast_position: ToastPosition::BottomRight,
         toast_custom_position: None,
         toast_duration: 6.0,
