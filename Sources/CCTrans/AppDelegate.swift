@@ -1639,23 +1639,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
            // A leftover resume marker means the app died with the wizard open
            // (TCC's Quit & Reopen after a grant) — bring it back even on a
            // quiet start so the flow continues where the relaunch cut it off.
-           !OnboardingWindowController.hasResumeMarker {
+           OnboardingWindowController.resumeMarkerMode == nil {
             return
         }
         surfaceLaunchWindow()
     }
 
     // Show whichever window is useful right now, shared by launch and Dock/Finder
-    // reopen so both stay consistent: the full wizard until onboarding is finished,
-    // then just the permissions step while a required grant is still missing, and
-    // Settings once nothing is left to do (never the dead-end "all set" window).
+    // reopen so both stay consistent: a marker-recorded wizard interrupted by
+    // TCC's Quit & Reopen resumes in ITS mode first (a cut-off full onboarding
+    // must come back as the 3-step flow, not the bare permissions window); then
+    // the full wizard until onboarding is finished, the permissions step while a
+    // required grant is missing, and Settings once nothing is left to do (never
+    // the dead-end "all set" window).
     private func surfaceLaunchWindow() {
-        if !settingsStore.settings.hasCompletedOnboarding {
+        if let resumeMode = OnboardingWindowController.resumeMarkerMode {
+            presentOnboarding(mode: resumeMode)
+        } else if !settingsStore.settings.hasCompletedOnboarding {
             presentOnboarding(mode: .fullFlow)
-        } else if requiredPermissionsMissing() || OnboardingWindowController.hasResumeMarker {
-            // The marker case reopens the window even when the grant that caused
-            // the relaunch was the last one missing: the user left mid-flow, so
-            // show the green pills and let Done (which clears the marker) close it.
+        } else if requiredPermissionsMissing() {
             presentOnboarding(mode: .permissionsOnly)
         } else {
             showSettingsWindow()

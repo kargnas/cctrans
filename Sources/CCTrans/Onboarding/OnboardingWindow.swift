@@ -26,7 +26,9 @@ final class OnboardingFlowModel: ObservableObject {
     // fullFlow is first launch / menu re-entry (all three steps). permissionsOnly
     // is the post-completion re-appearance when a required grant is still missing:
     // just the permissions step with a Done button and no step indicator.
-    enum Mode {
+    // String-backed so the resume marker can round-trip the mode across the TCC
+    // Quit & Reopen relaunch.
+    enum Mode: String {
         case fullFlow
         case permissionsOnly
     }
@@ -462,19 +464,25 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
     // whole app, killing this window mid-wizard. The marker is written while the
     // window is open and cleared only on a USER close (Done, traffic light) — so
     // after any process death with the wizard up (TCC relaunch, SIGKILL), the next
-    // launch sees the marker and brings the window straight back. A separate
-    // helper process cannot solve this instead: TCC preflight/request only mean
-    // anything in the process that taps the keyboard, and that process must die
-    // for the grant to apply anyway.
+    // launch sees the marker and brings the window straight back. Its content is
+    // the wizard MODE, so an interrupted full onboarding resumes as the full
+    // 3-step flow, not as the bare permissions window. A separate helper process
+    // cannot solve this instead: TCC preflight/request only mean anything in the
+    // process that taps the keyboard, and that process must die for the grant to
+    // apply anyway.
     private static let resumeMarkerURL = SharedAppStorage.fileURL("onboarding-resume")
 
-    static var hasResumeMarker: Bool {
-        FileManager.default.fileExists(atPath: resumeMarkerURL.path)
+    // nil when no marker; the interrupted session's mode otherwise. An
+    // unreadable/legacy-empty marker counts as fullFlow — over-showing the
+    // wizard is the safe failure direction.
+    static var resumeMarkerMode: OnboardingFlowModel.Mode? {
+        guard let raw = try? String(contentsOf: resumeMarkerURL, encoding: .utf8) else { return nil }
+        return OnboardingFlowModel.Mode(rawValue: raw) ?? .fullFlow
     }
 
-    private static func writeResumeMarker() {
+    private static func writeResumeMarker(mode: OnboardingFlowModel.Mode) {
         try? SharedAppStorage.ensureDirectoryExists()
-        try? Data().write(to: resumeMarkerURL)
+        try? mode.rawValue.write(to: resumeMarkerURL, atomically: true, encoding: .utf8)
     }
 
     private static func clearResumeMarker() {
@@ -492,7 +500,7 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
         flowModel.onDismiss = { [weak self] in self?.window?.close() }
         flowModel.refresh()
         startLivePermissionRefresh()
-        Self.writeResumeMarker()
+        Self.writeResumeMarker(mode: flowModel.mode)
 
         let hosting = NSHostingController(rootView: OnboardingRootView(model: flowModel))
         if let window {
