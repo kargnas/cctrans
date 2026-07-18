@@ -41,8 +41,18 @@ enum OpenRouterKeyStore {
     /// Writes (or, with a nil value, removes) the key. Replaces an existing
     /// `OPENROUTER_API_KEY=` line in place and leaves every other line untouched.
     static func write(_ value: String?) throws {
-        if let value, !OnboardingCredentialValue.isSafe(value) {
-            throw KeyStoreError.invalidValue
+        let normalizedValue: String?
+        if let value {
+            guard OnboardingCredentialValue.isSafe(value) else {
+                throw KeyStoreError.invalidValue
+            }
+            let trimmed = value.trimmingCharacters(in: .whitespaces)
+            guard !trimmed.isEmpty else {
+                throw KeyStoreError.invalidValue
+            }
+            normalizedValue = trimmed
+        } else {
+            normalizedValue = nil
         }
         let url = try credentialFileURL()
 
@@ -68,25 +78,19 @@ enum OpenRouterKeyStore {
                 result.append(line)
                 continue
             }
-            if let value {
+            if let value = normalizedValue {
                 result.append("\(keyName)=\(value)")
                 replaced = true
             } else {
                 replaced = true
             }
         }
-        if let value, !replaced {
+        if let value = normalizedValue, !replaced {
             result.append("\(keyName)=\(value)")
         }
 
-        let directory = url.deletingLastPathComponent()
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         // Trailing newline only when there is content, matching Rust's format!("{}\n", …).
         let data = result.isEmpty ? "" : result.joined(separator: "\n") + "\n"
-        try data.write(to: url, atomically: true, encoding: .utf8)
-        try FileManager.default.setAttributes(
-            [.posixPermissions: 0o600],
-            ofItemAtPath: url.path
-        )
+        try OwnerOnlyAtomicFileWriter.write(Data(data.utf8), to: url)
     }
 }
