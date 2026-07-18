@@ -75,6 +75,8 @@ final class OnboardingFlowModel: ObservableObject {
     @Published private(set) var translationDownload: TranslationDownloadModel?
     // Flips true when a real translation lands while the wizard is open (step 3).
     @Published private(set) var hasTranslated = false
+    private var tryItGate = OnboardingTryItGate()
+    private var isActive = true
 
     let mode: Mode
     let settingsStore: SettingsStore
@@ -109,12 +111,12 @@ final class OnboardingFlowModel: ObservableObject {
         // Apple Translation is the onboarding default without changing the
         // global direct-build default. A resumed session uses the provider that
         // was committed when the user advanced from the model screen.
-        let startsFreshIncompleteModel = mode == .fullFlow
-            && !settingsStore.settings.hasCompletedOnboarding
-            && initialStep == .model
-        selectedProvider = startsFreshIncompleteModel
-            ? .appleTranslation
-            : settingsStore.settings.provider
+        selectedProvider = OnboardingProviderPolicy.initialProvider(
+            current: settingsStore.settings.provider,
+            startsAtModel: mode == .fullFlow && initialStep == .model,
+            hasCompletedOnboarding: settingsStore.settings.hasCompletedOnboarding,
+            hadPersistedSettingsAtLaunch: settingsStore.hadPersistedSettingsAtLaunch
+        )
 
         if selectedProvider == .appleTranslation {
             translationDownload = Self.makeTranslationDownloadModel(settings: settingsStore.settings)
@@ -122,7 +124,24 @@ final class OnboardingFlowModel: ObservableObject {
         refresh()
     }
 
-    var allGranted: Bool { permissions.allSatisfy { $0.granted } }
+    var allGranted: Bool {
+        let screenRecording = permissions.first(where: { $0.id == "screen" })?.granted ?? false
+        #if MAS_BUILD
+        return OnboardingPermissionReadiness.isReady(
+            screenRecording: screenRecording,
+            inputMonitoring: false,
+            accessibility: false,
+            requiresKeyboardPermission: false
+        )
+        #else
+        return OnboardingPermissionReadiness.isReady(
+            screenRecording: screenRecording,
+            inputMonitoring: permissions.first(where: { $0.id == "input" })?.granted ?? false,
+            accessibility: permissions.first(where: { $0.id == "ax" })?.granted ?? false,
+            requiresKeyboardPermission: true
+        )
+        #endif
+    }
 
     // Re-read the live TCC state. Input Monitoring's preflight result is cached per
     // process, so a grant only flips to true after macOS auto-relaunches the app
@@ -142,10 +161,14 @@ final class OnboardingFlowModel: ObservableObject {
         rows.append(Permission(
             id: "ax",
             symbol: "accessibility",
-            title: "Accessibility",
-            detail: attemptedRequests.contains("ax")
-                ? "If no macOS prompt appeared, enable CCTrans in Accessibility settings."
-                : "Reads the text selection and unlocks keyboard detection — grant this one first.",
+            title: CGPreflightListenEventAccess() && !AXIsProcessTrusted()
+                ? "Accessibility (Optional)"
+                : "Accessibility",
+            detail: CGPreflightListenEventAccess() && !AXIsProcessTrusted()
+                ? "Input Monitoring already enables the shortcut; Accessibility can improve selection-aware behavior."
+                : attemptedRequests.contains("ax")
+                    ? "If no macOS prompt appeared, enable CCTrans in Accessibility settings."
+                    : "Reads the text selection and unlocks keyboard detection.",
             granted: AXIsProcessTrusted(),
             request: { [weak self] in self?.requestAccessibilityAccess() },
             fallback: { Self.openPrivacySettings("Privacy_Accessibility") }
@@ -244,12 +267,30 @@ final class OnboardingFlowModel: ObservableObject {
         return persistCheckpoint(.tryIt, movingTo: .tryIt)
     }
 
-    // Called by AppDelegate when a real translation result is shown. Only a
-    // translation that lands while Try It is current can finish onboarding.
-    func noteTranslationSucceeded() {
-        guard mode == .fullFlow, step == .tryIt, !hasTranslated else { return }
+    func noteTranslationStarted(requestID: Int, isEligible: Bool) {
+        tryItGate.noteRequestStarted(
+            id: requestID,
+            isEligible: isActive && mode == .fullFlow && step == .tryIt && isEligible
+        )
+    }
+
+    // Called by AppDelegate with the request sequence that produced the result.
+    // Only a text request started during this active Try It session can finish.
+    func noteTranslationSucceeded(requestID: Int) {
+        guard isActive,
+              mode == .fullFlow,
+              step == .tryIt,
+              !hasTranslated,
+              tryItGate.acceptSuccess(id: requestID) else { return }
         hasTranslated = true
-        _ = completeAfterSuccessfulTranslation()
+        if completeAfterSuccessfulTranslation() {
+            onDismiss()
+        }
+    }
+
+    func deactivate() {
+        isActive = false
+        tryItGate.deactivate()
     }
 
     @discardableResult
@@ -270,9 +311,15 @@ final class OnboardingFlowModel: ObservableObject {
             settings.hasCompletedOnboarding = true
             settingsStore.settings = settings
         }
-        // A failed cleanup is safe: the completed marker is idempotent and the
-        // next launch clears it after repairing the completion flag.
-        try? progressStore.clear()
+        let sharedSettingsWriteSucceeded = settingsStore.persistCurrentSettings()
+        if OnboardingCompletionMarkerPolicy.shouldClearMarker(
+            hasCompletedOnboarding: settingsStore.settings.hasCompletedOnboarding,
+            sharedSettingsWriteSucceeded: sharedSettingsWriteSucceeded
+        ) {
+            // A failed cleanup is safe: the completed marker is idempotent and the
+            // next launch clears it after confirming the shared settings write.
+            try? progressStore.clear()
+        }
         progressError = nil
         return true
     }
@@ -591,6 +638,8 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
 
     func windowWillClose(_ notification: Notification) {
         stopLivePermissionRefresh()
+        flowModel?.deactivate()
+        flowModel = nil
         // Closing never advances or completes onboarding. The last successful
         // forward checkpoint remains on disk, including across TCC termination.
     }

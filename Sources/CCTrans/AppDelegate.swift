@@ -471,7 +471,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func handlePermissionRequest(_ request: PermissionRequest) -> PermissionResponse {
         switch request.action {
         case "show":
-            showOnboardingWindow()
+            showPermissionHelper()
             return PermissionResponse(
                 title: "Permissions",
                 message: "Opened the CCTrans permissions window.",
@@ -849,6 +849,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             do {
                 let imageInfo = Self.imageInfo(for: data)
                 showTranslationLoading(originalText: "[selected screenshot]", sourceTitle: "Screenshot")
+                let requestSeq = translationRequestSequence
+                onboardingController?.flowModel?.noteTranslationStarted(
+                    requestID: requestSeq,
+                    isEligible: false
+                )
                 let result = try await translationService.translateImage(
                     pngData: data,
                     settings: settingsStore.settings,
@@ -857,7 +862,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 guard !Task.isCancelled else {
                     return
                 }
-                show(result: result, title: "Screenshot", inputText: "[selected screenshot]", imageInfo: imageInfo)
+                show(
+                    result: result,
+                    title: "Screenshot",
+                    inputText: "[selected screenshot]",
+                    imageInfo: imageInfo,
+                    requestSeq: requestSeq
+                )
             } catch is CancellationError {
                 return
             } catch {
@@ -891,6 +902,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         showTranslationLoading(originalText: text, sourceTitle: sourceTitle, settings: settings)
         lastPartialTranslatedLength = 0
         let requestSeq = translationRequestSequence
+        onboardingController?.flowModel?.noteTranslationStarted(
+            requestID: requestSeq,
+            isEligible: true
+        )
         let task = Task { [weak self] in
             if usesLocalBackend && previousUsesLocalBackend {
                 await previousTask?.value
@@ -932,7 +947,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     lastReadyLocalModelID = warmupModel.id
                     localModelWarmupNotifier.completed(modelTitle: warmupModel.title)
                 }
-                show(result: result, title: sourceTitle, inputText: text, imageInfo: imageInfo, settings: settings)
+                show(
+                    result: result,
+                    title: sourceTitle,
+                    inputText: text,
+                    imageInfo: imageInfo,
+                    requestSeq: requestSeq,
+                    settings: settings
+                )
             } catch is CancellationError {
                 return
             } catch {
@@ -965,10 +987,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         title: String,
         inputText: String,
         imageInfo: String?,
+        requestSeq: Int,
         settings: TranslatorSettings? = nil
     ) {
         requestLogStore.add(source: title, input: inputText, result: result, imageInfo: imageInfo)
-        showTranslationResult(result, inputText: inputText, settings: settings ?? settingsStore.settings)
+        showTranslationResult(
+            result,
+            inputText: inputText,
+            requestSeq: requestSeq,
+            settings: settings ?? settingsStore.settings
+        )
     }
 
     @MainActor
@@ -1177,11 +1205,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func showTranslationResult(
         _ result: TranslationResult,
         inputText: String,
+        requestSeq: Int,
         settings: TranslatorSettings? = nil
     ) {
-        // A real translation while the onboarding wizard is open completes its Try It
-        // step; nil-safe, so it is a no-op when the window is closed.
-        onboardingController?.flowModel?.noteTranslationSucceeded()
+        onboardingController?.flowModel?.noteTranslationSucceeded(requestID: requestSeq)
         let settings = settings ?? settingsStore.settings
         let languages = resolvedLanguages(for: inputText, settings: settings)
         showTranslationPopover(TranslationPreviewPayload(
@@ -1616,14 +1643,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func showOnboardingWindow() {
-        // Explicit Getting Started re-entry begins at model and does not reuse an
-        // old checkpoint from an earlier completed session.
-        presentOnboarding(mode: .fullFlow, resumeProgress: false)
+        // Explicit Getting Started is a durable restart, not only a one-window
+        // override. If the user closes and relaunches, model remains the checkpoint.
+        var progressError: String?
+        do {
+            try onboardingProgressStore.save(.model)
+        } catch {
+            progressError = "Couldn’t restart onboarding progress. \(error.localizedDescription)"
+        }
+        presentOnboarding(
+            mode: .fullFlow,
+            resumeProgress: false,
+            initialProgressError: progressError
+        )
     }
 
     private func presentOnboarding(
         mode: OnboardingFlowModel.Mode,
-        resumeProgress: Bool
+        resumeProgress: Bool,
+        initialProgressError: String? = nil
     ) {
         // A fresh flow model each time so it reflects the current provider/target
         // language. The Apple language-pack download model is now built at
@@ -1635,6 +1673,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             resumeProgress: resumeProgress,
             onPermissionStatusChanged: { [weak self] in self?.writePermissionStatusCache() }
         )
+        flowModel.progressError = initialProgressError
         let controller = onboardingController ?? OnboardingWindowController()
         onboardingController = controller
         controller.show(flowModel: flowModel)
@@ -1661,7 +1700,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             settings.hasCompletedOnboarding = true
             settingsStore.settings = settings
         }
-        try? onboardingProgressStore.clear()
+        let sharedSettingsWriteSucceeded = settingsStore.persistCurrentSettings()
+        if OnboardingCompletionMarkerPolicy.shouldClearMarker(
+            hasCompletedOnboarding: settingsStore.settings.hasCompletedOnboarding,
+            sharedSettingsWriteSucceeded: sharedSettingsWriteSucceeded
+        ) {
+            try? onboardingProgressStore.clear()
+        }
     }
 
     // Show whichever window is useful right now, shared by launch and Dock/Finder
@@ -1683,9 +1728,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Input Monitoring is no longer requested on MAS (App Review 2.4.5): double-⌘C
         // runs through pasteboard polling with no permission. Only Screen Recording (for
         // screenshot translation) remains a grantable permission worth surfacing.
-        return !CGPreflightScreenCaptureAccess()
+        return !OnboardingPermissionReadiness.isReady(
+            screenRecording: CGPreflightScreenCaptureAccess(),
+            inputMonitoring: false,
+            accessibility: false,
+            requiresKeyboardPermission: false
+        )
         #else
-        return !CGPreflightListenEventAccess() || !AXIsProcessTrusted() || !CGPreflightScreenCaptureAccess()
+        return !OnboardingPermissionReadiness.isReady(
+            screenRecording: CGPreflightScreenCaptureAccess(),
+            inputMonitoring: CGPreflightListenEventAccess(),
+            accessibility: AXIsProcessTrusted(),
+            requiresKeyboardPermission: true
+        )
         #endif
     }
 
