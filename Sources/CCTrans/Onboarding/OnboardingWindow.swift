@@ -99,14 +99,23 @@ final class OnboardingFlowModel: ObservableObject {
         // Guideline 2.4.5 forbids requesting it to drive a hotkey, so the MAS build omits
         // this card and detects the double ⌘C through PasteboardMonitor (clipboard-
         // changeCount polling), which needs no permission at all.
+        // macOS treats Accessibility as a superset of Input Monitoring: with AX
+        // granted, CGPreflightListenEventAccess() reads true and a listen-only
+        // CGEventTap works even though CCTrans has no row in the Input
+        // Monitoring pane (verified against TCC.db). The pill is functionally
+        // correct then, but say WHY, or the missing list entry looks like a bug.
+        let inputGranted = CGPreflightListenEventAccess()
+        let inputViaAccessibility = inputGranted && AXIsProcessTrusted()
         rows.append(Permission(
             id: "input",
             symbol: "keyboard",
             title: "Input Monitoring",
-            detail: attemptedRequests.contains("input")
-                ? "Enable CCTrans in Input Monitoring settings; macOS relaunches the app after granting."
-                : "Detects the double ⌘C that triggers a translation.",
-            granted: CGPreflightListenEventAccess(),
+            detail: inputViaAccessibility
+                ? "Covered by the Accessibility permission — CCTrans may not appear in the Input Monitoring list."
+                : attemptedRequests.contains("input")
+                    ? "Enable CCTrans in Input Monitoring settings; macOS relaunches the app after granting."
+                    : "Detects the double ⌘C that triggers a translation.",
+            granted: inputGranted,
             request: { [weak self] in self?.requestInputMonitoringAccess() },
             fallback: { Self.openPrivacySettings("Privacy_ListenEvent") }
         ))
