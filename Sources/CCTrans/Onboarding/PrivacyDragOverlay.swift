@@ -195,9 +195,9 @@ private struct PrivacyDragOverlayView: View {
                             .allowsHitTesting(false)
                     }
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Drag into the list above")
+                    Text("← Drag this icon into the list above")
                         .font(.callout).bold()
-                    Text("Drop the CCTrans icon into the Privacy list, then turn it on.")
+                    Text("Drop it into the app list, then turn the switch on.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)

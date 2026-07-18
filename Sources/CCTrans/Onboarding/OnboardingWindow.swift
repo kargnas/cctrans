@@ -309,7 +309,10 @@ final class OnboardingFlowModel: ObservableObject {
         // Input/AX panes are only ever opened on direct builds (their permission
         // cards are compiled out on MAS, where these APIs must not link).
         case "Privacy_ListenEvent":
-            return { CGPreflightListenEventAccess() }
+            // AX satisfies keyboard listening too, and CGPreflight's per-process
+            // cache can stay false right after a grant — without the OR the chip
+            // would outlive a grant that already works.
+            return { CGPreflightListenEventAccess() || AXIsProcessTrusted() }
         case "Privacy_Accessibility":
             return { AXIsProcessTrusted() }
         #endif
