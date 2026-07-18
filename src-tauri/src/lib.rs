@@ -2524,6 +2524,53 @@ fn replace_file_contents(path: &Path, data: &str) -> Result<(), String> {
         .map_err(|error| format!("Could not replace {}: {error}", path.display()))
 }
 
+fn validate_env_value(value: &str) -> bool {
+    !value.contains(['\n', '\r', '\0'])
+}
+
+fn replace_private_file_contents(path: &Path, data: &str) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+
+        let file_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| format!("Could not resolve file name for {}", path.display()))?;
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let temp_path =
+            path.with_file_name(format!(".{file_name}.tmp-{}-{nonce}", std::process::id()));
+        let result = (|| {
+            let mut file = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&temp_path)
+                .map_err(|error| format!("Could not create {}: {error}", temp_path.display()))?;
+            file.write_all(data.as_bytes())
+                .map_err(|error| format!("Could not write {}: {error}", temp_path.display()))?;
+            file.sync_all()
+                .map_err(|error| format!("Could not sync {}: {error}", temp_path.display()))?;
+            drop(file);
+            fs::rename(&temp_path, path)
+                .map_err(|error| format!("Could not replace {}: {error}", path.display()))
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&temp_path);
+        }
+        return result;
+    }
+
+    #[cfg(not(unix))]
+    {
+        replace_file_contents(path, data)
+    }
+}
+
 impl StoredSettings {
     fn from_effective(settings: &Settings, defaults: &Settings, keep_provider: bool) -> Self {
         Self {
@@ -4013,6 +4060,13 @@ fn read_env_key(path: &Path, key: &str) -> Result<Option<String>, String> {
 }
 
 fn write_env_key(key: &str, value: Option<&str>) -> Result<(), String> {
+    let value = match value {
+        Some(raw) if validate_env_value(raw) && !raw.trim().is_empty() => Some(raw.trim()),
+        Some(_) => {
+            return Err("Credential values must be non-empty single-line strings.".to_string())
+        }
+        None => None,
+    };
     let path = credential_env_path()?;
     let mut lines = if path.exists() {
         fs::read_to_string(&path)
@@ -4061,7 +4115,7 @@ fn write_env_key(key: &str, value: Option<&str>) -> Result<(), String> {
     } else {
         format!("{}\n", lines.join("\n"))
     };
-    fs::write(&path, data).map_err(|error| format!("Could not write {}: {error}", path.display()))
+    replace_private_file_contents(&path, &data)
 }
 
 fn permission_status(app: &AppHandle) -> PermissionStatus {
@@ -4281,6 +4335,38 @@ mod tests {
         // The temp file must not survive the swap.
         assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
 
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn credential_value_rejects_environment_line_injection() {
+        assert!(validate_env_value("sk-or-v1_example"));
+        assert!(!validate_env_value("secret\nHF_TOKEN=injected"));
+        assert!(!validate_env_value("secret\rHF_TOKEN=injected"));
+        assert!(!validate_env_value("secret\0suffix"));
+    }
+
+    #[test]
+    fn private_file_replace_uses_owner_only_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!(
+            "cctrans-private-replace-test-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("credentials.env");
+
+        replace_private_file_contents(&path, "OPENROUTER_API_KEY=secret\n").unwrap();
+
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "OPENROUTER_API_KEY=secret\n"
+        );
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
         fs::remove_dir_all(&dir).unwrap();
     }
 
