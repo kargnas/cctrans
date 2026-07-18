@@ -1,3 +1,4 @@
+import CCTransCore
 import Foundation
 
 /// Persists the OpenRouter API key entered during onboarding to the same
@@ -12,9 +13,11 @@ enum OpenRouterKeyStore {
 
     enum KeyStoreError: LocalizedError {
         case homeNotSet
+        case invalidValue
         var errorDescription: String? {
             switch self {
             case .homeNotSet: "Could not locate your home directory."
+            case .invalidValue: "The API key must be a single line."
             }
         }
     }
@@ -38,6 +41,9 @@ enum OpenRouterKeyStore {
     /// Writes (or, with a nil value, removes) the key. Replaces an existing
     /// `OPENROUTER_API_KEY=` line in place and leaves every other line untouched.
     static func write(_ value: String?) throws {
+        if let value, !OnboardingCredentialValue.isSafe(value) {
+            throw KeyStoreError.invalidValue
+        }
         let url = try credentialFileURL()
 
         var lines: [String] = []
@@ -78,5 +84,9 @@ enum OpenRouterKeyStore {
         // Trailing newline only when there is content, matching Rust's format!("{}\n", …).
         let data = result.isEmpty ? "" : result.joined(separator: "\n") + "\n"
         try data.write(to: url, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: url.path
+        )
     }
 }
