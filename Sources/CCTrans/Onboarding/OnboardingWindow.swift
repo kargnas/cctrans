@@ -91,12 +91,13 @@ final class OnboardingFlowModel: ObservableObject {
             translationDownload = Self.makeTranslationDownloadModel(settings: settingsStore.settings)
         }
         refresh()
-        // permissionsOnly renders just the permissions step. The full flow starts
-        // at model — unless a permission is already granted, which means the user
-        // reached the permissions step before (typically the TCC Quit & Reopen
-        // relaunch right after their first grant): resume there instead of
-        // replaying model/try-it. Back still reaches the earlier steps.
-        if mode == .permissionsOnly || permissions.contains(where: { $0.granted }) {
+        // permissionsOnly renders just the permissions step; the full flow always
+        // starts at model. (A "resume at permissions when any grant exists"
+        // shortcut was tried and removed: TCC grants outlive the app AND its
+        // settings, so a re-onboarding after reinstall skipped straight past the
+        // model step. After a TCC Quit & Reopen the user just clicks through the
+        // already-persisted steps instead.)
+        if mode == .permissionsOnly {
             step = .permissions
         }
     }
