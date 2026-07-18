@@ -1492,7 +1492,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private var isRunningInAppSandbox: Bool {
-        ProcessInfo.processInfo.environment["APP_SANDBOX_CONTAINER_ID"] != nil
+        SharedAppStorage.isAppSandboxed
     }
 
     #if MAS_BUILD

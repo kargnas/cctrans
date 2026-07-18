@@ -58,16 +58,10 @@ final class KeyboardMonitor {
             return
         }
 
-        #if !MAS_BUILD
-        // Direct-distribution fallback: users who granted Accessibility but not
-        // Input Monitoring keep the historical NSEvent-monitor behavior.
+        // Fallback for users who granted Accessibility but not Input
+        // Monitoring: keep the historical NSEvent-monitor behavior. (This
+        // whole class is compiled out of the MAS build — see the header.)
         startNSEventMonitors()
-        #else
-        // Sandboxed build without Input Monitoring: PasteboardMonitor still
-        // detects the same text being copied twice, so the feature degrades
-        // instead of dying. The permission helper points users at the setting.
-        print("Input Monitoring not granted; falling back to pasteboard-based copy detection.")
-        #endif
     }
 
     func stop() {

@@ -101,7 +101,7 @@ final class GitHubStarPrompter {
     }
 
     private nonisolated static func isAppSandboxed() -> Bool {
-        ProcessInfo.processInfo.environment["APP_SANDBOX_CONTAINER_ID"] != nil
+        SharedAppStorage.isAppSandboxed
     }
 
     // MARK: - gh plumbing (blocking; call off the main actor)

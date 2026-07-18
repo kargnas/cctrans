@@ -6,6 +6,13 @@ enum SharedAppStorage {
         Bundle.main.bundleIdentifier ?? productAppIdentifier
     }
 
+    // True when this process runs inside an App Sandbox container. Behavior
+    // gates on the actual sandbox rather than the MAS_BUILD compile flag, so
+    // MAS-compiled dev binaries launched bare keep direct-style behavior.
+    static var isAppSandboxed: Bool {
+        ProcessInfo.processInfo.environment["APP_SANDBOX_CONTAINER_ID"] != nil
+    }
+
     #if MAS_BUILD
     // Under App Sandbox the menu-bar app and the NSWorkspace-launched Tauri
     // helper live in different containers (different bundle ids), so plain
@@ -48,8 +55,7 @@ enum SharedAppStorage {
 
     #if MAS_BUILD
     private static var isProductionSandboxedMAS: Bool {
-        appIdentifier == productAppIdentifier
-            && ProcessInfo.processInfo.environment["APP_SANDBOX_CONTAINER_ID"] != nil
+        appIdentifier == productAppIdentifier && isAppSandboxed
     }
     #endif
 }

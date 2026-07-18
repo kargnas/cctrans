@@ -1110,7 +1110,7 @@ fn perform_settings_action(
             open_surface_action(&app, AppSurface::LocalModelSetup, "Model Setup")
         }
         "openPermissionHelper" => {
-            if app_variant() == "mas" {
+            if is_mas_variant() {
                 request_host_permission(&app, "show")
             } else {
                 open_surface_action(&app, AppSurface::PermissionHelper, "Permission Helper")
@@ -2600,8 +2600,8 @@ fn state_from_disk(app: &AppHandle) -> Result<SettingsState, String> {
 // Distribution variant of the host app. The Swift shell launches this helper
 // with `--app-variant mas` in Mac App Store bundles; everything else is the
 // direct (DMG/brew/dev) build.
-fn app_variant() -> &'static str {
-    settings_runtime().app_variant_name()
+fn is_mas_variant() -> bool {
+    settings_runtime().variant == AppVariant::MacAppStore
 }
 
 fn settings_runtime() -> SettingsRuntime {
@@ -4318,7 +4318,7 @@ fn permission_status_local() -> PermissionStatus {
     // sandboxed variant. The caret-anchor feature was removed and the selection is read
     // through the sandbox, so accessibility is N/A; Cmd+C uses pasteboard polling, so the
     // keyboard capability is always satisfied. Only Screen Recording reflects live TCC state.
-    if app_variant() == "mas" {
+    if is_mas_variant() {
         return PermissionStatus {
             keyboard: true,
             accessibility: false,
