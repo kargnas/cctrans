@@ -73,8 +73,11 @@ mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 cp ".build-mas/release/$APP_NAME" "$MACOS_DIR/$APP_NAME"
 ditto "$TAURI_HELPER_SOURCE" "$TAURI_HELPER_DEST"
 /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $HELPER_BUNDLE_ID" "$TAURI_HELPER_DEST/Contents/Info.plist"
-/usr/libexec/PlistBuddy -c "Set :CFBundleName CCTransTauri" "$TAURI_HELPER_DEST/Contents/Info.plist"
-/usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName CCTransTauri" "$TAURI_HELPER_DEST/Contents/Info.plist"
+# User-visible name matches the outer app (matches build-app.zsh): CFBundleName
+# shows in the menu bar / Mission Control while the helper's Settings window is
+# frontmost. The bundle FOLDER keeps the CCTransTauri.app name (paths reference it).
+/usr/libexec/PlistBuddy -c "Set :CFBundleName $APP_DISPLAY_NAME" "$TAURI_HELPER_DEST/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName $APP_DISPLAY_NAME" "$TAURI_HELPER_DEST/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Delete :LSUIElement" "$TAURI_HELPER_DEST/Contents/Info.plist" >/dev/null 2>&1 || true
 /usr/libexec/PlistBuddy -c "Add :LSUIElement bool true" "$TAURI_HELPER_DEST/Contents/Info.plist"
 cp "$ROOT/assets/icon/AppIcon.icns" "$RESOURCES_DIR/AppIcon.icns"

@@ -17,87 +17,6 @@ use tauri::{
 };
 
 #[cfg(target_os = "macos")]
-mod macos_drag {
-    use objc2::rc::Retained;
-    use objc2::runtime::{NSObject, NSObjectProtocol, ProtocolObject};
-    use objc2::{define_class, msg_send, AnyThread, MainThreadMarker, MainThreadOnly};
-    use objc2_app_kit::{
-        NSApplication, NSDragOperation, NSDraggingContext, NSDraggingItem, NSDraggingSource,
-        NSPasteboardWriting, NSWindow, NSWorkspace,
-    };
-    use objc2_foundation::{NSArray, NSPoint, NSRect, NSSize, NSString, NSURL};
-    use std::ffi::c_void;
-    use std::path::Path;
-
-    define_class!(
-        #[unsafe(super(NSObject))]
-        #[derive(Debug, PartialEq, Eq, Hash)]
-        #[name = "CCTransPermissionDragSource"]
-        #[thread_kind = MainThreadOnly]
-        struct PermissionDragSource;
-
-        unsafe impl NSObjectProtocol for PermissionDragSource {}
-
-        unsafe impl NSDraggingSource for PermissionDragSource {
-            #[unsafe(method(draggingSession:sourceOperationMaskForDraggingContext:))]
-            fn source_operation_mask(
-                &self,
-                _session: &objc2_app_kit::NSDraggingSession,
-                _context: NSDraggingContext,
-            ) -> NSDragOperation {
-                NSDragOperation::Copy
-            }
-        }
-    );
-
-    impl PermissionDragSource {
-        fn new(mtm: MainThreadMarker) -> Retained<Self> {
-            unsafe { msg_send![Self::alloc(mtm), init] }
-        }
-    }
-
-    pub fn start_app_drag(bundle_path: &Path, ns_window: *mut c_void) -> Result<(), String> {
-        let mtm = MainThreadMarker::new().ok_or("Native drag must start on the main thread.")?;
-        let bundle_path = bundle_path
-            .to_str()
-            .ok_or("The app bundle path is not valid UTF-8.")?;
-        let window = unsafe { (ns_window as *mut NSWindow).as_ref() }
-            .ok_or("Permission Helper window is not available.")?;
-        let event = NSApplication::sharedApplication(mtm)
-            .currentEvent()
-            .ok_or("Start dragging from the app card first.")?;
-
-        let path = NSString::from_str(bundle_path);
-        let file_url = NSURL::fileURLWithPath(&path);
-        let writer: &ProtocolObject<dyn NSPasteboardWriting> = ProtocolObject::from_ref(&*file_url);
-        let item = NSDraggingItem::initWithPasteboardWriter(NSDraggingItem::alloc(), writer);
-
-        let origin = event.locationInWindow();
-        let frame = NSRect::new(
-            NSPoint::new(origin.x - 24.0, origin.y - 24.0),
-            NSSize::new(48.0, 48.0),
-        );
-        let icon = NSWorkspace::sharedWorkspace().iconForFile(&path);
-        let icon_object: &objc2::runtime::AnyObject = icon.as_ref();
-        unsafe {
-            item.setDraggingFrame_contents(frame, Some(icon_object));
-        }
-
-        let items = NSArray::from_slice(&[&*item]);
-        let source = PermissionDragSource::new(mtm);
-        let source: &ProtocolObject<dyn NSDraggingSource> = ProtocolObject::from_ref(&*source);
-
-        if let Some(view) = window.contentView() {
-            view.beginDraggingSessionWithItems_event_source(&items, &event, source);
-        } else {
-            window.beginDraggingSessionWithItems_event_source(&items, &event, source);
-        }
-
-        Ok(())
-    }
-}
-
-#[cfg(target_os = "macos")]
 mod macos_toast {
     use block2::RcBlock;
     use objc2_app_kit::{NSEvent, NSEventMask, NSEventType, NSWindow};
@@ -286,6 +205,8 @@ struct Settings {
     target_language: String,
     #[serde(rename = "hasCompletedLocalModelSelection")]
     has_completed_local_model_selection: bool,
+    #[serde(rename = "hasCompletedOnboarding")]
+    has_completed_onboarding: bool,
     #[serde(rename = "toastPosition")]
     toast_position: ToastPosition,
     #[serde(rename = "toastCustomPosition")]
@@ -410,6 +331,8 @@ struct StoredSettings {
     target_language: Option<String>,
     #[serde(rename = "hasCompletedLocalModelSelection")]
     has_completed_local_model_selection: Option<bool>,
+    #[serde(rename = "hasCompletedOnboarding")]
+    has_completed_onboarding: Option<bool>,
     #[serde(rename = "toastPosition")]
     toast_position: Option<ToastPosition>,
     #[serde(rename = "toastCustomPosition")]
@@ -462,9 +385,13 @@ impl SettingsRuntime {
 
     fn default_settings(self) -> Settings {
         let mut settings = default_settings();
-        if self.variant == AppVariant::MacAppStore {
-            settings.provider = TranslationProvider::AppleTranslation;
-        }
+        // Every variant declares its effective default provider explicitly; the
+        // base default (KargnasManaged) is only the fail-safe for code paths
+        // that never went through a variant.
+        settings.provider = match self.variant {
+            AppVariant::Direct => TranslationProvider::LocalHyMT2,
+            AppVariant::MacAppStore => TranslationProvider::AppleTranslation,
+        };
         settings
     }
 
@@ -547,6 +474,9 @@ impl SettingsRuntime {
         }
         if let Some(value) = stored.has_completed_local_model_selection {
             settings.has_completed_local_model_selection = value;
+        }
+        if let Some(value) = stored.has_completed_onboarding {
+            settings.has_completed_onboarding = value;
         }
         if let Some(value) = stored.toast_position {
             settings.toast_position = value;
@@ -806,16 +736,6 @@ struct ActionResult {
     title: String,
     message: String,
     ok: bool,
-}
-
-#[derive(Clone, Debug, Serialize)]
-struct PermissionAppTarget {
-    #[serde(rename = "bundleName")]
-    bundle_name: String,
-    #[serde(rename = "bundlePath")]
-    bundle_path: String,
-    #[serde(rename = "bundleFileURL")]
-    bundle_file_url: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -1109,74 +1029,13 @@ fn perform_settings_action(
         "showLocalModelSetup" => {
             open_surface_action(&app, AppSurface::LocalModelSetup, "Model Setup")
         }
-        "openPermissionHelper" => {
-            if is_mas_variant() {
-                request_host_permission(&app, "show")
-            } else {
-                open_surface_action(&app, AppSurface::PermissionHelper, "Permission Helper")
-            }
-        }
-        "openInputMonitoring" => open_privacy_url(
-            "Input Monitoring",
-            "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent",
-        ),
-        "openAccessibility" => open_privacy_url(
-            "Accessibility",
-            "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
-        ),
-        "openScreenRecording" => open_privacy_url(
-            "Screen Recording",
-            "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
-        ),
+        // The permissions window is native in the Swift host on every variant
+        // now (the Tauri permission-helper surface is gone): TCC preflight and
+        // requests only mean anything in the process that taps the keyboard and
+        // captures the screen, and that is the host, not this helper.
+        "openPermissionHelper" => request_host_permission(&app, "show"),
         "requestScreenRecording" => request_host_permission(&app, "screen"),
-        "revealPermissionApp" => reveal_permission_app_impl(&app),
         _ => Err(format!("Unknown settings action: {action}")),
-    }
-}
-
-#[tauri::command]
-fn permission_app_target(app: AppHandle) -> Result<PermissionAppTarget, String> {
-    let bundle_path = resolve_permission_app_bundle(&app)?;
-    Ok(PermissionAppTarget {
-        bundle_name: bundle_path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("CCTrans.app")
-            .to_string(),
-        bundle_file_url: file_url_for_path(&bundle_path),
-        bundle_path: bundle_path.display().to_string(),
-    })
-}
-
-#[tauri::command]
-fn reveal_permission_app(app: AppHandle) -> Result<ActionResult, String> {
-    reveal_permission_app_impl(&app)
-}
-
-#[tauri::command]
-fn start_permission_app_drag(
-    app: AppHandle,
-    window: tauri::WebviewWindow,
-) -> Result<ActionResult, String> {
-    #[cfg(target_os = "macos")]
-    {
-        let bundle_path = resolve_permission_app_bundle(&app)?;
-        let ns_window = window
-            .ns_window()
-            .map_err(|error| format!("Permission Helper window is not available: {error}"))?;
-        macos_drag::start_app_drag(&bundle_path, ns_window)?;
-        return Ok(ActionResult {
-            title: "Drag started".to_string(),
-            message: "Drop CCTrans.app into the open macOS Privacy list.".to_string(),
-            ok: true,
-        });
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = app;
-        let _ = window;
-        Err("Native privacy drag is only supported on macOS.".to_string())
     }
 }
 
@@ -1817,9 +1676,6 @@ pub fn run() {
             save_openrouter_api_key,
             clear_openrouter_api_key,
             perform_settings_action,
-            permission_app_target,
-            reveal_permission_app,
-            start_permission_app_drag,
             open_app_surface,
             complete_local_model_setup,
             prepare_custom_local_models,
@@ -2668,6 +2524,53 @@ fn replace_file_contents(path: &Path, data: &str) -> Result<(), String> {
         .map_err(|error| format!("Could not replace {}: {error}", path.display()))
 }
 
+fn validate_env_value(value: &str) -> bool {
+    !value.contains(['\n', '\r', '\0'])
+}
+
+fn replace_private_file_contents(path: &Path, data: &str) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+
+        let file_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| format!("Could not resolve file name for {}", path.display()))?;
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let temp_path =
+            path.with_file_name(format!(".{file_name}.tmp-{}-{nonce}", std::process::id()));
+        let result = (|| {
+            let mut file = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&temp_path)
+                .map_err(|error| format!("Could not create {}: {error}", temp_path.display()))?;
+            file.write_all(data.as_bytes())
+                .map_err(|error| format!("Could not write {}: {error}", temp_path.display()))?;
+            file.sync_all()
+                .map_err(|error| format!("Could not sync {}: {error}", temp_path.display()))?;
+            drop(file);
+            fs::rename(&temp_path, path)
+                .map_err(|error| format!("Could not replace {}: {error}", path.display()))
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&temp_path);
+        }
+        return result;
+    }
+
+    #[cfg(not(unix))]
+    {
+        replace_file_contents(path, data)
+    }
+}
+
 impl StoredSettings {
     fn from_effective(settings: &Settings, defaults: &Settings, keep_provider: bool) -> Self {
         Self {
@@ -2709,6 +2612,9 @@ impl StoredSettings {
             has_completed_local_model_selection: (settings.has_completed_local_model_selection
                 != defaults.has_completed_local_model_selection)
                 .then_some(settings.has_completed_local_model_selection),
+            has_completed_onboarding: (settings.has_completed_onboarding
+                != defaults.has_completed_onboarding)
+                .then_some(settings.has_completed_onboarding),
             toast_position: (settings.toast_position != defaults.toast_position)
                 .then(|| settings.toast_position.clone()),
             toast_custom_position: (settings.toast_custom_position
@@ -2738,6 +2644,7 @@ impl StoredSettings {
             && self.source_language.is_none()
             && self.target_language.is_none()
             && self.has_completed_local_model_selection.is_none()
+            && self.has_completed_onboarding.is_none()
             && self.toast_position.is_none()
             && self.toast_custom_position.is_none()
             && self.toast_duration.is_none()
@@ -2811,7 +2718,12 @@ fn close_settings_window(app: AppHandle) -> Result<(), String> {
 
 fn default_settings() -> Settings {
     Settings {
-        provider: TranslationProvider::LocalHyMT2,
+        // Base (variant-less) default. KargnasManaged is the one provider valid
+        // in every distribution variant, so a path that forgets the variant
+        // mapping degrades to a working provider instead of leaking the
+        // Python-backed local provider into the MAS build. Effective defaults
+        // live in SettingsRuntime::default_settings (direct=local, mas=apple).
+        provider: TranslationProvider::KargnasManaged,
         local_model_id: "hymt2-mlx-1.8b-4bit".to_string(),
         local_hy_mt2_backend_path: None,
         custom_local_models_path: None,
@@ -2831,6 +2743,7 @@ fn default_settings() -> Settings {
         source_language: "Auto".to_string(),
         target_language: "Korean".to_string(),
         has_completed_local_model_selection: false,
+        has_completed_onboarding: false,
         toast_position: ToastPosition::BottomRight,
         toast_custom_position: None,
         toast_duration: 6.0,
@@ -3963,28 +3876,6 @@ fn legacy_working_dir(app: &AppHandle) -> Option<PathBuf> {
         .find(|root| root.join("scripts/runtimes").is_dir())
 }
 
-fn resolve_permission_app_bundle(app: &AppHandle) -> Result<PathBuf, String> {
-    if let Ok(current_exe) = std::env::current_exe() {
-        if let Some(bundle) = app_bundle_ancestor(&current_exe) {
-            return Ok(existing_path(bundle));
-        }
-    }
-
-    let roots = candidate_roots(app);
-    for root in roots {
-        let candidates = [
-            root.join("dist/CCTrans.app"),
-            root.join("src-tauri/target/release/bundle/macos/CCTrans.app"),
-            root.join("src-tauri/target/debug/bundle/macos/CCTrans.app"),
-        ];
-        if let Some(path) = candidates.into_iter().find(|path| path.exists()) {
-            return Ok(existing_path(path));
-        }
-    }
-
-    Err("CCTrans.app bundle not found. Build and launch the app bundle first.".to_string())
-}
-
 fn app_bundle_ancestor(path: &Path) -> Option<PathBuf> {
     // MUST take the OUTERMOST `.app`, not innermost (`.last()`, not `.find()`).
     // This runs inside the nested Tauri helper (.../CCTrans.app/Contents/Resources/
@@ -4000,57 +3891,6 @@ fn app_bundle_ancestor(path: &Path) -> Option<PathBuf> {
         })
         .last()
         .map(Path::to_path_buf)
-}
-
-fn existing_path(path: PathBuf) -> PathBuf {
-    std::fs::canonicalize(&path).unwrap_or(path)
-}
-
-fn file_url_for_path(path: &Path) -> String {
-    format!(
-        "file://{}",
-        percent_encode_url_path(&path.to_string_lossy())
-    )
-}
-
-fn percent_encode_url_path(value: &str) -> String {
-    let mut encoded = String::new();
-    for byte in value.as_bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b'.' | b'-' | b'_' | b'~' | b':' => {
-                encoded.push(*byte as char)
-            }
-            _ => encoded.push_str(&format!("%{byte:02X}")),
-        }
-    }
-    encoded
-}
-
-fn reveal_permission_app_impl(app: &AppHandle) -> Result<ActionResult, String> {
-    let bundle_path = resolve_permission_app_bundle(app)?;
-
-    #[cfg(target_os = "macos")]
-    {
-        Command::new("open")
-            .arg("-R")
-            .arg(&bundle_path)
-            .spawn()
-            .map_err(|error| format!("Could not reveal {}: {error}", bundle_path.display()))?;
-        return Ok(action_result(
-            "CCTrans.app",
-            "Revealed in Finder. Drag the selected app into the open Privacy list.",
-            true,
-        ));
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    {
-        Ok(action_result(
-            "CCTrans.app",
-            "Revealing the app bundle is macOS-only.",
-            false,
-        ))
-    }
 }
 
 fn candidate_roots(app: &AppHandle) -> Vec<PathBuf> {
@@ -4220,6 +4060,13 @@ fn read_env_key(path: &Path, key: &str) -> Result<Option<String>, String> {
 }
 
 fn write_env_key(key: &str, value: Option<&str>) -> Result<(), String> {
+    let value = match value {
+        Some(raw) if validate_env_value(raw) && !raw.trim().is_empty() => Some(raw.trim()),
+        Some(_) => {
+            return Err("Credential values must be non-empty single-line strings.".to_string())
+        }
+        None => None,
+    };
     let path = credential_env_path()?;
     let mut lines = if path.exists() {
         fs::read_to_string(&path)
@@ -4268,32 +4115,7 @@ fn write_env_key(key: &str, value: Option<&str>) -> Result<(), String> {
     } else {
         format!("{}\n", lines.join("\n"))
     };
-    fs::write(&path, data).map_err(|error| format!("Could not write {}: {error}", path.display()))
-}
-
-fn open_privacy_url(title: &str, url: &str) -> Result<ActionResult, String> {
-    open_external_url(url).map_err(|error| format!("Could not open System Settings: {error}"))?;
-    Ok(action_result(title, "System Settings opened.", true))
-}
-
-fn open_external_url(url: &str) -> std::io::Result<()> {
-    #[cfg(target_os = "macos")]
-    {
-        Command::new("open").arg(url).spawn().map(|_| ())
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        Command::new("cmd")
-            .args(["/C", "start", "", url])
-            .spawn()
-            .map(|_| ())
-    }
-
-    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
-    {
-        Command::new("xdg-open").arg(url).spawn().map(|_| ())
-    }
+    replace_private_file_contents(&path, &data)
 }
 
 fn permission_status(app: &AppHandle) -> PermissionStatus {
@@ -4513,6 +4335,38 @@ mod tests {
         // The temp file must not survive the swap.
         assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
 
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn credential_value_rejects_environment_line_injection() {
+        assert!(validate_env_value("sk-or-v1_example"));
+        assert!(!validate_env_value("secret\nHF_TOKEN=injected"));
+        assert!(!validate_env_value("secret\rHF_TOKEN=injected"));
+        assert!(!validate_env_value("secret\0suffix"));
+    }
+
+    #[test]
+    fn private_file_replace_uses_owner_only_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!(
+            "cctrans-private-replace-test-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("credentials.env");
+
+        replace_private_file_contents(&path, "OPENROUTER_API_KEY=secret\n").unwrap();
+
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "OPENROUTER_API_KEY=secret\n"
+        );
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -4977,7 +4831,9 @@ mod tests {
 
     #[test]
     fn managed_provider_survives_settings_roundtrip() {
-        let defaults = default_settings();
+        // Variant defaults, not the base ones: production writes diff against
+        // the current variant's defaults (stored_from_effective).
+        let defaults = default_settings_for_current_variant();
         let mut settings = defaults.clone();
         settings.provider = TranslationProvider::KargnasManaged;
 
@@ -4992,7 +4848,7 @@ mod tests {
 
     #[test]
     fn preview_model_selection_updates_managed_provider_without_model_side_effects() {
-        let defaults = default_settings();
+        let defaults = default_settings_for_current_variant();
         let mut initial = defaults.clone();
         initial.local_model_id = "hymt2-transformers-1.8b".to_string();
         initial.open_router_text_model = "anthropic/claude-opus-4.8".to_string();
@@ -5156,18 +5012,6 @@ mod tests {
         assert_eq!(
             host_binary_for_app_bundle(bundle),
             PathBuf::from("/Applications/CCTrans.app/Contents/MacOS/CCTrans")
-        );
-    }
-
-    #[test]
-    fn file_url_escapes_spaces_for_drag_payload() {
-        // The app name itself has no space anymore, so use a spaced path to
-        // keep exercising the percent-escaping this test exists for.
-        let path = Path::new("/Applications/CC Trans.app");
-
-        assert_eq!(
-            file_url_for_path(path),
-            "file:///Applications/CC%20Trans.app"
         );
     }
 

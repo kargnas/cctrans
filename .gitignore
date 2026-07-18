@@ -1,5 +1,6 @@
 .build/
 .build-mas/
+.build-mas-check/
 .swiftpm/
 DerivedData/
 dist/
@@ -21,3 +22,6 @@ src-tauri/target/
 # Local AI agent state directories must never be committed.
 .omo/
 .omx/
+
+# AI planning artifacts stay local.
+docs/superpowers/

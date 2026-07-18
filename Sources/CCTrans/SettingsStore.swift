@@ -10,6 +10,8 @@ final class SettingsStore {
     // reloading a toast-written override never echoes the same value back to disk.
     private var isApplyingExternalChange = false
     private var isNormalizingSettings = false
+    private(set) var hadExistingAppStateAtLaunch: Bool
+    private(set) var lastSharedSaveSucceeded = true
 
     // Invoked on the main queue after an external settings-file change is applied,
     // so the menu-bar app can rebuild its menu to match the shared override file.
@@ -43,19 +45,28 @@ final class SettingsStore {
                     return
                 }
             }
-            save()
+            lastSharedSaveSucceeded = save()
         }
     }
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
-        if let data = try? Data(contentsOf: settingsURL),
+        // Override files intentionally disappear at code defaults, so directory
+        // existence is the durable migration signal for default-only upgrades.
+        let appDataDirectoryExisted = FileManager.default.fileExists(
+            atPath: SharedAppStorage.directoryURL.path
+        )
+        let sharedData = try? Data(contentsOf: settingsURL)
+        let legacyData = defaults.data(forKey: key)
+        hadExistingAppStateAtLaunch = appDataDirectoryExisted || sharedData != nil || legacyData != nil
+
+        if let data = sharedData,
            let decoded = try? JSONDecoder().decode(TranslatorSettings.self, from: data) {
             settings = Self.normalize(decoded)
-        } else if let data = defaults.data(forKey: key),
+        } else if let data = legacyData,
            let decoded = try? JSONDecoder().decode(TranslatorSettings.self, from: data) {
             settings = Self.normalize(decoded)
-            save()
+            lastSharedSaveSucceeded = save()
         } else {
             settings = Self.codeDefaults
         }
@@ -106,23 +117,37 @@ final class SettingsStore {
         directoryWatcher = source
     }
 
-    private func save() {
+    @discardableResult
+    func persistCurrentSettings() -> Bool {
+        lastSharedSaveSucceeded = save()
+        return lastSharedSaveSucceeded
+    }
+
+    private func save() -> Bool {
         let settingsToSave = Self.normalize(settings)
         guard settingsToSave != Self.codeDefaults else {
             defaults.removeObject(forKey: key)
-            try? FileManager.default.removeItem(at: settingsURL)
-            return
+            do {
+                if FileManager.default.fileExists(atPath: settingsURL.path) {
+                    try FileManager.default.removeItem(at: settingsURL)
+                }
+                return true
+            } catch {
+                return false
+            }
         }
 
         guard let data = try? JSONEncoder().encode(settingsToSave) else {
-            return
+            return false
         }
         do {
             try SharedAppStorage.ensureDirectoryExists()
             try data.write(to: settingsURL, options: .atomic)
             defaults.removeObject(forKey: key)
+            return true
         } catch {
             defaults.set(data, forKey: key)
+            return false
         }
     }
 }

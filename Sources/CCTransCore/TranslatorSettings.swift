@@ -106,6 +106,8 @@ public struct TranslatorSettings: Codable, Equatable, Sendable {
     public var sourceLanguage: String
     public var targetLanguage: String
     public var hasCompletedLocalModelSelection: Bool
+    // Whether the user finished the onboarding wizard; gates whether a launch re-runs the full onboarding.
+    public var hasCompletedOnboarding: Bool
     public var toastPosition: ToastPosition
     public var toastCustomPosition: ToastCustomPosition?
     public var toastDuration: TimeInterval
@@ -114,8 +116,21 @@ public struct TranslatorSettings: Codable, Equatable, Sendable {
     // both so the app is not silently broken and so App Review's first launch stays visible.
     public var startMenuBarOnly: Bool
 
+    // Wire meaning of an ABSENT "provider" key in settings-overrides.json.
+    // Pinned to the historical value: existing files omit the provider when it
+    // was localHyMT2, and the Rust helper omits it on direct builds for the
+    // same reason. Changing this constant reinterprets every such file, so it
+    // must stay put unless a file migration ships. It is intentionally
+    // decoupled from the in-memory default below.
+    private static let wireDefaultProvider: TranslationProvider = .localHyMT2
+
     public init(
-        provider: TranslationProvider = .localHyMT2,
+        // Base (variant-less) default. kargnasManaged is the one provider valid
+        // in every distribution variant, so a code path that forgets the
+        // variant mapping degrades to a working provider instead of leaking the
+        // Python-backed local provider into the MAS build. Effective defaults
+        // live in defaults(for:) — direct=localHyMT2, macAppStore=apple.
+        provider: TranslationProvider = .kargnasManaged,
         hyMT2Model: HyMT2Model = .hyMT2_30B,
         localModelID: String = LocalModelRegistry.defaultModelID,
         localHyMT2BackendPath: String? = nil,
@@ -128,9 +143,14 @@ public struct TranslatorSettings: Codable, Equatable, Sendable {
         sourceLanguage: String = TranslationLanguage.auto,
         targetLanguage: String = "Korean",
         hasCompletedLocalModelSelection: Bool = false,
+        hasCompletedOnboarding: Bool = false,
         toastPosition: ToastPosition = .bottomRight,
         toastCustomPosition: ToastCustomPosition? = nil,
-        toastDuration: TimeInterval = 4,
+        // Must equal the Rust default (default_settings().toast_duration): the
+        // Rust toast is the only runtime consumer, and both sides omit the key
+        // from settings-overrides.json when it equals their own default — a
+        // mismatch would make the same file mean different durations per side.
+        toastDuration: TimeInterval = 6,
         startMenuBarOnly: Bool = false
     ) {
         self.provider = provider
@@ -146,6 +166,7 @@ public struct TranslatorSettings: Codable, Equatable, Sendable {
         self.sourceLanguage = sourceLanguage
         self.targetLanguage = targetLanguage
         self.hasCompletedLocalModelSelection = hasCompletedLocalModelSelection
+        self.hasCompletedOnboarding = hasCompletedOnboarding
         self.toastPosition = toastPosition
         self.toastCustomPosition = toastCustomPosition
         self.toastDuration = toastDuration
@@ -166,6 +187,7 @@ public struct TranslatorSettings: Codable, Equatable, Sendable {
         case sourceLanguage
         case targetLanguage
         case hasCompletedLocalModelSelection
+        case hasCompletedOnboarding
         case toastPosition
         case toastCustomPosition
         case toastDuration
@@ -174,7 +196,7 @@ public struct TranslatorSettings: Codable, Equatable, Sendable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        provider = try container.decodeIfPresent(TranslationProvider.self, forKey: .provider) ?? .localHyMT2
+        provider = try container.decodeIfPresent(TranslationProvider.self, forKey: .provider) ?? Self.wireDefaultProvider
         let decodedHyMT2Model = try container.decodeIfPresent(HyMT2Model.self, forKey: .hyMT2Model)
         hyMT2Model = decodedHyMT2Model ?? .hyMT2_30B
         localModelID = try container.decodeIfPresent(String.self, forKey: .localModelID)
@@ -190,6 +212,7 @@ public struct TranslatorSettings: Codable, Equatable, Sendable {
         sourceLanguage = try container.decodeIfPresent(String.self, forKey: .sourceLanguage) ?? TranslationLanguage.auto
         targetLanguage = try container.decodeIfPresent(String.self, forKey: .targetLanguage) ?? "Korean"
         hasCompletedLocalModelSelection = try container.decodeIfPresent(Bool.self, forKey: .hasCompletedLocalModelSelection) ?? false
+        hasCompletedOnboarding = try container.decodeIfPresent(Bool.self, forKey: .hasCompletedOnboarding) ?? false
         toastPosition = try container.decodeIfPresent(ToastPosition.self, forKey: .toastPosition) ?? .bottomRight
         toastCustomPosition = try container.decodeIfPresent(ToastCustomPosition.self, forKey: .toastCustomPosition)
         toastDuration = try container.decodeIfPresent(TimeInterval.self, forKey: .toastDuration) ?? Self().toastDuration
@@ -201,7 +224,9 @@ public struct TranslatorSettings: Codable, Equatable, Sendable {
         let defaults = Self()
 
         // Persist only user overrides so future code default changes apply automatically.
-        try container.encodeIfDifferent(provider, from: defaults.provider, forKey: .provider)
+        // provider diffs against the wire default (absent-key meaning), not the
+        // in-memory default — the two are deliberately different values.
+        try container.encodeIfDifferent(provider, from: Self.wireDefaultProvider, forKey: .provider)
         try container.encodeIfDifferent(hyMT2Model, from: defaults.hyMT2Model, forKey: .hyMT2Model)
         try container.encodeIfDifferent(localModelID, from: defaults.localModelID, forKey: .localModelID)
         try container.encodeIfDifferent(localHyMT2BackendPath, from: defaults.localHyMT2BackendPath, forKey: .localHyMT2BackendPath)
@@ -214,6 +239,7 @@ public struct TranslatorSettings: Codable, Equatable, Sendable {
         try container.encodeIfDifferent(sourceLanguage, from: defaults.sourceLanguage, forKey: .sourceLanguage)
         try container.encodeIfDifferent(targetLanguage, from: defaults.targetLanguage, forKey: .targetLanguage)
         try container.encodeIfDifferent(hasCompletedLocalModelSelection, from: defaults.hasCompletedLocalModelSelection, forKey: .hasCompletedLocalModelSelection)
+        try container.encodeIfDifferent(hasCompletedOnboarding, from: defaults.hasCompletedOnboarding, forKey: .hasCompletedOnboarding)
         try container.encodeIfDifferent(toastPosition, from: defaults.toastPosition, forKey: .toastPosition)
         try container.encodeIfDifferent(toastCustomPosition, from: defaults.toastCustomPosition, forKey: .toastCustomPosition)
         try container.encodeIfDifferent(toastDuration, from: defaults.toastDuration, forKey: .toastDuration)
@@ -224,9 +250,12 @@ public struct TranslatorSettings: Codable, Equatable, Sendable {
 public extension TranslatorSettings {
     static func defaults(for variant: SettingsBuildVariant) -> TranslatorSettings {
         var settings = TranslatorSettings()
+        // Every variant declares its effective default provider explicitly; the
+        // base default (kargnasManaged) is only the fail-safe for code paths
+        // that never went through a variant.
         switch variant {
         case .direct:
-            break
+            settings.provider = .localHyMT2
         case .macAppStore:
             settings.provider = .appleTranslation
         }

@@ -41,6 +41,7 @@ export type Settings = {
   sourceLanguage: string;
   targetLanguage: string;
   hasCompletedLocalModelSelection: boolean;
+  hasCompletedOnboarding: boolean;
   toastPosition: ToastPosition;
   toastCustomPosition: { x: number; y: number } | null;
   toastDuration: number;
@@ -122,7 +123,11 @@ export type ActionResult = {
 export const fallbackState: SettingsState = {
   appVariant: "direct",
   settings: {
-    provider: "localHyMT2",
+    // kargnasManaged is the one provider valid in EVERY variant. This state
+    // renders before load_settings returns and whenever it fails, so a
+    // variant-specific provider here (e.g. localHyMT2) would leak local-model
+    // UI into the MAS build, where that provider does not exist.
+    provider: "kargnasManaged",
     localModelID: "hymt2-mlx-1.8b-4bit",
     localHyMT2BackendPath: null,
     customLocalModelsPath: null,
@@ -142,13 +147,16 @@ export const fallbackState: SettingsState = {
     sourceLanguage: "Auto",
     targetLanguage: "Korean",
     hasCompletedLocalModelSelection: false,
+    hasCompletedOnboarding: false,
     toastPosition: "bottomRight",
     toastCustomPosition: null,
-    toastDuration: 4,
+    toastDuration: 6,
     startMenuBarOnly: false
   },
   defaults: {
-    provider: "localHyMT2",
+    // Keep aligned with settings.provider above, or the fallback UI would
+    // render the provider row as a user override.
+    provider: "kargnasManaged",
     localModelID: "hymt2-mlx-1.8b-4bit",
     localHyMT2BackendPath: null,
     customLocalModelsPath: null,
@@ -168,9 +176,10 @@ export const fallbackState: SettingsState = {
     sourceLanguage: "Auto",
     targetLanguage: "Korean",
     hasCompletedLocalModelSelection: false,
+    hasCompletedOnboarding: false,
     toastPosition: "bottomRight",
     toastCustomPosition: null,
-    toastDuration: 4,
+    toastDuration: 6,
     startMenuBarOnly: false
   },
   overrides: {

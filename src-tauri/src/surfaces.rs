@@ -5,7 +5,6 @@ pub enum AppSurface {
     Settings,
     LocalModelSetup,
     RequestLogs,
-    PermissionHelper,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -29,7 +28,6 @@ impl AppSurface {
             "settings" | "main" => Some(Self::Settings),
             "local-model-setup" => Some(Self::LocalModelSetup),
             "request-logs" => Some(Self::RequestLogs),
-            "permission-helper" => Some(Self::PermissionHelper),
             _ => None,
         }
     }
@@ -78,19 +76,6 @@ impl AppSurface {
                 decorations: true,
                 transparent: false,
                 always_on_top: false,
-            },
-            Self::PermissionHelper => SurfaceSpec {
-                key: "permission-helper",
-                label: "permission-helper",
-                title: "CCTrans Permission Helper",
-                width: 680.0,
-                height: 500.0,
-                min_width: 620.0,
-                min_height: 480.0,
-                resizable: true,
-                decorations: true,
-                transparent: false,
-                always_on_top: true,
             },
         }
     }

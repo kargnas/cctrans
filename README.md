@@ -110,7 +110,7 @@ Global shortcuts need macOS privacy approval once:
 | Input Monitoring *or* Accessibility | Detecting `Cmd+C` twice in other apps |
 | Screen Recording | `Shift+Cmd+2` screenshot translation and LLM screen context |
 
-**Settings → Permission Helper** opens the right privacy pane and shows a draggable `CCTrans.app` icon to drop into the list. Quit and relaunch CCTrans after granting — macOS applies trust on the next launch.
+**Settings → Permissions** opens the native permission window and shows a draggable `CCTrans.app` icon when macOS needs the app added manually. Quit and relaunch CCTrans after granting — macOS applies trust on the next launch.
 
 ## Releases & Auto-Update
 

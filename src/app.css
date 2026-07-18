@@ -1716,8 +1716,7 @@ kbd {
   font-size: 17px;
 }
 
-.surface-header p,
-.app-card span {
+.surface-header p {
   margin: 0;
   color: var(--secondary);
   font-size: 11px;
@@ -1731,8 +1730,7 @@ kbd {
 }
 
 .toolbar button,
-.surface-footer button,
-.action-list button {
+.surface-footer button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1767,9 +1765,7 @@ kbd {
 .table-panel,
 .detail-panel,
 .split-panels article,
-.log-list,
-.app-card,
-.action-list {
+.log-list {
   overflow: hidden;
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -1929,69 +1925,6 @@ pre {
 .log-entry p {
   margin: 0;
   color: var(--secondary);
-}
-
-.permission-grid {
-  display: grid;
-  grid-template-columns: 220px minmax(0, 1fr);
-  gap: 16px;
-}
-
-.app-card {
-  display: grid;
-  gap: 10px;
-  align-content: center;
-  justify-items: center;
-  min-height: 240px;
-  padding: 16px;
-  text-align: center;
-}
-
-.app-card.draggable {
-  cursor: grab;
-}
-
-.app-card.draggable:active {
-  cursor: grabbing;
-}
-
-.app-card strong {
-  font-size: 13px;
-}
-
-.app-path {
-  max-width: 100%;
-  overflow: hidden;
-  color: var(--secondary);
-  font-family: inherit;
-  font-size: 9px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.permission-column {
-  display: grid;
-  gap: 16px;
-}
-
-.setting-group.standalone {
-  margin-bottom: 0;
-}
-
-.action-list {
-  display: grid;
-  gap: 8px;
-  padding: 12px;
-}
-
-.action-result {
-  margin: 0;
-  color: var(--red);
-  font-size: 11px;
-}
-
-.action-result.ok {
-  color: var(--green-text);
 }
 
 .toast-preview-frame {

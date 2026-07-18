@@ -141,6 +141,7 @@ Do not edit other credentials in the settings UI. `CredentialsProvider` owns `.e
 - Use platform adapters only for OS capabilities: global keyboard monitoring, screenshot capture, privacy/settings URLs, app activation, packaging, and shell integration.
 - For cross-platform actions, route through small Rust helpers that branch on `target_os` instead of embedding macOS-only command strings in Svelte.
 - Do not create or resurrect AppKit helper windows for settings, local model setup, request logs, permission helper, or diagnostics previews. These belong in Tauri surfaces.
+- Exception: the onboarding wizard (`Sources/CCTrans/Onboarding/`) is a native SwiftUI window in the main app process on purpose. TCC permission requests (Input Monitoring / Screen Recording / Accessibility) only bind to the process that actually taps the keyboard, and App Review 2.1 requires a window owned by CCTrans itself — both rule out the Tauri helper for this surface.
 - If a capability is macOS-only today, expose it through the shared Tauri action/status contract and return an explicit unsupported state on Windows until the Windows adapter exists.
 - Keep visual styling platform-neutral except where native chrome owns it. Window title bars, shadows, privacy panes, and OS prompts are platform-owned.
 

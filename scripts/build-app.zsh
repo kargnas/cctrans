@@ -48,8 +48,12 @@ ditto ".build/release/Sparkle.framework" "$FRAMEWORKS_DIR/Sparkle.framework"
 install_name_tool -add_rpath "@executable_path/../Frameworks" "$MACOS_DIR/$APP_NAME"
 ditto "$TAURI_HELPER_SOURCE" "$TAURI_HELPER_DEST"
 /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $HELPER_BUNDLE_ID" "$TAURI_HELPER_DEST/Contents/Info.plist"
-/usr/libexec/PlistBuddy -c "Set :CFBundleName CCTransTauri" "$TAURI_HELPER_DEST/Contents/Info.plist"
-/usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName CCTransTauri" "$TAURI_HELPER_DEST/Contents/Info.plist"
+# User-visible name matches the outer app: the helper owns the Settings window
+# and the toast, and macOS shows CFBundleName in the menu bar / Mission Control
+# for the frontmost app — "CCTransTauri" leaking there reads like a different
+# app. The bundle FOLDER keeps the CCTransTauri.app name (paths reference it).
+/usr/libexec/PlistBuddy -c "Set :CFBundleName $APP_DISPLAY_NAME" "$TAURI_HELPER_DEST/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName $APP_DISPLAY_NAME" "$TAURI_HELPER_DEST/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Delete :LSUIElement" "$TAURI_HELPER_DEST/Contents/Info.plist" >/dev/null 2>&1 || true
 /usr/libexec/PlistBuddy -c "Add :LSUIElement bool true" "$TAURI_HELPER_DEST/Contents/Info.plist"
 /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister \

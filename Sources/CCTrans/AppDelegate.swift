@@ -29,6 +29,9 @@ struct TranslationPreviewPayload: Encodable {
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let settingsStore = SettingsStore()
+    private let onboardingProgressStore = OnboardingProgressStore(
+        fileURL: SharedAppStorage.fileURL("onboarding-progress.json")
+    )
     private let credentialsProvider = CredentialsProvider()
     private let translationService = TranslationService(
         appleBackend: AppleTranslationHost.shared,
@@ -102,16 +105,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         hasStarted = true
-
-        #if MAS_BUILD
-        // The sandbox cannot run the external Python/uv local-model backend
-        // (child processes inherit the sandbox and lose the venv/HF caches),
-        // so the MAS build maps it to Apple Translation: also local/offline,
-        // and it works with zero setup.
-        if settingsStore.settings.provider == .localHyMT2 {
-            settingsStore.settings.provider = .appleTranslation
-        }
-        #endif
+        recoverCompletedOnboardingIfNeeded()
 
         lifetimeActivity = ProcessInfo.processInfo.beginActivity(
             options: [.automaticTerminationDisabled, .suddenTerminationDisabled],
@@ -477,7 +471,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func handlePermissionRequest(_ request: PermissionRequest) -> PermissionResponse {
         switch request.action {
         case "show":
-            showOnboardingWindow()
+            showPermissionHelper()
             return PermissionResponse(
                 title: "Permissions",
                 message: "Opened the CCTrans permissions window.",
@@ -486,7 +480,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case "screen":
             let ready = CGPreflightScreenCaptureAccess() || CGRequestScreenCaptureAccess()
             if !ready {
-                openScreenRecordingSettings()
+                OnboardingFlowModel.openPrivacySettings("Privacy_ScreenCapture")
             }
             return PermissionResponse(
                 title: "Screen Recording",
@@ -790,11 +784,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // also teaches the binding even though status menus only fire it while open.
         menu.addItem(actionItem(title: "Getting Started...", action: #selector(showOnboardingWindow)))
         menu.addItem(menuItem(title: "Settings...", action: #selector(showSettingsWindow), key: ",", target: self))
-        #if MAS_BUILD
         menu.addItem(actionItem(title: "Permissions...", action: #selector(showPermissionHelper)))
-        #else
-        menu.addItem(actionItem(title: "Permission Helper...", action: #selector(showPermissionHelper)))
-        #endif
         #if !MAS_BUILD
         if updaterController != nil {
             menu.addItem(actionItem(title: "Check for Updates...", action: #selector(checkForUpdates)))
@@ -859,6 +849,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             do {
                 let imageInfo = Self.imageInfo(for: data)
                 showTranslationLoading(originalText: "[selected screenshot]", sourceTitle: "Screenshot")
+                let requestSeq = translationRequestSequence
+                onboardingController?.flowModel?.noteTranslationStarted(
+                    requestID: requestSeq,
+                    isEligible: false
+                )
                 let result = try await translationService.translateImage(
                     pngData: data,
                     settings: settingsStore.settings,
@@ -867,7 +862,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 guard !Task.isCancelled else {
                     return
                 }
-                show(result: result, title: "Screenshot", inputText: "[selected screenshot]", imageInfo: imageInfo)
+                show(
+                    result: result,
+                    title: "Screenshot",
+                    inputText: "[selected screenshot]",
+                    imageInfo: imageInfo,
+                    requestSeq: requestSeq
+                )
             } catch is CancellationError {
                 return
             } catch {
@@ -901,6 +902,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         showTranslationLoading(originalText: text, sourceTitle: sourceTitle, settings: settings)
         lastPartialTranslatedLength = 0
         let requestSeq = translationRequestSequence
+        onboardingController?.flowModel?.noteTranslationStarted(
+            requestID: requestSeq,
+            isEligible: true
+        )
         let task = Task { [weak self] in
             if usesLocalBackend && previousUsesLocalBackend {
                 await previousTask?.value
@@ -942,7 +947,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     lastReadyLocalModelID = warmupModel.id
                     localModelWarmupNotifier.completed(modelTitle: warmupModel.title)
                 }
-                show(result: result, title: sourceTitle, inputText: text, imageInfo: imageInfo, settings: settings)
+                show(
+                    result: result,
+                    title: sourceTitle,
+                    inputText: text,
+                    imageInfo: imageInfo,
+                    requestSeq: requestSeq,
+                    settings: settings
+                )
             } catch is CancellationError {
                 return
             } catch {
@@ -975,10 +987,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         title: String,
         inputText: String,
         imageInfo: String?,
+        requestSeq: Int,
         settings: TranslatorSettings? = nil
     ) {
         requestLogStore.add(source: title, input: inputText, result: result, imageInfo: imageInfo)
-        showTranslationResult(result, inputText: inputText, settings: settings ?? settingsStore.settings)
+        showTranslationResult(
+            result,
+            inputText: inputText,
+            requestSeq: requestSeq,
+            settings: settings ?? settingsStore.settings
+        )
     }
 
     @MainActor
@@ -1187,8 +1205,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func showTranslationResult(
         _ result: TranslationResult,
         inputText: String,
+        requestSeq: Int,
         settings: TranslatorSettings? = nil
     ) {
+        onboardingController?.flowModel?.noteTranslationSucceeded(requestID: requestSeq)
         let settings = settings ?? settingsStore.settings
         let languages = resolvedLanguages(for: inputText, settings: settings)
         showTranslationPopover(TranslationPreviewPayload(
@@ -1604,86 +1624,104 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         _ = openTauriSurface("request-logs")
     }
 
-    @objc private func openInputMonitoringSettings() {
-        let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent")!
-        NSWorkspace.shared.open(url)
-        print("Opened Input Monitoring settings.")
-    }
-
-    @objc private func openAccessibilitySettings() {
-        let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!
-        NSWorkspace.shared.open(url)
-        print("Opened Accessibility settings.")
-    }
-
-    @objc private func openScreenRecordingSettings() {
-        let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!
-        NSWorkspace.shared.open(url)
-        print("Opened Screen Recording settings.")
-    }
-
     @objc private func requestKeyboardPermission() {
         reportKeyboardPermissionStatus(requestIfMissing: true)
     }
 
     @objc private func showPermissionHelper() {
-        #if MAS_BUILD
-        showOnboardingWindow()
-        #else
-        _ = openTauriSurface("permission-helper")
-        #endif
+        // Both variants use the native permissions window. The old Tauri
+        // permission-helper surface ran in the helper process, whose TCC
+        // identity is not the one that taps the keyboard or captures the
+        // screen — its pills and requests applied to the wrong app.
+        // An unfinished session resumes its durable checkpoint. After onboarding
+        // is complete this entry point remains a focused permissions-only window.
+        let hasCompletedOnboarding = settingsStore.settings.hasCompletedOnboarding
+        presentOnboarding(
+            mode: hasCompletedOnboarding ? .permissionsOnly : .fullFlow,
+            resumeProgress: !hasCompletedOnboarding
+        )
     }
 
     @objc private func showOnboardingWindow() {
-        if onboardingController == nil {
-            let settings = settingsStore.settings
-            // Apple Translation is the only provider whose on-device language
-            // pack can be missing; surface a download control just for it.
-            let translationDownload: TranslationDownloadModel? = {
-                guard settings.provider == .appleTranslation else { return nil }
-                let targetName = TranslationLanguage.normalizedName(settings.targetLanguage)
-                guard let targetCode = TranslationLanguage.options
-                    .first(where: { $0.name == targetName })?.code else { return nil }
-                let sourceCode = TranslationLanguage.options
-                    .first(where: { $0.name == TranslationLanguage.normalizedName(settings.sourceLanguage) })?.code
-                // A pack query needs a concrete counterpart; Auto has no code, so
-                // assume English (or Korean when the target itself is English).
-                let counterpart = sourceCode ?? (targetCode == "en" ? "ko" : "en")
-                return TranslationDownloadModel(
-                    source: Locale.Language(identifier: counterpart),
-                    target: Locale.Language(identifier: targetCode),
-                    targetDisplayName: targetName
-                )
-            }()
-            let model = OnboardingModel(
-                translationDownload: translationDownload,
-                onOpenSettings: { [weak self] in self?.showSettingsWindow() },
-                onQuit: { [weak self] in self?.quit() },
-                onPermissionStatusChanged: { [weak self] in self?.writePermissionStatusCache() }
-            )
-            onboardingController = OnboardingWindowController(model: model)
+        // Explicit Getting Started is a durable restart, not only a one-window
+        // override. If the user closes and relaunches, model remains the checkpoint.
+        var progressError: String?
+        do {
+            try onboardingProgressStore.save(.model)
+        } catch {
+            progressError = "Couldn’t restart onboarding progress. \(error.localizedDescription)"
         }
-        onboardingController?.show()
+        presentOnboarding(
+            mode: .fullFlow,
+            resumeProgress: false,
+            initialProgressError: progressError
+        )
+    }
+
+    private func presentOnboarding(
+        mode: OnboardingFlowModel.Mode,
+        resumeProgress: Bool,
+        initialProgressError: String? = nil
+    ) {
+        // A fresh flow model each time so it reflects the current provider/target
+        // language. The Apple language-pack download model is now built at
+        // provider-selection time inside the flow model, not here.
+        let flowModel = OnboardingFlowModel(
+            mode: mode,
+            settingsStore: settingsStore,
+            progressStore: onboardingProgressStore,
+            resumeProgress: resumeProgress,
+            onPermissionStatusChanged: { [weak self] in self?.writePermissionStatusCache() }
+        )
+        flowModel.progressError = initialProgressError
+        let controller = onboardingController ?? OnboardingWindowController()
+        onboardingController = controller
+        controller.show(flowModel: flowModel)
     }
 
     private func showOnboardingOnLaunchIfNeeded() {
-        // startMenuBarOnly opts into a quiet start, but only once permissions are granted:
-        // a missing permission means the app cannot work, so the grant window still shows
-        // (which also keeps a reviewer's fresh-install first launch visible for App Review
-        // Guideline 2.1 — a fresh install has no Screen Recording grant yet).
-        if settingsStore.settings.startMenuBarOnly, !requiredPermissionsMissing() {
+        // A quiet menu-bar-only start applies only once onboarding is finished AND
+        // permissions are granted: an unfinished wizard or a missing grant means the
+        // app cannot work yet, so the window still shows (which also keeps a reviewer's
+        // fresh-install first launch visible for App Review Guideline 2.1 — a fresh
+        // install has neither the completion flag nor a Screen Recording grant).
+        if settingsStore.settings.startMenuBarOnly,
+           settingsStore.settings.hasCompletedOnboarding,
+           onboardingProgressStore.loadStoredCheckpoint() == nil,
+           !requiredPermissionsMissing() {
             return
         }
         surfaceLaunchWindow()
     }
 
-    // Show whichever window is useful for the current permission state: the Welcome window
-    // walks through a missing grant, but once everything is granted it only reads "all set",
-    // so open Settings instead. Shared by launch and Dock/Finder reopen so both stay
-    // consistent and neither surfaces the dead-end Welcome window when nothing is left to do.
+    private func recoverCompletedOnboardingIfNeeded() {
+        guard onboardingProgressStore.load() == .completed else { return }
+        if !settingsStore.settings.hasCompletedOnboarding {
+            var settings = settingsStore.settings
+            settings.hasCompletedOnboarding = true
+            settingsStore.settings = settings
+        }
+        let sharedSettingsWriteSucceeded = settingsStore.persistCurrentSettings()
+        if OnboardingCompletionMarkerPolicy.shouldClearMarker(
+            hasCompletedOnboarding: settingsStore.settings.hasCompletedOnboarding,
+            sharedSettingsWriteSucceeded: sharedSettingsWriteSucceeded
+        ) {
+            try? onboardingProgressStore.clear()
+        }
+    }
+
+    // Show whichever window is useful right now, shared by launch and Dock/Finder
+    // reopen so both stay consistent: unfinished onboarding resumes its durable
+    // model/permissions/try-it checkpoint, completed onboarding shows only a
+    // missing permissions surface, and Settings opens once nothing remains.
     private func surfaceLaunchWindow() {
-        if requiredPermissionsMissing() {
-            showOnboardingWindow()
+        if let checkpoint = onboardingProgressStore.loadStoredCheckpoint(),
+           checkpoint != .completed {
+            presentOnboarding(mode: .fullFlow, resumeProgress: true)
+        } else if !settingsStore.settings.hasCompletedOnboarding {
+            presentOnboarding(mode: .fullFlow, resumeProgress: true)
+        } else if requiredPermissionsMissing() {
+            presentOnboarding(mode: .permissionsOnly, resumeProgress: false)
         } else {
             showSettingsWindow()
         }
@@ -1694,9 +1732,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Input Monitoring is no longer requested on MAS (App Review 2.4.5): double-⌘C
         // runs through pasteboard polling with no permission. Only Screen Recording (for
         // screenshot translation) remains a grantable permission worth surfacing.
-        return !CGPreflightScreenCaptureAccess()
+        return !OnboardingPermissionReadiness.isReady(
+            screenRecording: CGPreflightScreenCaptureAccess(),
+            inputMonitoring: false,
+            accessibility: false,
+            requiresKeyboardPermission: false
+        )
         #else
-        return !CGPreflightListenEventAccess() || !AXIsProcessTrusted() || !CGPreflightScreenCaptureAccess()
+        return !OnboardingPermissionReadiness.isReady(
+            screenRecording: CGPreflightScreenCaptureAccess(),
+            inputMonitoring: CGPreflightListenEventAccess(),
+            accessibility: AXIsProcessTrusted(),
+            requiresKeyboardPermission: true
+        )
         #endif
     }
 
