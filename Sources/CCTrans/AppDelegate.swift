@@ -1189,6 +1189,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         inputText: String,
         settings: TranslatorSettings? = nil
     ) {
+        // A real translation while the onboarding wizard is open completes its Try It
+        // step; nil-safe, so it is a no-op when the window is closed.
+        onboardingController?.flowModel?.noteTranslationSucceeded()
         let settings = settings ?? settingsStore.settings
         let languages = resolvedLanguages(for: inputText, settings: settings)
         showTranslationPopover(TranslationPreviewPayload(
@@ -1628,62 +1631,53 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func showPermissionHelper() {
         #if MAS_BUILD
-        showOnboardingWindow()
+        presentOnboarding(mode: .permissionsOnly)
         #else
         _ = openTauriSurface("permission-helper")
         #endif
     }
 
     @objc private func showOnboardingWindow() {
-        if onboardingController == nil {
-            let settings = settingsStore.settings
-            // Apple Translation is the only provider whose on-device language
-            // pack can be missing; surface a download control just for it.
-            let translationDownload: TranslationDownloadModel? = {
-                guard settings.provider == .appleTranslation else { return nil }
-                let targetName = TranslationLanguage.normalizedName(settings.targetLanguage)
-                guard let targetCode = TranslationLanguage.options
-                    .first(where: { $0.name == targetName })?.code else { return nil }
-                let sourceCode = TranslationLanguage.options
-                    .first(where: { $0.name == TranslationLanguage.normalizedName(settings.sourceLanguage) })?.code
-                // A pack query needs a concrete counterpart; Auto has no code, so
-                // assume English (or Korean when the target itself is English).
-                let counterpart = sourceCode ?? (targetCode == "en" ? "ko" : "en")
-                return TranslationDownloadModel(
-                    source: Locale.Language(identifier: counterpart),
-                    target: Locale.Language(identifier: targetCode),
-                    targetDisplayName: targetName
-                )
-            }()
-            let model = OnboardingModel(
-                translationDownload: translationDownload,
-                onOpenSettings: { [weak self] in self?.showSettingsWindow() },
-                onQuit: { [weak self] in self?.quit() },
-                onPermissionStatusChanged: { [weak self] in self?.writePermissionStatusCache() }
-            )
-            onboardingController = OnboardingWindowController(model: model)
-        }
-        onboardingController?.show()
+        presentOnboarding(mode: .fullFlow)
+    }
+
+    private func presentOnboarding(mode: OnboardingFlowModel.Mode) {
+        // A fresh flow model each time so it reflects the current provider/target
+        // language. The Apple language-pack download model is now built at
+        // provider-selection time inside the flow model, not here.
+        let flowModel = OnboardingFlowModel(
+            mode: mode,
+            settingsStore: settingsStore,
+            onPermissionStatusChanged: { [weak self] in self?.writePermissionStatusCache() }
+        )
+        let controller = onboardingController ?? OnboardingWindowController()
+        onboardingController = controller
+        controller.show(flowModel: flowModel)
     }
 
     private func showOnboardingOnLaunchIfNeeded() {
-        // startMenuBarOnly opts into a quiet start, but only once permissions are granted:
-        // a missing permission means the app cannot work, so the grant window still shows
-        // (which also keeps a reviewer's fresh-install first launch visible for App Review
-        // Guideline 2.1 — a fresh install has no Screen Recording grant yet).
-        if settingsStore.settings.startMenuBarOnly, !requiredPermissionsMissing() {
+        // A quiet menu-bar-only start applies only once onboarding is finished AND
+        // permissions are granted: an unfinished wizard or a missing grant means the
+        // app cannot work yet, so the window still shows (which also keeps a reviewer's
+        // fresh-install first launch visible for App Review Guideline 2.1 — a fresh
+        // install has neither the completion flag nor a Screen Recording grant).
+        if settingsStore.settings.startMenuBarOnly,
+           settingsStore.settings.hasCompletedOnboarding,
+           !requiredPermissionsMissing() {
             return
         }
         surfaceLaunchWindow()
     }
 
-    // Show whichever window is useful for the current permission state: the Welcome window
-    // walks through a missing grant, but once everything is granted it only reads "all set",
-    // so open Settings instead. Shared by launch and Dock/Finder reopen so both stay
-    // consistent and neither surfaces the dead-end Welcome window when nothing is left to do.
+    // Show whichever window is useful right now, shared by launch and Dock/Finder
+    // reopen so both stay consistent: the full wizard until onboarding is finished,
+    // then just the permissions step while a required grant is still missing, and
+    // Settings once nothing is left to do (never the dead-end "all set" window).
     private func surfaceLaunchWindow() {
-        if requiredPermissionsMissing() {
-            showOnboardingWindow()
+        if !settingsStore.settings.hasCompletedOnboarding {
+            presentOnboarding(mode: .fullFlow)
+        } else if requiredPermissionsMissing() {
+            presentOnboarding(mode: .permissionsOnly)
         } else {
             showSettingsWindow()
         }
