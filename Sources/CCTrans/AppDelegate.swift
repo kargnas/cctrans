@@ -179,13 +179,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        // The wizard window is about to close because the APP is quitting (TCC's
-        // Quit & Reopen after a grant), not because the user finished it — tell
-        // the controller so the close does not persist onboarding completion.
-        onboardingController?.noteAppTerminating()
         // Do not veto system-driven termination. macOS TCC asks to quit/reopen
         // after Screen Recording changes; canceling here leaves the grant stale.
-        return .terminateNow
+        .terminateNow
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -1606,7 +1602,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // permission-helper surface ran in the helper process, whose TCC
         // identity is not the one that taps the keyboard or captures the
         // screen — its pills and requests applied to the wrong app.
-        presentOnboarding(mode: .permissionsOnly)
+        // Until the user has finished onboarding once, every permissions entry
+        // point shows the FULL wizard (permissions step first, Next onward) so
+        // an interrupted first run always regains the whole flow.
+        presentOnboarding(mode: settingsStore.settings.hasCompletedOnboarding
+            ? .permissionsOnly : .fullFlow)
     }
 
     @objc private func showOnboardingWindow() {
@@ -1635,27 +1635,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // install has neither the completion flag nor a Screen Recording grant).
         if settingsStore.settings.startMenuBarOnly,
            settingsStore.settings.hasCompletedOnboarding,
-           !requiredPermissionsMissing(),
-           // A leftover resume marker means the app died with the wizard open
-           // (TCC's Quit & Reopen after a grant) — bring it back even on a
-           // quiet start so the flow continues where the relaunch cut it off.
-           OnboardingWindowController.resumeMarkerMode == nil {
+           !requiredPermissionsMissing() {
             return
         }
         surfaceLaunchWindow()
     }
 
     // Show whichever window is useful right now, shared by launch and Dock/Finder
-    // reopen so both stay consistent: a marker-recorded wizard interrupted by
-    // TCC's Quit & Reopen resumes in ITS mode first (a cut-off full onboarding
-    // must come back as the 3-step flow, not the bare permissions window); then
-    // the full wizard until onboarding is finished, the permissions step while a
-    // required grant is missing, and Settings once nothing is left to do (never
-    // the dead-end "all set" window).
+    // reopen so both stay consistent: the full wizard until the user has pressed
+    // Done at least once (any interrupted run — TCC's Quit & Reopen, traffic
+    // light — simply re-shows the whole flow, with a Next button after the
+    // permissions step), then just the permissions step while a required grant is
+    // missing, and Settings once nothing is left to do (never the dead-end
+    // "all set" window).
     private func surfaceLaunchWindow() {
-        if let resumeMode = OnboardingWindowController.resumeMarkerMode {
-            presentOnboarding(mode: resumeMode)
-        } else if !settingsStore.settings.hasCompletedOnboarding {
+        if !settingsStore.settings.hasCompletedOnboarding {
             presentOnboarding(mode: .fullFlow)
         } else if requiredPermissionsMissing() {
             presentOnboarding(mode: .permissionsOnly)

@@ -26,9 +26,7 @@ final class OnboardingFlowModel: ObservableObject {
     // fullFlow is first launch / menu re-entry (all three steps). permissionsOnly
     // is the post-completion re-appearance when a required grant is still missing:
     // just the permissions step with a Done button and no step indicator.
-    // String-backed so the resume marker can round-trip the mode across the TCC
-    // Quit & Reopen relaunch.
-    enum Mode: String {
+    enum Mode {
         case fullFlow
         case permissionsOnly
     }
@@ -69,8 +67,9 @@ final class OnboardingFlowModel: ObservableObject {
     let appBundleURL = Bundle.main.bundleURL
     // Set by the window controller so a SwiftUI button can close the window.
     var onDismiss: () -> Void = {}
-    // hasCompletedOnboarding is written once per session (Done or window close);
-    // this guards against re-writing the same override on both paths.
+    // hasCompletedOnboarding is written only by the Done button — closing the
+    // window any other way (traffic light, TCC Quit & Reopen) leaves onboarding
+    // unfinished so the next launch shows the wizard again.
     private var didPersistCompletion = false
 
     init(
@@ -253,11 +252,16 @@ final class OnboardingFlowModel: ObservableObject {
 
     private func requestAccessibilityAccess() {
         attemptedRequests.insert("ax")
-        // The prompt option shows the OS dialog only once per TCC state; the
-        // fallback link opens Settings directly for the re-ask case.
+        // The prompt option shows the OS dialog only once per TCC state; when the
+        // process is still untrusted afterwards (prior denial, or the toggle must
+        // be flipped by hand), open the pane with the drag chip like the other
+        // two cards — otherwise Continue silently does nothing on the re-ask.
         let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
         _ = AXIsProcessTrustedWithOptions(options)
         refresh()
+        if !AXIsProcessTrusted() {
+            Self.openPrivacySettings("Privacy_Accessibility")
+        }
     }
     #endif
 
@@ -458,49 +462,12 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
     private(set) var flowModel: OnboardingFlowModel?
     private var activationObserver: NSObjectProtocol?
     private var refreshTimer: Timer?
-    private var appIsTerminating = false
-
-    // Granting Screen Recording / Input Monitoring makes macOS quit & reopen the
-    // whole app, killing this window mid-wizard. The marker is written while the
-    // window is open and cleared only on a USER close (Done, traffic light) — so
-    // after any process death with the wizard up (TCC relaunch, SIGKILL), the next
-    // launch sees the marker and brings the window straight back. Its content is
-    // the wizard MODE, so an interrupted full onboarding resumes as the full
-    // 3-step flow, not as the bare permissions window. A separate helper process
-    // cannot solve this instead: TCC preflight/request only mean anything in the
-    // process that taps the keyboard, and that process must die for the grant to
-    // apply anyway.
-    private static let resumeMarkerURL = SharedAppStorage.fileURL("onboarding-resume")
-
-    // nil when no marker; the interrupted session's mode otherwise. An
-    // unreadable/legacy-empty marker counts as fullFlow — over-showing the
-    // wizard is the safe failure direction.
-    static var resumeMarkerMode: OnboardingFlowModel.Mode? {
-        guard let raw = try? String(contentsOf: resumeMarkerURL, encoding: .utf8) else { return nil }
-        return OnboardingFlowModel.Mode(rawValue: raw) ?? .fullFlow
-    }
-
-    private static func writeResumeMarker(mode: OnboardingFlowModel.Mode) {
-        try? SharedAppStorage.ensureDirectoryExists()
-        try? mode.rawValue.write(to: resumeMarkerURL, atomically: true, encoding: .utf8)
-    }
-
-    private static func clearResumeMarker() {
-        try? FileManager.default.removeItem(at: resumeMarkerURL)
-    }
-
-    // Called from applicationShouldTerminate: the imminent window close is the
-    // app quitting (TCC's Quit & Reopen), not the user finishing the wizard.
-    func noteAppTerminating() {
-        appIsTerminating = true
-    }
 
     func show(flowModel: OnboardingFlowModel) {
         self.flowModel = flowModel
         flowModel.onDismiss = { [weak self] in self?.window?.close() }
         flowModel.refresh()
         startLivePermissionRefresh()
-        Self.writeResumeMarker(mode: flowModel.mode)
 
         let hosting = NSHostingController(rootView: OnboardingRootView(model: flowModel))
         if let window {
@@ -527,14 +494,13 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
 
     func windowWillClose(_ notification: Notification) {
         stopLivePermissionRefresh()
-        // A close during app termination is TCC's Quit & Reopen, not the user
-        // finishing: keep the resume marker (and don't mark onboarding complete)
-        // so the relaunch reopens the wizard where the grant flow left off.
-        guard !appIsTerminating else { return }
-        Self.clearResumeMarker()
-        // Closing the wizard (traffic light, Cmd+W) counts as finishing it, matching
-        // the Done button so a completed run is not re-shown on the next launch.
-        flowModel?.persistCompletionIfNeeded()
+        // Deliberately NOT persisting completion here: only the Done button counts
+        // as finishing onboarding. Any other close — traffic light, Cmd+W, and
+        // especially TCC's forced Quit & Reopen after a grant — leaves
+        // hasCompletedOnboarding false, so the next launch simply shows the full
+        // wizard again. That "just re-show it" rule replaced a resume-marker
+        // mechanism that tried to distinguish user closes from app-termination
+        // closes and kept misclassifying them.
     }
 
     // Grants happen OUTSIDE this app (System Settings toggles, OS dialogs), so the
