@@ -19,7 +19,7 @@ private struct StepHeader: View {
     }
 }
 
-// MARK: - Step 1: Permissions
+// MARK: - Step 2: Permissions
 
 struct PermissionsStepView: View {
     @ObservedObject var model: OnboardingFlowModel
@@ -118,7 +118,7 @@ private struct StatusPill: View {
     }
 }
 
-// MARK: - Step 2: Choose Model
+// MARK: - Step 1: Choose Model
 
 private struct ModelOption: Identifiable {
     let provider: TranslationProvider

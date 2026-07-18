@@ -29,6 +29,9 @@ struct TranslationPreviewPayload: Encodable {
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let settingsStore = SettingsStore()
+    private let onboardingProgressStore = OnboardingProgressStore(
+        fileURL: SharedAppStorage.fileURL("onboarding-progress.json")
+    )
     private let credentialsProvider = CredentialsProvider()
     private let translationService = TranslationService(
         appleBackend: AppleTranslationHost.shared,
@@ -102,6 +105,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         hasStarted = true
+        recoverCompletedOnboardingIfNeeded()
 
         lifetimeActivity = ProcessInfo.processInfo.beginActivity(
             options: [.automaticTerminationDisabled, .suddenTerminationDisabled],
@@ -1602,24 +1606,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // permission-helper surface ran in the helper process, whose TCC
         // identity is not the one that taps the keyboard or captures the
         // screen — its pills and requests applied to the wrong app.
-        // Until the user has finished onboarding once, every permissions entry
-        // point shows the FULL wizard (permissions step first, Next onward) so
-        // an interrupted first run always regains the whole flow.
-        presentOnboarding(mode: settingsStore.settings.hasCompletedOnboarding
-            ? .permissionsOnly : .fullFlow)
+        // An unfinished session resumes its durable checkpoint. After onboarding
+        // is complete this entry point remains a focused permissions-only window.
+        let hasCompletedOnboarding = settingsStore.settings.hasCompletedOnboarding
+        presentOnboarding(
+            mode: hasCompletedOnboarding ? .permissionsOnly : .fullFlow,
+            resumeProgress: !hasCompletedOnboarding
+        )
     }
 
     @objc private func showOnboardingWindow() {
-        presentOnboarding(mode: .fullFlow)
+        // Explicit Getting Started re-entry begins at model and does not reuse an
+        // old checkpoint from an earlier completed session.
+        presentOnboarding(mode: .fullFlow, resumeProgress: false)
     }
 
-    private func presentOnboarding(mode: OnboardingFlowModel.Mode) {
+    private func presentOnboarding(
+        mode: OnboardingFlowModel.Mode,
+        resumeProgress: Bool
+    ) {
         // A fresh flow model each time so it reflects the current provider/target
         // language. The Apple language-pack download model is now built at
         // provider-selection time inside the flow model, not here.
         let flowModel = OnboardingFlowModel(
             mode: mode,
             settingsStore: settingsStore,
+            progressStore: onboardingProgressStore,
+            resumeProgress: resumeProgress,
             onPermissionStatusChanged: { [weak self] in self?.writePermissionStatusCache() }
         )
         let controller = onboardingController ?? OnboardingWindowController()
@@ -1641,18 +1654,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         surfaceLaunchWindow()
     }
 
+    private func recoverCompletedOnboardingIfNeeded() {
+        guard onboardingProgressStore.load() == .completed else { return }
+        if !settingsStore.settings.hasCompletedOnboarding {
+            var settings = settingsStore.settings
+            settings.hasCompletedOnboarding = true
+            settingsStore.settings = settings
+        }
+        try? onboardingProgressStore.clear()
+    }
+
     // Show whichever window is useful right now, shared by launch and Dock/Finder
-    // reopen so both stay consistent: the full wizard until the user has pressed
-    // Done at least once (any interrupted run — TCC's Quit & Reopen, traffic
-    // light — simply re-shows the flow; the model resumes at the permissions
-    // step when a grant already exists), then just the permissions step while a
-    // required grant is missing, and Settings once nothing is left to do (never
-    // the dead-end "all set" window).
+    // reopen so both stay consistent: unfinished onboarding resumes its durable
+    // model/permissions/try-it checkpoint, completed onboarding shows only a
+    // missing permissions surface, and Settings opens once nothing remains.
     private func surfaceLaunchWindow() {
         if !settingsStore.settings.hasCompletedOnboarding {
-            presentOnboarding(mode: .fullFlow)
+            presentOnboarding(mode: .fullFlow, resumeProgress: true)
         } else if requiredPermissionsMissing() {
-            presentOnboarding(mode: .permissionsOnly)
+            presentOnboarding(mode: .permissionsOnly, resumeProgress: false)
         } else {
             showSettingsWindow()
         }

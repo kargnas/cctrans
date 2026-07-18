@@ -18,15 +18,23 @@ import SwiftUI
 //      grant requested apply to the right TCC identity (the helper's did not).
 @MainActor
 final class OnboardingFlowModel: ObservableObject {
-    // Permissions are the LAST step: granting Screen Recording / Input
-    // Monitoring makes macOS quit & reopen the app, which killed the wizard
-    // mid-flow when permissions came first. At the end there is nothing left to
-    // lose — model choice is already persisted, the try-out is done (double-⌘C
-    // works permission-free via pasteboard polling), and the relaunch re-shows
-    // the wizard with the granted pills green.
+    // The visible order follows the product flow. Each forward transition is
+    // checkpointed before navigation, so TCC's Quit & Reopen can safely happen
+    // while the permissions screen is active.
     enum Step: Int, CaseIterable, Identifiable {
-        case model, tryIt, permissions
+        case model, permissions, tryIt
         var id: Int { rawValue }
+
+        init(checkpoint: OnboardingCheckpoint) {
+            switch checkpoint {
+            case .model:
+                self = .model
+            case .permissions:
+                self = .permissions
+            case .tryIt, .completed:
+                self = .tryIt
+            }
+        }
     }
 
     // fullFlow is first launch / menu re-entry (all three steps). permissionsOnly
@@ -56,6 +64,7 @@ final class OnboardingFlowModel: ObservableObject {
     @Published var openRouterKeyInput: String = ""
     @Published var openRouterKeySaved: Bool = false
     @Published var openRouterKeyError: String?
+    @Published var progressError: String?
     // Set when the user advances past the model step with OpenRouter selected but no
     // saved key; a one-line nudge, not a block (App Review-friendly, and they can add
     // the key in Settings).
@@ -69,37 +78,48 @@ final class OnboardingFlowModel: ObservableObject {
 
     let mode: Mode
     let settingsStore: SettingsStore
+    let progressStore: OnboardingProgressStore
     let onPermissionStatusChanged: () -> Void
     let appBundleURL = Bundle.main.bundleURL
     // Set by the window controller so a SwiftUI button can close the window.
     var onDismiss: () -> Void = {}
-    // hasCompletedOnboarding is written only by the Done button — closing the
-    // window any other way (traffic light, TCC Quit & Reopen) leaves onboarding
-    // unfinished so the next launch shows the wizard again.
-    private var didPersistCompletion = false
 
     init(
         mode: Mode,
         settingsStore: SettingsStore,
+        progressStore: OnboardingProgressStore,
+        resumeProgress: Bool,
         onPermissionStatusChanged: @escaping () -> Void
     ) {
         self.mode = mode
         self.settingsStore = settingsStore
-        self.selectedProvider = settingsStore.settings.provider
+        self.progressStore = progressStore
         self.onPermissionStatusChanged = onPermissionStatusChanged
-        if settingsStore.settings.provider == .appleTranslation {
+
+        let initialStep: Step
+        if mode == .permissionsOnly {
+            initialStep = .permissions
+        } else if resumeProgress {
+            initialStep = Step(checkpoint: progressStore.load())
+        } else {
+            initialStep = .model
+        }
+        step = initialStep
+
+        // Apple Translation is the onboarding default without changing the
+        // global direct-build default. A resumed session uses the provider that
+        // was committed when the user advanced from the model screen.
+        let startsFreshIncompleteModel = mode == .fullFlow
+            && !settingsStore.settings.hasCompletedOnboarding
+            && initialStep == .model
+        selectedProvider = startsFreshIncompleteModel
+            ? .appleTranslation
+            : settingsStore.settings.provider
+
+        if selectedProvider == .appleTranslation {
             translationDownload = Self.makeTranslationDownloadModel(settings: settingsStore.settings)
         }
         refresh()
-        // permissionsOnly renders just the permissions step; the full flow always
-        // starts at model. (A "resume at permissions when any grant exists"
-        // shortcut was tried and removed: TCC grants outlive the app AND its
-        // settings, so a re-onboarding after reinstall skipped straight past the
-        // model step. After a TCC Quit & Reopen the user just clicks through the
-        // already-persisted steps instead.)
-        if mode == .permissionsOnly {
-            step = .permissions
-        }
     }
 
     var allGranted: Bool { permissions.allSatisfy { $0.granted } }
@@ -177,7 +197,6 @@ final class OnboardingFlowModel: ObservableObject {
 
     func selectProvider(_ provider: TranslationProvider) {
         selectedProvider = provider
-        settingsStore.settings.provider = provider
         // Build the Apple language-pack download model lazily, only once Apple
         // Translation is actually chosen (it queries LanguageAvailability).
         if provider == .appleTranslation, translationDownload == nil {
@@ -208,21 +227,54 @@ final class OnboardingFlowModel: ObservableObject {
         }
     }
 
-    // Called by AppDelegate when a real translation result is shown. Only the
-    // full flow has a Try It step, and the celebration runs once.
-    func noteTranslationSucceeded() {
-        guard mode == .fullFlow, !hasTranslated else { return }
-        hasTranslated = true
+    @discardableResult
+    func advanceFromModel() -> Bool {
+        guard mode == .fullFlow, step == .model else { return false }
+        flagOpenRouterKeyIfMissing()
+
+        var settings = settingsStore.settings
+        settings.provider = selectedProvider
+        settingsStore.settings = settings
+        return persistCheckpoint(.permissions, movingTo: .permissions)
     }
 
-    func persistCompletionIfNeeded() {
-        guard !didPersistCompletion else { return }
-        didPersistCompletion = true
-        // SettingsStore persists on assignment (didSet); a no-op assignment when
-        // already true is harmless.
-        if !settingsStore.settings.hasCompletedOnboarding {
-            settingsStore.settings.hasCompletedOnboarding = true
+    @discardableResult
+    func advanceFromPermissions() -> Bool {
+        guard mode == .fullFlow, step == .permissions, allGranted else { return false }
+        return persistCheckpoint(.tryIt, movingTo: .tryIt)
+    }
+
+    // Called by AppDelegate when a real translation result is shown. Only a
+    // translation that lands while Try It is current can finish onboarding.
+    func noteTranslationSucceeded() {
+        guard mode == .fullFlow, step == .tryIt, !hasTranslated else { return }
+        hasTranslated = true
+        _ = completeAfterSuccessfulTranslation()
+    }
+
+    @discardableResult
+    func completeAfterSuccessfulTranslation() -> Bool {
+        guard mode == .fullFlow, step == .tryIt, hasTranslated else { return false }
+
+        do {
+            // Write-ahead marker: if the app dies before the settings write lands,
+            // AppDelegate repairs the completion flag on the next launch.
+            try progressStore.save(.completed)
+        } catch {
+            progressError = "Couldn’t save onboarding progress. \(error.localizedDescription)"
+            return false
         }
+
+        if !settingsStore.settings.hasCompletedOnboarding {
+            var settings = settingsStore.settings
+            settings.hasCompletedOnboarding = true
+            settingsStore.settings = settings
+        }
+        // A failed cleanup is safe: the completed marker is idempotent and the
+        // next launch clears it after repairing the completion flag.
+        try? progressStore.clear()
+        progressError = nil
+        return true
     }
 
     /// The in-window sample sentence for step 3. Needs a source language that
@@ -233,6 +285,22 @@ final class OnboardingFlowModel: ObservableObject {
             return "빠른 갈색 여우가 게으른 개를 뛰어넘는다."
         }
         return "The quick brown fox jumps over the lazy dog."
+    }
+
+    @discardableResult
+    private func persistCheckpoint(
+        _ checkpoint: OnboardingCheckpoint,
+        movingTo nextStep: Step
+    ) -> Bool {
+        do {
+            try progressStore.save(checkpoint)
+            progressError = nil
+            step = nextStep
+            return true
+        } catch {
+            progressError = "Couldn’t save onboarding progress. \(error.localizedDescription)"
+            return false
+        }
     }
 
     // Grants that land after these requests (dialog, Settings toggle) are picked
@@ -394,12 +462,16 @@ private struct OnboardingLeftPane: View {
     @ViewBuilder
     private var footer: some View {
         VStack(alignment: .trailing, spacing: 6) {
-            // Priming context: never force a grant (App Review 5.1.1) — say the
-            // permissions can wait so Next reads as safe.
             if model.mode == .fullFlow, model.step == .permissions, !model.allGranted {
-                Text("You can grant these later.")
+                Text("Grant all required permissions to continue.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+            if let progressError = model.progressError {
+                Text(progressError)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .multilineTextAlignment(.trailing)
             }
             HStack {
                 if canGoBack {
@@ -412,29 +484,36 @@ private struct OnboardingLeftPane: View {
     }
 
     private var canGoBack: Bool {
-        model.mode == .fullFlow && model.step != .model
+        model.mode == .fullFlow && model.step != .model && !model.hasTranslated
     }
 
     @ViewBuilder
     private var primaryButton: some View {
-        // permissions is now the LAST step, so it carries Done in both modes.
-        if model.mode == .permissionsOnly || model.step == .permissions {
+        if model.mode == .permissionsOnly {
             Button("Done") { finish() }
                 .keyboardShortcut(.defaultAction)
-        } else {
+                .disabled(!model.allGranted)
+        } else if model.step == .model || model.step == .permissions {
             Button("Next") { goNext() }
+                .keyboardShortcut(.defaultAction)
+                .disabled(model.step == .permissions && !model.allGranted)
+        } else if model.hasTranslated {
+            Button("Done") { finish() }
                 .keyboardShortcut(.defaultAction)
         }
     }
 
     private func goNext() {
-        if model.step == .model {
-            model.flagOpenRouterKeyIfMissing()
-        }
-        guard let next = OnboardingFlowModel.Step(rawValue: model.step.rawValue + 1) else { return }
         isForward = true
         withAnimation(.spring(response: 0.4, dampingFraction: 1.0)) {
-            model.step = next
+            switch model.step {
+            case .model:
+                model.advanceFromModel()
+            case .permissions:
+                model.advanceFromPermissions()
+            case .tryIt:
+                break
+            }
         }
     }
 
@@ -447,7 +526,12 @@ private struct OnboardingLeftPane: View {
     }
 
     private func finish() {
-        model.persistCompletionIfNeeded()
+        if model.mode == .permissionsOnly {
+            guard model.allGranted else { return }
+            model.onDismiss()
+            return
+        }
+        guard model.completeAfterSuccessfulTranslation() else { return }
         model.onDismiss()
     }
 }
@@ -507,13 +591,8 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
 
     func windowWillClose(_ notification: Notification) {
         stopLivePermissionRefresh()
-        // Deliberately NOT persisting completion here: only the Done button counts
-        // as finishing onboarding. Any other close — traffic light, Cmd+W, and
-        // especially TCC's forced Quit & Reopen after a grant — leaves
-        // hasCompletedOnboarding false, so the next launch simply shows the full
-        // wizard again. That "just re-show it" rule replaced a resume-marker
-        // mechanism that tried to distinguish user closes from app-termination
-        // closes and kept misclassifying them.
+        // Closing never advances or completes onboarding. The last successful
+        // forward checkpoint remains on disk, including across TCC termination.
     }
 
     // Grants happen OUTSIDE this app (System Settings toggles, OS dialogs), so the
