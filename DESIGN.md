@@ -3,7 +3,7 @@
 ## Source of truth
 - Status: Active
 - Last refreshed: 2026-06-01
-- Primary product surfaces: macOS menu-bar translator, Tauri translation popover, settings window, permission helper, local model setup, request logs.
+- Primary product surfaces: macOS menu-bar translator, native onboarding wizard, Tauri translation popover, settings window, permission helper, local model setup, request logs.
 - Evidence reviewed:
   - `design/image.png` and `design/guide.html`: component board for translation overlays, settings window, tokens, spacing, typography, color, radius, motion.
   - `Sources/CCTrans/SettingsWindowController.swift`: current AppKit settings behavior, groups, reset-to-default controls, diagnostics.
@@ -47,12 +47,12 @@
 - Scrollbar: the content column itself is the scroll container, so the scrollbar spans the full window height flush against the right window edge; it must never float inset beside padded content. The page header is sticky inside that scroll and gains System Settings-style material (blur + hairline) only while content is scrolled beneath it.
 - Shape/radius/elevation: 6px sidebar rows and controls, 8px setting groups. Do not implement custom CSS window shadows; native Tauri/macOS window shadow owns settings windows. Translation popover shadow is component-level elevation from `design/`, while transparent borderless window support comes from macOS/Tauri.
 - Material: the settings window uses native macOS vibrancy (Tauri `windowEffects` `sidebar` on the `main` window plus a transparent web root); content surfaces stay ~0.86 opaque so the material reads as a subtle backdrop without hurting legibility. The separate `translation` toast window stays fully transparent with no window-level or native material layer; only the rounded bubble applies CSS backdrop blur. The blur is re-armed on show/refresh because transparent WebKit surfaces can skip backdrop sampling on first paint.
-- Motion: short state transitions only where needed; no decorative motion.
+- Motion: short state transitions only where needed; no decorative motion. Exception: the onboarding wizard's preview stage runs a looped ⌘+C C → toast simulation and spring step transitions — onboarding is a one-time teaching surface, so demonstrative motion is allowed there (and only there); it must pause under reduced motion.
 - Imagery/iconography: use symbol-style icons for settings sidebar and action buttons; do not use stock imagery in app surfaces.
 
 ## Components
 - Existing components to reuse: `TranslatorSettings`, `SettingsStore` semantics, `TranslationLanguage`, `LocalModelRegistry`, `OpenRouterModelCatalog`, current permission checks, diagnostics actions, and translation result behavior including loading/success/error states. Toast position is fallback only when the keyboard caret/selection bounds are unavailable.
-- New/changed components: Tauri 2 settings shell, Svelte settings sidebar, grouped setting rows, model-first Translation Model selectors, favorite model rows, reset buttons, Rust settings command layer, Tauri/Svelte translation popover surface.
+- New/changed components: Tauri 2 settings shell, Svelte settings sidebar, grouped setting rows, model-first Translation Model selectors, favorite model rows, reset buttons, Rust settings command layer, Tauri/Svelte translation popover surface, native SwiftUI onboarding wizard (split layout: 3-step content column + dark preview stage; permission cards, provider card grid, in-window try-it step). The onboarding wizard stays native SwiftUI in the main app process because TCC permission requests must run in the process that taps the keyboard, and App Review 2.1 requires a main-process-owned window.
 - Variants and states: default vs overridden setting rows, ready/not-granted permission states, saved/saving, success/error action notices, disabled reset buttons, translation loading/done/original/error states. Translation state switchers are debug-only and must not appear in the default popup.
 - Token/component ownership: `design/guide.html` remains visual token reference; `src/app.css` owns Tauri web implementation tokens; Rust owns setting defaults and persistence normalization.
 
