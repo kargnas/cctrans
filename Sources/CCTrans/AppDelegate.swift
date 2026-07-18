@@ -780,11 +780,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // also teaches the binding even though status menus only fire it while open.
         menu.addItem(actionItem(title: "Getting Started...", action: #selector(showOnboardingWindow)))
         menu.addItem(menuItem(title: "Settings...", action: #selector(showSettingsWindow), key: ",", target: self))
-        #if MAS_BUILD
         menu.addItem(actionItem(title: "Permissions...", action: #selector(showPermissionHelper)))
-        #else
-        menu.addItem(actionItem(title: "Permission Helper...", action: #selector(showPermissionHelper)))
-        #endif
         #if !MAS_BUILD
         if updaterController != nil {
             menu.addItem(actionItem(title: "Check for Updates...", action: #selector(checkForUpdates)))
@@ -1620,11 +1616,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func showPermissionHelper() {
-        #if MAS_BUILD
+        // Both variants use the native permissions window. The old Tauri
+        // permission-helper surface ran in the helper process, whose TCC
+        // identity is not the one that taps the keyboard or captures the
+        // screen — its pills and requests applied to the wrong app.
         presentOnboarding(mode: .permissionsOnly)
-        #else
-        _ = openTauriSurface("permission-helper")
-        #endif
     }
 
     @objc private func showOnboardingWindow() {

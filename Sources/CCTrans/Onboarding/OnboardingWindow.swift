@@ -103,12 +103,11 @@ final class OnboardingFlowModel: ObservableObject {
             id: "input",
             symbol: "keyboard",
             title: "Input Monitoring",
-            detail: "Detects the double ⌘C that triggers a translation.",
+            detail: attemptedRequests.contains("input")
+                ? "Enable CCTrans in Input Monitoring settings; macOS relaunches the app after granting."
+                : "Detects the double ⌘C that triggers a translation.",
             granted: CGPreflightListenEventAccess(),
-            request: {
-                _ = CGRequestListenEventAccess()
-                Self.openPrivacySettings("Privacy_ListenEvent")
-            },
+            request: { [weak self] in self?.requestInputMonitoringAccess() },
             fallback: { Self.openPrivacySettings("Privacy_ListenEvent") }
         ))
         #endif
@@ -132,24 +131,22 @@ final class OnboardingFlowModel: ObservableObject {
             id: "ax",
             symbol: "accessibility",
             title: "Accessibility",
-            detail: "Lets CCTrans read the current text selection.",
+            detail: attemptedRequests.contains("ax")
+                ? "If no macOS prompt appeared, enable CCTrans in Accessibility settings."
+                : "Lets CCTrans read the current text selection.",
             granted: AXIsProcessTrusted(),
-            request: {
-                let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
-                _ = AXIsProcessTrustedWithOptions(options)
-            },
-            fallback: {
-                let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
-                _ = AXIsProcessTrustedWithOptions(options)
-            }
+            request: { [weak self] in self?.requestAccessibilityAccess() },
+            fallback: { Self.openPrivacySettings("Privacy_Accessibility") }
         ))
         #endif
+        // The window controller re-runs this on app activation and on a timer, so
+        // skip the publish (and the cache write) when nothing actually changed —
+        // the shared-dir cache write would otherwise wake the settings watchers
+        // every 2 seconds.
+        let signature = rows.map { "\($0.id)|\($0.granted)|\($0.detail)" }
+        guard signature != permissions.map({ "\($0.id)|\($0.granted)|\($0.detail)" }) else { return }
         permissions = rows
         onPermissionStatusChanged()
-    }
-
-    func didAttempt(_ permission: Permission) -> Bool {
-        attemptedRequests.contains(permission.id)
     }
 
     func revealAppBundle() {
@@ -225,6 +222,41 @@ final class OnboardingFlowModel: ObservableObject {
         if !CGPreflightScreenCaptureAccess() {
             Self.openPrivacySettings("Privacy_ScreenCapture")
         }
+        scheduleDelayedRefresh()
+    }
+
+    #if !MAS_BUILD
+    private func requestInputMonitoringAccess() {
+        attemptedRequests.insert("input")
+        // The OS prompt appears only on the very first ask; after a denial macOS
+        // never re-prompts, so Settings is opened as well when the preflight
+        // still reads false. A grant makes macOS auto-relaunch the app, which is
+        // when the per-process preflight cache finally flips to true.
+        if !CGPreflightListenEventAccess() {
+            _ = CGRequestListenEventAccess()
+        }
+        refresh()
+        if !CGPreflightListenEventAccess() {
+            Self.openPrivacySettings("Privacy_ListenEvent")
+        }
+        scheduleDelayedRefresh()
+    }
+
+    private func requestAccessibilityAccess() {
+        attemptedRequests.insert("ax")
+        // The prompt option shows the OS dialog only once per TCC state; the
+        // fallback link opens Settings directly for the re-ask case.
+        let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
+        _ = AXIsProcessTrustedWithOptions(options)
+        refresh()
+        scheduleDelayedRefresh()
+    }
+    #endif
+
+    // TCC grants land asynchronously (dialog, Settings toggle); one delayed
+    // re-read catches the common "granted a second later" case without waiting
+    // for the next activation refresh.
+    private func scheduleDelayedRefresh() {
         Task { @MainActor [weak self] in
             try? await Task.sleep(for: .milliseconds(700))
             self?.refresh()
@@ -396,11 +428,14 @@ private struct StepIndicator: View {
 final class OnboardingWindowController: NSObject, NSWindowDelegate {
     private var window: NSWindow?
     private(set) var flowModel: OnboardingFlowModel?
+    private var activationObserver: NSObjectProtocol?
+    private var refreshTimer: Timer?
 
     func show(flowModel: OnboardingFlowModel) {
         self.flowModel = flowModel
         flowModel.onDismiss = { [weak self] in self?.window?.close() }
         flowModel.refresh()
+        startLivePermissionRefresh()
 
         let hosting = NSHostingController(rootView: OnboardingRootView(model: flowModel))
         if let window {
@@ -426,8 +461,41 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
+        stopLivePermissionRefresh()
         // Closing the wizard (traffic light, Cmd+W) counts as finishing it, matching
         // the Done button so a completed run is not re-shown on the next launch.
         flowModel?.persistCompletionIfNeeded()
+    }
+
+    // Grants happen OUTSIDE this app (System Settings toggles, OS dialogs), so the
+    // pills go stale the moment the user leaves. Re-read on every app activation —
+    // the "came back from System Settings" moment — plus a slow poll while visible,
+    // because a Settings toggle also lands without any activation change when the
+    // wizard stays frontmost on another display. refresh() self-deduplicates, so
+    // both signals are cheap no-ops when nothing changed.
+    private func startLivePermissionRefresh() {
+        stopLivePermissionRefresh()
+        activationObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.flowModel?.refresh() }
+        }
+        let timer = Timer(timeInterval: 2, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.flowModel?.refresh() }
+        }
+        // .common keeps the poll alive while SwiftUI runs its interaction modes.
+        RunLoop.main.add(timer, forMode: .common)
+        refreshTimer = timer
+    }
+
+    private func stopLivePermissionRefresh() {
+        if let activationObserver {
+            NotificationCenter.default.removeObserver(activationObserver)
+            self.activationObserver = nil
+        }
+        refreshTimer?.invalidate()
+        refreshTimer = nil
     }
 }

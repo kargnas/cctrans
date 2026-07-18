@@ -472,10 +472,7 @@
       translateScreenshot: "Screenshot Translation",
       showRequestLogs: "Request Logs",
       showLocalModelSetup: "Model Setup",
-      openInputMonitoring: "Input Monitoring",
-      openAccessibility: "Accessibility",
-      openScreenRecording: "Screen Recording",
-      openPermissionHelper: "Permission Helper"
+      openPermissionHelper: "Permissions"
     };
     return titles[action] ?? "Action";
   }
@@ -1660,8 +1657,10 @@
               <span class="reset-row spacer"></span>
             </div>
             <div class="action-grid single">
+              <!-- Opens the native permissions window in the Swift host (both
+                   variants) — the host owns the TCC identity, not this helper. -->
               <button onclick={() => runAction("openPermissionHelper")}>
-                <ShieldCheck size={14} />{settingsState.appVariant === "mas" ? "Permissions" : "Permission Helper"}
+                <ShieldCheck size={14} />Permissions
               </button>
             </div>
           </div>

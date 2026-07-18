@@ -33,15 +33,13 @@ struct PermissionsStepView: View {
                 )
 
                 ForEach(model.permissions) { permission in
-                    PermissionCardView(
-                        permission: permission,
-                        didAttempt: model.didAttempt(permission)
-                    )
+                    PermissionCardView(permission: permission)
                 }
 
-                // The drag affordance only helps once a request has been made and
-                // macOS still hasn't added the app to its Privacy list automatically.
-                if !model.allGranted, model.permissions.contains(where: { model.didAttempt($0) }) {
+                // Shown whenever a grant is missing (the old Permission Helper always
+                // showed it): macOS sometimes never auto-adds the app to a Privacy
+                // list, and the drag card is the only recovery path in that state.
+                if !model.allGranted {
                     AppBundleDragCard(
                         appBundleURL: model.appBundleURL,
                         onReveal: model.revealAppBundle
@@ -55,7 +53,6 @@ struct PermissionsStepView: View {
 
 private struct PermissionCardView: View {
     let permission: OnboardingFlowModel.Permission
-    let didAttempt: Bool
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
@@ -82,7 +79,10 @@ private struct PermissionCardView: View {
                     // wording like "Continue".
                     Button("Continue") { permission.request() }
                         .controlSize(.small)
-                    if didAttempt, let fallback = permission.fallback {
+                    // Always reachable (not gated on a prior attempt): macOS shows
+                    // each OS permission dialog only once, so after any earlier
+                    // denial Settings is the only remaining grant path.
+                    if let fallback = permission.fallback {
                         Button("Open Settings") { fallback() }
                             .buttonStyle(.link)
                             .font(.caption)

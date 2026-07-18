@@ -1,7 +1,6 @@
 import "./app.css";
 import App from "./App.svelte";
 import LocalModelSetup from "./LocalModelSetup.svelte";
-import PermissionHelper from "./PermissionHelper.svelte";
 import RequestLogs from "./RequestLogs.svelte";
 import TranslationPopover from "./TranslationPopover.svelte";
 import { currentSurface, type AppSurface } from "./lib/surfaces";
@@ -11,8 +10,7 @@ const surfaceComponents: Record<AppSurface, typeof App> = {
   settings: App,
   translation: TranslationPopover as typeof App,
   "local-model-setup": LocalModelSetup as typeof App,
-  "request-logs": RequestLogs as typeof App,
-  "permission-helper": PermissionHelper as typeof App
+  "request-logs": RequestLogs as typeof App
 };
 
 const surface = currentSurface();
