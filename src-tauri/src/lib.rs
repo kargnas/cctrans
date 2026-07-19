@@ -4326,7 +4326,9 @@ fn request_account_shell_action(
         _ => return Err(format!("Unknown account action: {action}")),
     }
     let request = publish_account_shell_request(directory, action)?;
-    wait_for_account_shell_response(&request, lock_path, timeout)
+    let claimed_timeout =
+        matches!(action, "purchase" | "restore").then_some(Duration::from_secs(15 * 60));
+    wait_for_account_shell_response(&request, lock_path, timeout, claimed_timeout)
 }
 
 fn publish_account_shell_request(
@@ -4360,8 +4362,11 @@ fn wait_for_account_shell_response(
     request: &PublishedAccountRequest,
     lock_path: &Path,
     timeout: Duration,
+    claimed_timeout: Option<Duration>,
 ) -> Result<AccountActionResult, String> {
-    let deadline = std::time::Instant::now() + timeout;
+    let started_at = std::time::Instant::now();
+    let deadline = started_at + timeout;
+    let claimed_deadline = claimed_timeout.map(|duration| started_at + duration.max(timeout));
     loop {
         if request.response_path.exists() {
             if let Some(response) =
@@ -4371,6 +4376,13 @@ fn wait_for_account_shell_response(
             }
         }
         if std::time::Instant::now() >= deadline {
+            if request.claimed_path.exists()
+                && claimed_deadline
+                    .is_some_and(|hard_deadline| std::time::Instant::now() < hard_deadline)
+            {
+                std::thread::sleep(Duration::from_millis(50));
+                continue;
+            }
             if let Some(response) = with_account_session_lock(lock_path, |_| {
                 let response = consume_account_shell_response(request)?;
                 if response.is_none() {
@@ -5308,8 +5320,67 @@ mod tests {
         let lock_path = directory.join("account-session.lock");
 
         let error =
-            wait_for_account_shell_response(&request, &lock_path, Duration::from_millis(10))
+            wait_for_account_shell_response(&request, &lock_path, Duration::from_millis(10), None)
                 .unwrap_err();
+
+        assert!(error.contains("did not respond"));
+        assert!(!request.claimed_path.exists());
+        assert_eq!(account_request_artifact_count(&directory), 0);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn storekit_request_keeps_waiting_after_host_claims_it() {
+        let directory = account_test_directory("account-request-storekit-long-running");
+        let request = publish_account_shell_request(&directory, "purchase").unwrap();
+        fs::rename(&request.request_path, &request.claimed_path).unwrap();
+        let lock_path = directory.join("account-session.lock");
+        let host_request = request.clone();
+        let responder = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(40));
+            let response = AccountShellResponse {
+                title: "Purchase Complete".to_string(),
+                message: "Purchase synchronized.".to_string(),
+                ok: true,
+                code: "success".to_string(),
+            };
+            replace_private_file_contents(
+                &host_request.response_path,
+                &serde_json::to_string(&response).unwrap(),
+            )
+            .unwrap();
+            remove_file_if_exists(&host_request.claimed_path).unwrap();
+        });
+
+        let result = wait_for_account_shell_response(
+            &request,
+            &lock_path,
+            Duration::from_millis(10),
+            Some(Duration::from_millis(100)),
+        )
+        .unwrap();
+        responder.join().unwrap();
+
+        assert!(result.ok);
+        assert_eq!(result.code, "success");
+        assert_eq!(account_request_artifact_count(&directory), 0);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn storekit_request_hard_timeout_cleans_abandoned_claim() {
+        let directory = account_test_directory("account-request-storekit-hard-timeout");
+        let request = publish_account_shell_request(&directory, "purchase").unwrap();
+        fs::rename(&request.request_path, &request.claimed_path).unwrap();
+        let lock_path = directory.join("account-session.lock");
+
+        let error = wait_for_account_shell_response(
+            &request,
+            &lock_path,
+            Duration::from_millis(10),
+            Some(Duration::from_millis(30)),
+        )
+        .unwrap_err();
 
         assert!(error.contains("did not respond"));
         assert!(!request.claimed_path.exists());
@@ -5347,7 +5418,7 @@ mod tests {
         acquired_rx.recv().unwrap();
 
         let result =
-            wait_for_account_shell_response(&request, &lock_path, Duration::from_millis(10))
+            wait_for_account_shell_response(&request, &lock_path, Duration::from_millis(10), None)
                 .unwrap();
         host.join().unwrap();
 
@@ -5378,6 +5449,7 @@ mod tests {
                 &request,
                 &directory.join("account-session.lock"),
                 Duration::from_secs(1),
+                None,
             )
             .unwrap();
 

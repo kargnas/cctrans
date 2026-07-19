@@ -40,6 +40,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         appTransactionProvider: { await CctransAppTransactionProvider.shared.signedAppTransaction() },
         appReceiptProvider: { await CctransAppTransactionProvider.shared.appStoreReceipt() }
     )
+    private lazy var storeKitAccountCoordinator = CctransStoreKitAccountCoordinator(
+        store: CctransAppTransactionProvider.shared,
+        claimer: accountClient
+    )
     private let appleSignIn = CctransAppleSignIn()
     private let translationService = TranslationService(
         appleBackend: AppleTranslationHost.shared,
@@ -88,6 +92,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var permissionRequestWatcher: DispatchSourceFileSystemObject?
     private var accountRequestWatcher: DispatchSourceFileSystemObject?
     private var accountRequestTask: Task<Void, Never>?
+    private var storeKitTransactionUpdatesTask: Task<Void, Never>?
+    private var storeKitTransactionRetryTask: Task<Void, Never>?
+    private var storeKitRetryDelaySeconds: Int64 = 5
     // Last status written to permission-status.json; only rewrite the shared file
     // when a grant actually flips, so the steady-state poll never churns the shared
     // directory watchers (SettingsStore / the Tauri helper) every tick.
@@ -170,6 +177,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         writePermissionStatusCache()
         startPermissionRequestWatcher()
         startAccountRequestWatcher()
+        startStoreKitTransactionSynchronization()
         startPermissionStatusTimer()
         githubStarPrompter.scheduleIfEligible(
             hasWorkspaceRoot: resolveWorkspaceRootURL() != nil,
@@ -222,6 +230,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         permissionRequestWatcher?.cancel()
         accountRequestWatcher?.cancel()
         accountRequestTask?.cancel()
+        storeKitTransactionUpdatesTask?.cancel()
+        storeKitTransactionRetryTask?.cancel()
         #if MAS_BUILD
         loginRequestWatcher?.cancel()
         screenshotRequestWatcher?.cancel()
@@ -350,7 +360,278 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 } catch {
                     return .error(title: "Account Refresh", message: error.localizedDescription)
                 }
+            },
+            storeKit: { [weak self] action, _ in
+                guard let self else {
+                    return .error(title: "App Store", message: "CCTrans is shutting down.")
+                }
+                return await handleStoreKitAccountAction(action)
             }
+        )
+    }
+
+    private func handleStoreKitAccountAction(
+        _ action: CctransAccountRequestAction
+    ) async -> CctransAccountActionResponse {
+        #if MAS_BUILD
+        do {
+            let outcome: CctransStoreKitActionOutcome
+            switch action {
+            case .purchase:
+                let accountUUID = try await accountClient.currentAccountUUID()
+                outcome = try await storeKitAccountCoordinator.purchase(
+                    appAccountToken: accountUUID
+                )
+            case .restore:
+                let accountUUID = try await accountClient.currentAccountUUID()
+                outcome = try await storeKitAccountCoordinator.restore(
+                    expectedAccountUUID: accountUUID
+                )
+            default:
+                return .error(title: "App Store", message: "Unsupported StoreKit action.")
+            }
+            return storeKitActionResponse(for: outcome)
+        } catch let error as CctransStoreKitPostClaimRefreshError {
+            scheduleStoreKitTransactionRetry()
+            return storeKitPostClaimRefreshErrorResponse(error)
+        } catch let error as CctransAccountError {
+            scheduleStoreKitTransactionRetry()
+            return storeKitAccountErrorResponse(error)
+        } catch is URLError {
+            scheduleStoreKitTransactionRetry()
+            return .error(
+                title: "App Store",
+                message: "CCTrans Cloud could not be reached. Your existing account status was kept; please try again."
+            )
+        } catch {
+            scheduleStoreKitTransactionRetry()
+            return .error(title: "App Store", message: error.localizedDescription)
+        }
+        #else
+        return .notAvailable(
+            title: "App Store",
+            message: "StoreKit purchase and restore are only available in the Mac App Store build."
+        )
+        #endif
+    }
+
+    private func startStoreKitTransactionSynchronization() {
+        #if MAS_BUILD
+        guard storeKitTransactionUpdatesTask == nil else { return }
+        storeKitTransactionUpdatesTask = Task { [weak self] in
+            guard let self else { return }
+            let updates = CctransAppTransactionProvider.shared.transactionUpdates()
+            if !(await synchronizeUnfinishedStoreKitTransactions()) {
+                scheduleStoreKitTransactionRetry()
+            }
+            for await transaction in updates {
+                if !(await synchronizeStoreKitTransaction(transaction)) {
+                    scheduleStoreKitTransactionRetry()
+                }
+            }
+        }
+        #endif
+    }
+
+    private func synchronizeUnfinishedStoreKitTransactions() async -> Bool {
+        #if MAS_BUILD
+        var allSucceeded = true
+        for await transaction in CctransAppTransactionProvider.shared.unfinishedTransactions() {
+            if !(await synchronizeStoreKitTransaction(transaction)) {
+                allSucceeded = false
+            }
+        }
+        return allSucceeded
+        #else
+        return true
+        #endif
+    }
+
+    private func scheduleStoreKitTransactionRetry() {
+        #if MAS_BUILD
+        guard storeKitTransactionRetryTask == nil else { return }
+        let delaySeconds = storeKitRetryDelaySeconds
+        storeKitTransactionRetryTask = Task { [weak self] in
+            do {
+                try await Task.sleep(for: .seconds(delaySeconds))
+            } catch {
+                return
+            }
+            guard let self, !Task.isCancelled else { return }
+            storeKitTransactionRetryTask = nil
+            let pendingWorkSucceeded = await storeKitAccountCoordinator.retryPendingWork()
+            let unfinishedSucceeded = await synchronizeUnfinishedStoreKitTransactions()
+            if pendingWorkSucceeded, unfinishedSucceeded {
+                storeKitRetryDelaySeconds = 5
+            } else {
+                storeKitRetryDelaySeconds = min(delaySeconds * 2, 30)
+                scheduleStoreKitTransactionRetry()
+            }
+        }
+        #endif
+    }
+
+    private func synchronizeStoreKitTransaction(
+        _ transaction: CctransStoreKitVerifiedTransaction
+    ) async -> Bool {
+        #if MAS_BUILD
+        do {
+            let expectedAccountUUID: UUID?
+            if let appAccountToken = transaction.appAccountToken {
+                expectedAccountUUID = appAccountToken
+            } else {
+                expectedAccountUUID = try await accountClient.currentAccountUUID()
+            }
+            _ = try await storeKitAccountCoordinator.synchronize(
+                transaction: transaction,
+                expectedAccountUUID: expectedAccountUUID
+            )
+            return true
+        } catch let error as CctransStoreKitPostClaimRefreshError {
+            print("CCTrans Cloud: StoreKit claim succeeded but account refresh failed: \(error.localizedDescription)")
+            return false
+        } catch {
+            print("CCTrans Cloud: StoreKit transaction synchronization failed: \(error.localizedDescription)")
+            return false
+        }
+        #else
+        return true
+        #endif
+    }
+
+    private func storeKitActionResponse(
+        for outcome: CctransStoreKitActionOutcome
+    ) -> CctransAccountActionResponse {
+        switch outcome {
+        case let .purchased(account):
+            if account?.syncing == true {
+                return .success(
+                    title: "Purchase Pending Sync",
+                    message: "The purchase was verified. CCTrans Cloud is still updating the account status."
+                )
+            }
+            return .success(
+                title: "Purchase Complete",
+                message: account.map { "App Store Pro was synchronized for \($0.email)." }
+                    ?? "App Store Pro was verified on this Mac."
+            )
+        case let .restored(
+            count,
+            failedCount,
+            retryableCount,
+            account,
+            accountRefreshFailed
+        ):
+            if failedCount > 0 {
+                if retryableCount > 0 || accountRefreshFailed {
+                    scheduleStoreKitTransactionRetry()
+                }
+                var details = "Restored \(count) App Store purchase(s). \(failedCount) purchase(s) could not be synchronized."
+                if retryableCount > 0 {
+                    details += " \(retryableCount) verified purchase(s) will be retried."
+                }
+                if failedCount > retryableCount {
+                    details += " Run Restore Purchases again for the remaining purchase(s)."
+                }
+                if accountRefreshFailed {
+                    details += " The latest account status could not be loaded and will be retried."
+                }
+                return .error(
+                    title: "Restore Incomplete",
+                    message: details
+                )
+            }
+            if accountRefreshFailed {
+                scheduleStoreKitTransactionRetry()
+                return .error(
+                    title: "Purchase Synchronized",
+                    message: "The App Store purchases were synchronized, but the latest account status could not be loaded. CCTrans will retry it."
+                )
+            }
+            guard count > 0 else {
+                return .success(
+                    title: "Restore Complete",
+                    message: "No active CCTrans App Store purchases were found."
+                )
+            }
+            if account?.syncing == true {
+                return .success(
+                    title: "Restore Pending Sync",
+                    message: "Restored \(count) purchase(s). CCTrans Cloud is still updating the account status."
+                )
+            }
+            return .success(
+                title: "Restore Complete",
+                message: "Restored and synchronized \(count) App Store purchase(s)."
+            )
+        case .pending:
+            return .success(
+                title: "Purchase Pending",
+                message: "The purchase is waiting for App Store approval. CCTrans will synchronize it after approval."
+            )
+        case .userCancelled:
+            return .success(title: "Purchase Cancelled", message: "No purchase was made.")
+        }
+    }
+
+    private func storeKitAccountErrorResponse(
+        _ error: CctransAccountError
+    ) -> CctransAccountActionResponse {
+        switch error {
+        case .api(status: _, code: .purchaseAlreadyClaimed):
+            .error(
+                title: "Purchase Already Linked",
+                message: "This App Store purchase belongs to another CCTrans account. Sign in to that account and restore again."
+            )
+        case .api(status: _, code: .appAccountTokenMismatch):
+            .error(
+                title: "Account Mismatch",
+                message: "This purchase was created for a different CCTrans account. Sign in to the original account and restore again."
+            )
+        case .storeKitAccountChanged:
+            .error(
+                title: "Account Changed",
+                message: "The signed-in CCTrans account changed during this App Store operation. Sign in to the original account and restore the purchase."
+            )
+        case .api(status: 401, code: .invalidToken),
+             .api(status: 401, code: .unauthenticated):
+            .error(
+                title: "Sign In Required",
+                message: "Your CCTrans session expired. Sign in again, then retry the purchase or restore."
+            )
+        case .api(status: 401, code: _):
+            .error(
+                title: "App Store Verification Failed",
+                message: "The App Store purchase could not be verified. Your CCTrans session was kept; please try again."
+            )
+        default:
+            .error(title: "App Store", message: error.localizedDescription)
+        }
+    }
+
+    private func storeKitPostClaimRefreshErrorResponse(
+        _ error: CctransStoreKitPostClaimRefreshError
+    ) -> CctransAccountActionResponse {
+        if let accountError = error.underlyingError as? CctransAccountError {
+            switch accountError {
+            case .storeKitAccountChanged, .operationSuperseded:
+                return .error(
+                    title: "Purchase Synchronized",
+                    message: "The purchase was synchronized, but the signed-in account changed. Sign in to the purchase account and refresh."
+                )
+            case .api(status: 401, code: .invalidToken),
+                 .api(status: 401, code: .unauthenticated):
+                return .error(
+                    title: "Purchase Synchronized",
+                    message: "The purchase was synchronized, but your CCTrans session expired. Sign in again and refresh the account status."
+                )
+            default:
+                break
+            }
+        }
+        return .error(
+            title: "Purchase Synchronized",
+            message: "The purchase was synchronized, but the latest account status could not be loaded. Your previous status was kept; use Refresh to try again."
         )
     }
 

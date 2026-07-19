@@ -1,7 +1,7 @@
 import CryptoKit
 import Foundation
 
-public actor CctransAccountClient {
+public actor CctransAccountClient: CctransStoreKitTransactionClaiming {
     public static let defaultBaseURL = "https://kargn.as/v1/cctrans"
 
     private let session: URLSession
@@ -96,6 +96,21 @@ public actor CctransAccountClient {
 
     public func refresh() async throws -> CctransAccountSummary? {
         let context = try sessionCoordinator.beginAuthenticatedOperation()
+        return try await refresh(using: context)
+    }
+
+    public func refreshStoreKitAccount(
+        expectedAccountUUID: UUID
+    ) async throws -> CctransAccountSummary? {
+        let context = try sessionCoordinator.beginStoreKitOperation(
+            expectedAccountUUID: expectedAccountUUID
+        )
+        return try await refresh(using: context)
+    }
+
+    private func refresh(
+        using context: (operation: CctransAccountSessionCoordinator.Operation, token: String?)
+    ) async throws -> CctransAccountSummary? {
         guard let token = context.token else {
             guard try sessionCoordinator.clear(
                 for: context.operation,
@@ -142,6 +157,43 @@ public actor CctransAccountClient {
         _ = try await send(request)
     }
 
+    public func currentAccountUUID() throws -> UUID? {
+        try sessionCoordinator.loadAccountSummary()?.uuid
+    }
+
+    public func submitStoreKitTransaction(
+        signedTransaction: String,
+        expectedAccountUUID: UUID?
+    ) async throws -> Bool {
+        let signedTransaction = signedTransaction.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !signedTransaction.isEmpty else {
+            throw CctransAccountError.invalidStoreKitTransaction
+        }
+
+        let context = try sessionCoordinator.beginStoreKitOperation(
+            expectedAccountUUID: expectedAccountUUID
+        )
+        let isAuthenticated = context.token != nil
+        var request = try makeRequest(
+            path: isAuthenticated ? "/subscription/claim" : "/subscription/verify",
+            method: "POST"
+        )
+        if let token = context.token {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        try await applyAppTrust(
+            to: &request,
+            jsonBody: ["signed_transaction": signedTransaction],
+            requiresChallenge: true
+        )
+        _ = try await send(
+            request,
+            unauthorizedContext: context.token.map { (context.operation, $0) }
+        )
+
+        return isAuthenticated
+    }
+
     private func authenticate(
         path: String,
         body: [String: String],
@@ -165,33 +217,62 @@ public actor CctransAccountClient {
         return accountSession
     }
 
-    private func applyAppTrust(to request: inout URLRequest) async throws {
-        if let devToken = devTokenProvider?()?.nilIfBlank {
+    private func applyAppTrust(
+        to request: inout URLRequest,
+        jsonBody: [String: Any]? = nil,
+        requiresChallenge: Bool = false
+    ) async throws {
+        var body = jsonBody ?? Self.jsonObject(from: request.httpBody)
+        let devToken = devTokenProvider?()?.nilIfBlank
+        let appTransaction = devToken == nil
+            ? await appTransactionProvider?()?.nilIfBlank
+            : nil
+        let appReceipt = devToken == nil && appTransaction == nil
+            ? await appReceiptProvider?()?.nilIfBlank
+            : nil
+        let assertionContext: (attestor: any CctransAttesting, keyID: String)?
+        if devToken == nil, appTransaction == nil, appReceipt == nil {
+            guard let attestor, attestor.isSupported else {
+                throw CctransAccountError.attestUnavailable
+            }
+            assertionContext = (attestor, try await ensureRegistered(attestor))
+        } else {
+            assertionContext = nil
+        }
+
+        if requiresChallenge || assertionContext != nil {
+            body["challenge"] = try await fetchChallenge(
+                type: "assert",
+                keyID: assertionContext?.keyID
+            )
+        }
+        if let appReceipt {
+            body["app_receipt"] = appReceipt
+        }
+        if !body.isEmpty {
+            request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        }
+
+        if let devToken {
             request.setValue(devToken, forHTTPHeaderField: "X-Cctrans-Dev-Token")
             return
         }
-        if let appTransaction = await appTransactionProvider?()?.nilIfBlank {
+        if let appTransaction {
             request.setValue(appTransaction, forHTTPHeaderField: "X-Cctrans-App-Transaction")
             return
         }
-        if let appReceipt = await appReceiptProvider?()?.nilIfBlank {
-            request.httpBody = try JSONSerialization.data(withJSONObject: ["app_receipt": appReceipt])
+        if appReceipt != nil {
             return
         }
-        guard let attestor, attestor.isSupported else {
+        guard let assertionContext, let encodedBody = request.httpBody else {
             throw CctransAccountError.attestUnavailable
         }
-
-        let keyID = try await ensureRegistered(attestor)
-        let challenge = try await fetchChallenge(type: "assert", keyID: keyID)
-        let body = try JSONSerialization.data(withJSONObject: ["challenge": challenge])
-        let assertion = try await attestor.generateAssertion(
-            keyID,
-            clientDataHash: Data(SHA256.hash(data: body))
+        let assertion = try await assertionContext.attestor.generateAssertion(
+            assertionContext.keyID,
+            clientDataHash: Data(SHA256.hash(data: encodedBody))
         )
-        request.setValue(keyID, forHTTPHeaderField: "X-Cctrans-Key-Id")
+        request.setValue(assertionContext.keyID, forHTTPHeaderField: "X-Cctrans-Key-Id")
         request.setValue(assertion.base64EncodedString(), forHTTPHeaderField: "X-Cctrans-Assertion")
-        request.httpBody = body
     }
 
     private func ensureRegistered(_ attestor: any CctransAttesting) async throws -> String {
@@ -215,9 +296,13 @@ public actor CctransAccountClient {
         return keyID
     }
 
-    private func fetchChallenge(type: String, keyID: String) async throws -> String {
+    private func fetchChallenge(type: String, keyID: String?) async throws -> String {
         var request = try makeRequest(path: "/attest/challenge", method: "POST")
-        request.httpBody = try JSONSerialization.data(withJSONObject: ["type": type, "key_id": keyID])
+        var body = ["type": type]
+        if let keyID, !keyID.isEmpty {
+            body["key_id"] = keyID
+        }
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
         let data = try await send(request)
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let challenge = object["challenge"] as? String,
@@ -248,7 +333,9 @@ public actor CctransAccountClient {
         }
         guard (200..<300).contains(http.statusCode) else {
             let code = Self.apiErrorCode(from: data)
-            if http.statusCode == 401, let unauthorizedContext {
+            if http.statusCode == 401,
+               let unauthorizedContext,
+               Self.isAccountAuthenticationFailure(data: data, code: code) {
                 guard try sessionCoordinator.clear(
                     for: unauthorizedContext.operation,
                     expectedToken: unauthorizedContext.token
@@ -270,11 +357,36 @@ public actor CctransAccountClient {
     }
 
     private static func apiErrorCode(from data: Data) -> CctransAccountAPIErrorCode? {
-        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let rawValue = object["error"] as? String else {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return nil
         }
-        return CctransAccountAPIErrorCode(rawValue: rawValue)
+        if let rawValue = object["error"] as? String,
+           let code = CctransAccountAPIErrorCode(rawValue: rawValue) {
+            return code
+        }
+        return object["message"] as? String == "Unauthenticated." ? .unauthenticated : nil
+    }
+
+    private static func isAccountAuthenticationFailure(
+        data: Data,
+        code: CctransAccountAPIErrorCode?
+    ) -> Bool {
+        if code == .invalidToken || code == .unauthenticated {
+            return true
+        }
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return false
+        }
+        return object["error"] as? String == "unauthenticated"
+            || object["message"] as? String == "Unauthenticated."
+    }
+
+    private static func jsonObject(from data: Data?) -> [String: Any] {
+        guard let data,
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return [:]
+        }
+        return object
     }
 }
 

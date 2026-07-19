@@ -1,6 +1,7 @@
 import CCTransCore
 import CryptoKit
 import Foundation
+import Synchronization
 import Testing
 
 @Suite(.serialized)
@@ -409,6 +410,286 @@ struct CctransAccountTests {
         #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer stored-token")
         #expect(request.value(forHTTPHeaderField: "X-Cctrans-App-Transaction") == "signed-app-transaction")
         #expect(try summaryStore.load() == summary)
+    }
+
+    @Test func storeKitClaimSignsExactChallengeAndTransactionBody() async throws {
+        let tokenStore = MockAccountTokenStore(token: "stored-token")
+        let summaryStore = CctransAccountSummaryStore(fileURL: temporarySummaryURL())
+        try summaryStore.save(accountSummary)
+        let requests = AccountRequestLog()
+        let challengeSequence = AccountRequestSequence()
+        let attestor = RecordingAccountAttestor()
+        let client = CctransAccountClient(
+            session: makeAccountSession { request in
+                requests.record(request)
+                switch request.url?.path {
+                case "/v1/cctrans/attest/challenge":
+                    let challenge = challengeSequence.next() == 1 ? "claim-challenge" : "refresh-challenge"
+                    return .response(200, json(["challenge": challenge]))
+                case "/v1/cctrans/subscription/claim":
+                    return .response(200, json(["ok": true, "pro": true]))
+                case "/v1/cctrans/account":
+                    return .response(200, accountSummaryJSON(plan: "lifetime", lifetime: true))
+                default:
+                    return .response(404, Data())
+                }
+            },
+            tokenStore: tokenStore,
+            summaryStore: summaryStore,
+            lockFileURL: accountLockURL(for: summaryStore),
+            attestor: attestor
+        )
+
+        let shouldRefresh = try await client.submitStoreKitTransaction(
+            signedTransaction: "signed-storekit-transaction",
+            expectedAccountUUID: accountUUID
+        )
+        let account = try await client.refreshStoreKitAccount(expectedAccountUUID: accountUUID)
+
+        let claimRequest = try #require(requests.request(pathSuffix: "/subscription/claim"))
+        let claimBody = try #require(claimRequest.httpBodyData)
+        let claimJSON = try #require(JSONSerialization.jsonObject(with: claimBody) as? [String: String])
+        #expect(claimJSON == [
+            "challenge": "claim-challenge",
+            "signed_transaction": "signed-storekit-transaction",
+        ])
+        #expect(claimRequest.value(forHTTPHeaderField: "Authorization") == "Bearer stored-token")
+        #expect(claimRequest.value(forHTTPHeaderField: "X-Cctrans-Key-Id") == "account-key-id")
+        #expect(claimRequest.value(forHTTPHeaderField: "X-Cctrans-Assertion") == Data("assertion".utf8).base64EncodedString())
+        #expect(attestor.clientDataHashes.contains(Data(SHA256.hash(data: claimBody))))
+        #expect(shouldRefresh)
+        #expect(account?.plan == .lifetime)
+    }
+
+    @Test func anonymousStoreKitClaimDoesNotSupersedeInflightLogin() async throws {
+        let tokenStore = MockAccountTokenStore()
+        let summaryStore = CctransAccountSummaryStore(fileURL: temporarySummaryURL())
+        let gate = AccountRequestGate()
+        let client = CctransAccountClient(
+            session: makeAccountSession { request in
+                switch request.url?.path {
+                case let path? where path.hasSuffix("/auth/login"):
+                    await gate.markStartedAndWait()
+                    return .response(200, accountSessionJSON(token: "login-token"))
+                case let path? where path.hasSuffix("/attest/challenge"):
+                    return .response(200, json(["challenge": "storekit-challenge"]))
+                case let path? where path.hasSuffix("/subscription/verify"):
+                    return .response(200, json(["ok": true]))
+                default:
+                    Issue.record("예상하지 못한 계정 요청입니다: \(request.url?.path ?? "nil")")
+                    return .response(500, json(["error": "unexpected_request"]))
+                }
+            },
+            tokenStore: tokenStore,
+            summaryStore: summaryStore,
+            lockFileURL: accountLockURL(for: summaryStore),
+            appTransactionProvider: { "signed-app-transaction" }
+        )
+
+        let login = Task {
+            try await client.login(email: "user@example.com", password: "password")
+        }
+        await gate.waitUntilStarted()
+        let claimedForAccount = try await client.submitStoreKitTransaction(
+            signedTransaction: "signed-storekit-transaction",
+            expectedAccountUUID: nil
+        )
+        await gate.open()
+        let session = try await login.value
+
+        #expect(claimedForAccount == false)
+        #expect(session.token == "login-token")
+        #expect(tokenStore.storedToken == "login-token")
+        #expect(try summaryStore.load()?.uuid == accountUUID)
+    }
+
+    @Test func anonymousStoreKitVerifyUsesVerifyEndpointWithoutBearer() async throws {
+        let requests = AccountRequestLog()
+        let summaryStore = CctransAccountSummaryStore(fileURL: temporarySummaryURL())
+        let client = CctransAccountClient(
+            session: makeAccountSession { request in
+                requests.record(request)
+                if request.url?.path.hasSuffix("/attest/challenge") == true {
+                    return .response(200, json(["challenge": "verify-challenge"]))
+                }
+                return .response(200, json(["ok": true, "pro": true]))
+            },
+            tokenStore: MockAccountTokenStore(),
+            summaryStore: summaryStore,
+            lockFileURL: accountLockURL(for: summaryStore),
+            devTokenProvider: { "dev-token" }
+        )
+
+        let shouldRefresh = try await client.submitStoreKitTransaction(
+            signedTransaction: "signed-anonymous-transaction",
+            expectedAccountUUID: nil
+        )
+
+        let verifyRequest = try #require(requests.request(pathSuffix: "/subscription/verify"))
+        let body = try #require(verifyRequest.httpBodyData)
+        let object = try #require(JSONSerialization.jsonObject(with: body) as? [String: String])
+        #expect(object == [
+            "challenge": "verify-challenge",
+            "signed_transaction": "signed-anonymous-transaction",
+        ])
+        #expect(verifyRequest.value(forHTTPHeaderField: "Authorization") == nil)
+        #expect(verifyRequest.value(forHTTPHeaderField: "X-Cctrans-Dev-Token") == "dev-token")
+        #expect(!shouldRefresh)
+    }
+
+    @Test func storeKitClaimReceiptFallbackPreservesTransactionBody() async throws {
+        let requests = AccountRequestLog()
+        let summaryStore = CctransAccountSummaryStore(fileURL: temporarySummaryURL())
+        try summaryStore.save(accountSummary)
+        let client = CctransAccountClient(
+            session: makeAccountSession { request in
+                requests.record(request)
+                switch request.url?.path {
+                case "/v1/cctrans/attest/challenge":
+                    return .response(200, json(["challenge": "receipt-challenge"]))
+                case "/v1/cctrans/subscription/claim":
+                    return .response(200, json(["ok": true, "pro": true]))
+                case "/v1/cctrans/account":
+                    return .response(200, accountSummaryJSON(plan: "pro", lifetime: false))
+                default:
+                    return .response(404, Data())
+                }
+            },
+            tokenStore: MockAccountTokenStore(token: "stored-token"),
+            summaryStore: summaryStore,
+            lockFileURL: accountLockURL(for: summaryStore),
+            appReceiptProvider: { "base64-receipt" }
+        )
+
+        _ = try await client.submitStoreKitTransaction(
+            signedTransaction: "signed-transaction",
+            expectedAccountUUID: accountUUID
+        )
+
+        let claimRequest = try #require(requests.request(pathSuffix: "/subscription/claim"))
+        let body = try #require(claimRequest.httpBodyData)
+        let object = try #require(JSONSerialization.jsonObject(with: body) as? [String: String])
+        #expect(object == [
+            "app_receipt": "base64-receipt",
+            "challenge": "receipt-challenge",
+            "signed_transaction": "signed-transaction",
+        ])
+    }
+
+    @Test func storeKitAppTrust401KeepsAccountSession() async throws {
+        let tokenStore = MockAccountTokenStore(token: "stored-token")
+        let summaryStore = CctransAccountSummaryStore(fileURL: temporarySummaryURL())
+        try summaryStore.save(accountSummary)
+        let client = CctransAccountClient(
+            session: makeAccountSession { request in
+                if request.url?.path.hasSuffix("/attest/challenge") == true {
+                    return .response(200, json(["challenge": "claim-challenge"]))
+                }
+                return .response(401, json(["ok": false, "error": "invalid_app_transaction"]))
+            },
+            tokenStore: tokenStore,
+            summaryStore: summaryStore,
+            lockFileURL: accountLockURL(for: summaryStore),
+            appTransactionProvider: { "signed-app-transaction" }
+        )
+
+        await #expect(throws: CctransAccountError.self) {
+            try await client.submitStoreKitTransaction(
+                signedTransaction: "signed-transaction",
+                expectedAccountUUID: accountUUID
+            )
+        }
+
+        #expect(tokenStore.storedToken == "stored-token")
+        #expect(try summaryStore.load() == accountSummary)
+    }
+
+    @Test func storeKitAuthentication401ClearsAccountSession() async throws {
+        let tokenStore = MockAccountTokenStore(token: "expired-token")
+        let summaryStore = CctransAccountSummaryStore(fileURL: temporarySummaryURL())
+        try summaryStore.save(accountSummary)
+        let client = CctransAccountClient(
+            session: makeAccountSession { request in
+                if request.url?.path.hasSuffix("/attest/challenge") == true {
+                    return .response(200, json(["challenge": "claim-challenge"]))
+                }
+                return .response(401, json(["message": "Unauthenticated."]))
+            },
+            tokenStore: tokenStore,
+            summaryStore: summaryStore,
+            lockFileURL: accountLockURL(for: summaryStore),
+            appTransactionProvider: { "signed-app-transaction" }
+        )
+
+        await #expect(throws: CctransAccountError.api(
+            status: 401,
+            code: .unauthenticated
+        )) {
+            try await client.submitStoreKitTransaction(
+                signedTransaction: "signed-transaction",
+                expectedAccountUUID: accountUUID
+            )
+        }
+
+        #expect(tokenStore.storedToken == nil)
+        #expect(try summaryStore.load() == nil)
+    }
+
+    @Test func storeKitClaimRejectsChangedAccountBeforeNetworkRequest() async throws {
+        let requests = AccountRequestLog()
+        let summaryStore = CctransAccountSummaryStore(fileURL: temporarySummaryURL())
+        try summaryStore.save(accountSummary)
+        let client = CctransAccountClient(
+            session: makeAccountSession { request in
+                requests.record(request)
+                return .response(500, Data())
+            },
+            tokenStore: MockAccountTokenStore(token: "stored-token"),
+            summaryStore: summaryStore,
+            lockFileURL: accountLockURL(for: summaryStore),
+            devTokenProvider: { "dev-token" }
+        )
+        let anotherAccountUUID = UUID(uuidString: "8B1D0C78-DB1D-4EC2-B6D6-AD68836C5825")!
+
+        await #expect(throws: CctransAccountError.storeKitAccountChanged) {
+            try await client.submitStoreKitTransaction(
+                signedTransaction: "signed-transaction",
+                expectedAccountUUID: anotherAccountUUID
+            )
+        }
+
+        #expect(requests.allRequests.isEmpty)
+    }
+
+    @Test func storeKitAccountTokenMismatchPreservesServer422CodeAndSession() async throws {
+        let tokenStore = MockAccountTokenStore(token: "stored-token")
+        let summaryStore = CctransAccountSummaryStore(fileURL: temporarySummaryURL())
+        try summaryStore.save(accountSummary)
+        let client = CctransAccountClient(
+            session: makeAccountSession { request in
+                if request.url?.path.hasSuffix("/attest/challenge") == true {
+                    return .response(200, json(["challenge": "claim-challenge"]))
+                }
+                return .response(422, json(["error": "app_account_token_mismatch"]))
+            },
+            tokenStore: tokenStore,
+            summaryStore: summaryStore,
+            lockFileURL: accountLockURL(for: summaryStore),
+            devTokenProvider: { "dev-token" }
+        )
+
+        await #expect(throws: CctransAccountError.api(
+            status: 422,
+            code: .appAccountTokenMismatch
+        )) {
+            try await client.submitStoreKitTransaction(
+                signedTransaction: "signed-transaction",
+                expectedAccountUUID: accountUUID
+            )
+        }
+
+        #expect(tokenStore.storedToken == "stored-token")
+        #expect(try summaryStore.load() == accountSummary)
     }
 
     @Test func unauthorizedRefreshClearsTokenAndSummary() async throws {
@@ -888,6 +1169,46 @@ private final class AccountRequestCapture: @unchecked Sendable {
     }
 }
 
+private final class AccountRequestLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var requests: [URLRequest] = []
+
+    var allRequests: [URLRequest] {
+        lock.lock(); defer { lock.unlock() }
+        return requests
+    }
+
+    func record(_ request: URLRequest) {
+        lock.lock(); defer { lock.unlock() }
+        requests.append(request)
+    }
+
+    func request(pathSuffix: String) -> URLRequest? {
+        lock.lock(); defer { lock.unlock() }
+        return requests.first { $0.url?.path.hasSuffix(pathSuffix) == true }
+    }
+}
+
+private final class RecordingAccountAttestor: CctransAttesting, @unchecked Sendable {
+    private let hashes = Mutex<[Data]>([])
+
+    var isSupported: Bool { true }
+
+    var clientDataHashes: [Data] {
+        hashes.withLock { $0 }
+    }
+
+    func loadKeyID() -> String? { "account-key-id" }
+    func saveKeyID(_ keyID: String) {}
+    func generateKey() async throws -> String { "account-key-id" }
+    func attestKey(_ keyID: String, clientDataHash: Data) async throws -> Data { Data() }
+
+    func generateAssertion(_ keyID: String, clientDataHash: Data) async throws -> Data {
+        hashes.withLock { $0.append(clientDataHash) }
+        return Data("assertion".utf8)
+    }
+}
+
 private func makeAccountSession(
     handler: @escaping @Sendable (URLRequest) async -> AccountStubResult
 ) -> URLSession {
@@ -986,6 +1307,28 @@ private func accountLockURL(for summaryStore: CctransAccountSummaryStore) -> URL
 
 private func json(_ object: [String: Any]) -> Data {
     try! JSONSerialization.data(withJSONObject: object)
+}
+
+private extension URLRequest {
+    /// URLSession이 본문을 스트림으로 옮기는 경우까지 포함해 원문을 읽는다.
+    var httpBodyData: Data? {
+        if let httpBody {
+            return httpBody
+        }
+        guard let stream = httpBodyStream else {
+            return nil
+        }
+        stream.open()
+        defer { stream.close() }
+        var data = Data()
+        var buffer = [UInt8](repeating: 0, count: 4096)
+        while stream.hasBytesAvailable {
+            let count = stream.read(&buffer, maxLength: buffer.count)
+            if count <= 0 { break }
+            data.append(buffer, count: count)
+        }
+        return data
+    }
 }
 
 private func tokenSHA256(_ token: String) -> String {

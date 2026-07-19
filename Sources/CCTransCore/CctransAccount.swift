@@ -209,6 +209,18 @@ public final class CctransAccountSessionCoordinator: Sendable {
         }
     }
 
+    public func loadAccountSummary() throws -> CctransAccountSummary? {
+        try state.withLock { _ in
+            try fileLock.withExclusiveLock {
+                try recoverPendingTransaction()
+                guard try normalizedStoredToken() != nil else {
+                    return nil
+                }
+                return try summaryStore.load()
+            }
+        }
+    }
+
     public func clearIfTokenMatches(_ token: String) throws {
         try state.withLock { _ in
             try fileLock.withExclusiveLock {
@@ -238,6 +250,31 @@ public final class CctransAccountSessionCoordinator: Sendable {
                 return (
                     Operation(generation: try advanceGeneration()),
                     try normalizedStoredToken()
+                )
+            }
+        }
+    }
+
+    func beginStoreKitOperation(
+        expectedAccountUUID: UUID?
+    ) throws -> (operation: Operation, token: String?) {
+        try state.withLock { _ in
+            try fileLock.withExclusiveLock {
+                try recoverPendingTransaction()
+                let token = try normalizedStoredToken()
+                if token == nil {
+                    guard expectedAccountUUID == nil else {
+                        throw CctransAccountError.storeKitAccountChanged
+                    }
+                } else {
+                    guard let currentAccountUUID = try summaryStore.load()?.uuid,
+                          currentAccountUUID == expectedAccountUUID else {
+                        throw CctransAccountError.storeKitAccountChanged
+                    }
+                }
+                return (
+                    Operation(generation: try currentGeneration()),
+                    token
                 )
             }
         }
@@ -528,6 +565,7 @@ private struct CctransAccountRecoveryError: LocalizedError {
 }
 
 public enum CctransAccountAPIErrorCode: String, Codable, Sendable {
+    case unauthenticated
     case invalidToken = "invalid_token"
     case invalidCredentials = "invalid_credentials"
     case invalidAppleToken = "invalid_apple_token"
@@ -536,6 +574,10 @@ public enum CctransAccountAPIErrorCode: String, Codable, Sendable {
     case deviceAlreadyLinked = "device_already_linked"
     case missingAbility = "missing_ability"
     case purchaseAlreadyClaimed = "purchase_already_claimed"
+    case purchaseNotActive = "purchase_not_active"
+    case appAccountTokenMismatch = "app_account_token_mismatch"
+    case invalidTransaction = "invalid_transaction"
+    case notConfigured = "not_configured"
 }
 
 public enum CctransAccountError: LocalizedError, Equatable, Sendable {
@@ -543,6 +585,8 @@ public enum CctransAccountError: LocalizedError, Equatable, Sendable {
     case invalidURL(String)
     case api(status: Int, code: CctransAccountAPIErrorCode?)
     case malformedResponse
+    case invalidStoreKitTransaction
+    case storeKitAccountChanged
     case operationSuperseded
 
     public var errorDescription: String? {
@@ -555,6 +599,10 @@ public enum CctransAccountError: LocalizedError, Equatable, Sendable {
             "CCTrans account request failed with HTTP \(status)\(code.map { ": \($0.rawValue)" } ?? "")."
         case .malformedResponse:
             "CCTrans account returned an unexpected response."
+        case .invalidStoreKitTransaction:
+            "StoreKit returned an empty signed transaction."
+        case .storeKitAccountChanged:
+            "The signed-in CCTrans account changed during the App Store operation."
         case .operationSuperseded:
             "A newer CCTrans account operation replaced this request."
         }
