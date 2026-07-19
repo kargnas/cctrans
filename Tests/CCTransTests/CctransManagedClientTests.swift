@@ -292,7 +292,8 @@ struct CctransManagedClientTests {
         try summaryStore.save(managedAccountSummary)
         let coordinator = CctransAccountSessionCoordinator(
             tokenStore: tokenStore,
-            summaryStore: summaryStore
+            summaryStore: summaryStore,
+            lockFileURL: managedLockURL(for: summaryStore)
         )
         let response = json(["ok": false, "error": "invalid_token"])
         let client = CctransManagedClient(
@@ -321,7 +322,8 @@ struct CctransManagedClientTests {
         try summaryStore.save(managedAccountSummary)
         let coordinator = CctransAccountSessionCoordinator(
             tokenStore: tokenStore,
-            summaryStore: summaryStore
+            summaryStore: summaryStore,
+            lockFileURL: managedLockURL(for: summaryStore)
         )
         let client = CctransManagedClient(
             session: makeManagedSession { _ in
@@ -348,7 +350,8 @@ struct CctransManagedClientTests {
         try summaryStore.save(managedAccountSummary)
         let coordinator = CctransAccountSessionCoordinator(
             tokenStore: tokenStore,
-            summaryStore: summaryStore
+            summaryStore: summaryStore,
+            lockFileURL: managedLockURL(for: summaryStore)
         )
         let response = json(["ok": false, "error": "invalid_app_transaction"])
         let client = CctransManagedClient(
@@ -563,6 +566,11 @@ private func temporaryManagedSummaryURL() -> URL {
     FileManager.default.temporaryDirectory
         .appendingPathComponent("cctrans-managed-tests-\(UUID().uuidString)", isDirectory: true)
         .appendingPathComponent("account-summary.json", isDirectory: false)
+}
+
+private func managedLockURL(for summaryStore: CctransAccountSummaryStore) -> URL {
+    summaryStore.fileURL.deletingLastPathComponent()
+        .appendingPathComponent("account-session.lock", isDirectory: false)
 }
 
 private func makeManagedSession(

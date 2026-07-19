@@ -7,9 +7,11 @@ enum CctransAccountStorage {
     nonisolated static let summaryStore = CctransAccountSummaryStore(
         fileURL: SharedAppStorage.fileURL("account-summary.json")
     )
+    nonisolated static let sessionLockURL = SharedAppStorage.fileURL("account-session.lock")
     nonisolated static let sessionCoordinator = CctransAccountSessionCoordinator(
         tokenStore: tokenStore,
-        summaryStore: summaryStore
+        summaryStore: summaryStore,
+        lockFileURL: sessionLockURL
     )
 }
 

@@ -24,7 +24,7 @@ enum SharedAppStorage {
 
     static var directoryURL: URL {
         #if MAS_BUILD
-        if isProductionSandboxedMAS,
+        if isAppSandboxed,
            let groupURL = FileManager.default.containerURL(
             forSecurityApplicationGroupIdentifier: appGroupIdentifier
         ) {
@@ -32,7 +32,7 @@ enum SharedAppStorage {
             // must resolve byte-identical paths or toast state stops flowing.
             return groupURL
                 .appendingPathComponent("Library/Application Support", isDirectory: true)
-                .appendingPathComponent(appIdentifier, isDirectory: true)
+                .appendingPathComponent(productAppIdentifier, isDirectory: true)
         }
         // Loud fallback: without the group container the helper cannot see
         // any of this state and toasts/settings silently stop working.
@@ -52,10 +52,4 @@ enum SharedAppStorage {
             withIntermediateDirectories: true
         )
     }
-
-    #if MAS_BUILD
-    private static var isProductionSandboxedMAS: Bool {
-        appIdentifier == productAppIdentifier && isAppSandboxed
-    }
-    #endif
 }

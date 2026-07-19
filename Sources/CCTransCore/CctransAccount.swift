@@ -183,6 +183,7 @@ public final class CctransAccountSessionCoordinator: Sendable {
 
     private let tokenStore: any CctransAccountTokenStore
     private let summaryStore: CctransAccountSummaryStore
+    private let fileLock: CctransAccountFileLock
     private let state = Mutex(State())
 
     private struct State: Sendable {
@@ -191,25 +192,31 @@ public final class CctransAccountSessionCoordinator: Sendable {
 
     public init(
         tokenStore: any CctransAccountTokenStore,
-        summaryStore: CctransAccountSummaryStore
+        summaryStore: CctransAccountSummaryStore,
+        lockFileURL: URL
     ) {
         self.tokenStore = tokenStore
         self.summaryStore = summaryStore
+        self.fileLock = CctransAccountFileLock(fileURL: lockFileURL)
     }
 
     public func loadToken() throws -> String? {
         try state.withLock { _ in
-            try normalizedStoredToken()
+            try fileLock.withExclusiveLock {
+                try normalizedStoredToken()
+            }
         }
     }
 
     public func clearIfTokenMatches(_ token: String) throws {
         try state.withLock { state in
-            guard try normalizedStoredToken() == token else {
-                return
+            try fileLock.withExclusiveLock {
+                guard try normalizedStoredToken() == token else {
+                    return
+                }
+                state.revision &+= 1
+                try clearStoredSession()
             }
-            state.revision &+= 1
-            try clearStoredSession()
         }
     }
 
@@ -223,7 +230,9 @@ public final class CctransAccountSessionCoordinator: Sendable {
     func beginAuthenticatedOperation() throws -> (operation: Operation, token: String?) {
         try state.withLock { state in
             state.revision &+= 1
-            return (Operation(revision: state.revision), try normalizedStoredToken())
+            return try fileLock.withExclusiveLock {
+                (Operation(revision: state.revision), try normalizedStoredToken())
+            }
         }
     }
 
@@ -235,8 +244,10 @@ public final class CctransAccountSessionCoordinator: Sendable {
             guard operation.revision == state.revision else {
                 return false
             }
-            try replaceStoredSession(with: session)
-            return true
+            return try fileLock.withExclusiveLock {
+                try replaceStoredSession(with: session)
+                return true
+            }
         }
     }
 
@@ -246,12 +257,16 @@ public final class CctransAccountSessionCoordinator: Sendable {
         expectedToken: String
     ) throws -> Bool {
         try state.withLock { state in
-            guard operation.revision == state.revision,
-                  try normalizedStoredToken() == expectedToken else {
+            guard operation.revision == state.revision else {
                 return false
             }
-            try summaryStore.save(summary)
-            return true
+            return try fileLock.withExclusiveLock {
+                guard try normalizedStoredToken() == expectedToken else {
+                    return false
+                }
+                try summaryStore.save(summary)
+                return true
+            }
         }
     }
 
@@ -260,12 +275,16 @@ public final class CctransAccountSessionCoordinator: Sendable {
         expectedToken: String?
     ) throws -> Bool {
         try state.withLock { state in
-            guard operation.revision == state.revision,
-                  try normalizedStoredToken() == expectedToken else {
+            guard operation.revision == state.revision else {
                 return false
             }
-            try clearStoredSession()
-            return true
+            return try fileLock.withExclusiveLock {
+                guard try normalizedStoredToken() == expectedToken else {
+                    return false
+                }
+                try clearStoredSession()
+                return true
+            }
         }
     }
 

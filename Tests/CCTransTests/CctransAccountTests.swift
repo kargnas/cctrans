@@ -15,6 +15,7 @@ struct CctransAccountTests {
             },
             tokenStore: tokenStore,
             summaryStore: summaryStore,
+            lockFileURL: accountLockURL(for: summaryStore),
             appTransactionProvider: { "signed-app-transaction" }
         )
 
@@ -41,7 +42,8 @@ struct CctransAccountTests {
                 ))
             },
             tokenStore: tokenStore,
-            summaryStore: summaryStore
+            summaryStore: summaryStore,
+            lockFileURL: accountLockURL(for: summaryStore)
         )
 
         await #expect(throws: MockAccountTokenStoreError.saveFailed) {
@@ -77,6 +79,130 @@ struct CctransAccountTests {
         #expect(summary.syncing == true)
     }
 
+    @Test func exclusiveFileLockIsOwnerOnlyAndBlocksChildProcess() throws {
+        let directoryURL = temporaryAccountDirectory()
+        let lockURL = directoryURL.appendingPathComponent("account-session.lock")
+        let markerURL = directoryURL.appendingPathComponent("child-acquired")
+        let lock = CctransAccountFileLock(fileURL: lockURL)
+        let child = Process()
+        child.executableURL = URL(fileURLWithPath: "/usr/bin/perl")
+        child.arguments = [
+            "-MFcntl=:flock",
+            "-e",
+            "open(my $lock, '>>', $ARGV[0]) or die $!; flock($lock, LOCK_EX) or die $!; open(my $marker, '>', $ARGV[1]) or die $!; print $marker 'acquired';",
+            lockURL.path,
+            markerURL.path,
+        ]
+
+        try lock.withExclusiveLock {
+            try child.run()
+            Thread.sleep(forTimeInterval: 0.1)
+            #expect(!FileManager.default.fileExists(atPath: markerURL.path))
+        }
+        child.waitUntilExit()
+
+        #expect(child.terminationStatus == 0)
+        #expect(FileManager.default.fileExists(atPath: markerURL.path))
+        let attributes = try FileManager.default.attributesOfItem(atPath: lockURL.path)
+        #expect((attributes[.posixPermissions] as? NSNumber)?.intValue == 0o600)
+    }
+
+    @Test func separateCoordinatorsSerializeSessionCommitsWithSharedFileLock() async throws {
+        let directoryURL = temporaryAccountDirectory()
+        let summaryStore = CctransAccountSummaryStore(
+            fileURL: directoryURL.appendingPathComponent("account-summary.json")
+        )
+        let lockURL = directoryURL.appendingPathComponent("account-session.lock")
+        let saveGate = BlockingTokenSaveGate()
+        let tokenStore = BlockingAccountTokenStore(blockingToken: "token-a", gate: saveGate)
+        let coordinatorA = CctransAccountSessionCoordinator(
+            tokenStore: tokenStore,
+            summaryStore: summaryStore,
+            lockFileURL: lockURL
+        )
+        let coordinatorB = CctransAccountSessionCoordinator(
+            tokenStore: tokenStore,
+            summaryStore: summaryStore,
+            lockFileURL: lockURL
+        )
+        let sequence = AccountRequestSequence()
+        let session = makeAccountSession { _ in
+            if sequence.next() == 1 {
+                return .response(200, accountSessionJSON(
+                    token: "token-a",
+                    name: "Account A",
+                    email: "a@example.com"
+                ))
+            }
+            return .response(200, accountSessionJSON(
+                token: "token-b",
+                name: "Account B",
+                email: "b@example.com"
+            ))
+        }
+        let clientA = CctransAccountClient(session: session, sessionCoordinator: coordinatorA)
+        let clientB = CctransAccountClient(session: session, sessionCoordinator: coordinatorB)
+
+        let loginA = Task { try await clientA.login(email: "a@example.com", password: "password") }
+        await saveGate.waitUntilBlocked()
+        let loginB = Task { try await clientB.login(email: "b@example.com", password: "password") }
+        try await Task.sleep(for: .milliseconds(50))
+
+        #expect(tokenStore.storedToken == "token-a")
+        #expect(try summaryStore.load() == nil)
+        saveGate.open()
+        _ = try await loginA.value
+        _ = try await loginB.value
+
+        #expect(tokenStore.storedToken == "token-b")
+        #expect(try summaryStore.load()?.email == "b@example.com")
+    }
+
+    @Test func separateCoordinatorsSerializeClearAgainstNewLogin() async throws {
+        let directoryURL = temporaryAccountDirectory()
+        let summaryStore = CctransAccountSummaryStore(
+            fileURL: directoryURL.appendingPathComponent("account-summary.json")
+        )
+        try summaryStore.save(accountSummary)
+        let lockURL = directoryURL.appendingPathComponent("account-session.lock")
+        let deleteGate = BlockingTokenDeleteGate()
+        let tokenStore = BlockingDeleteAccountTokenStore(token: "token-a", gate: deleteGate)
+        let coordinatorA = CctransAccountSessionCoordinator(
+            tokenStore: tokenStore,
+            summaryStore: summaryStore,
+            lockFileURL: lockURL
+        )
+        let coordinatorB = CctransAccountSessionCoordinator(
+            tokenStore: tokenStore,
+            summaryStore: summaryStore,
+            lockFileURL: lockURL
+        )
+        let clientB = CctransAccountClient(
+            session: makeAccountSession { _ in
+                .response(200, accountSessionJSON(
+                    token: "token-b",
+                    name: "Account B",
+                    email: "b@example.com"
+                ))
+            },
+            sessionCoordinator: coordinatorB
+        )
+
+        let clearA = Task { try coordinatorA.clearIfTokenMatches("token-a") }
+        await deleteGate.waitUntilBlocked()
+        let loginB = Task { try await clientB.login(email: "b@example.com", password: "password") }
+        try await Task.sleep(for: .milliseconds(50))
+
+        #expect(tokenStore.storedToken == "token-a")
+        #expect(try summaryStore.load() == nil)
+        deleteGate.open()
+        try await clearA.value
+        _ = try await loginB.value
+
+        #expect(tokenStore.storedToken == "token-b")
+        #expect(try summaryStore.load()?.email == "b@example.com")
+    }
+
     @Test func refreshSendsBearerAndStoresLatestSummary() async throws {
         let tokenStore = MockAccountTokenStore(token: "stored-token")
         let summaryStore = CctransAccountSummaryStore(fileURL: temporarySummaryURL())
@@ -88,6 +214,7 @@ struct CctransAccountTests {
             },
             tokenStore: tokenStore,
             summaryStore: summaryStore,
+            lockFileURL: accountLockURL(for: summaryStore),
             appTransactionProvider: { "signed-app-transaction" }
         )
 
@@ -112,6 +239,7 @@ struct CctransAccountTests {
             },
             tokenStore: tokenStore,
             summaryStore: summaryStore,
+            lockFileURL: accountLockURL(for: summaryStore),
             appTransactionProvider: { "signed-app-transaction" }
         )
 
@@ -133,6 +261,7 @@ struct CctransAccountTests {
             },
             tokenStore: tokenStore,
             summaryStore: summaryStore,
+            lockFileURL: accountLockURL(for: summaryStore),
             appTransactionProvider: { "signed-app-transaction" }
         )
 
@@ -152,6 +281,7 @@ struct CctransAccountTests {
             session: makeAccountSession { _ in .failure(URLError(.notConnectedToInternet)) },
             tokenStore: tokenStore,
             summaryStore: summaryStore,
+            lockFileURL: accountLockURL(for: summaryStore),
             appTransactionProvider: { "signed-app-transaction" }
         )
 
@@ -174,7 +304,8 @@ struct CctransAccountTests {
                 return .response(200, json(["ok": true]))
             },
             tokenStore: tokenStore,
-            summaryStore: summaryStore
+            summaryStore: summaryStore,
+            lockFileURL: accountLockURL(for: summaryStore)
         )
 
         try await client.logout()
@@ -195,7 +326,8 @@ struct CctransAccountTests {
                 return .response(200, json(["ok": true]))
             },
             tokenStore: tokenStore,
-            summaryStore: summaryStore
+            summaryStore: summaryStore,
+            lockFileURL: accountLockURL(for: summaryStore)
         )
 
         await #expect(throws: MockAccountTokenStoreError.deleteFailed) {
@@ -218,7 +350,8 @@ struct CctransAccountTests {
                 return .response(200, accountSummaryJSON(plan: "pro", lifetime: false))
             },
             tokenStore: tokenStore,
-            summaryStore: summaryStore
+            summaryStore: summaryStore,
+            lockFileURL: accountLockURL(for: summaryStore)
         )
 
         await #expect(throws: MockAccountTokenStoreError.loadFailed) {
@@ -251,7 +384,8 @@ struct CctransAccountTests {
                 ))
             },
             tokenStore: tokenStore,
-            summaryStore: summaryStore
+            summaryStore: summaryStore,
+            lockFileURL: accountLockURL(for: summaryStore)
         )
 
         let loginA = Task {
@@ -284,6 +418,7 @@ struct CctransAccountTests {
             },
             tokenStore: tokenStore,
             summaryStore: summaryStore,
+            lockFileURL: accountLockURL(for: summaryStore),
             appTransactionProvider: { "signed-app-transaction" }
         )
 
@@ -366,6 +501,145 @@ private final class MockAccountTokenStore: CctransAccountTokenStore, @unchecked 
             throw deleteError
         }
         token = nil
+    }
+}
+
+private final class BlockingAccountTokenStore: CctransAccountTokenStore, @unchecked Sendable {
+    private let lock = NSLock()
+    private var token: String?
+    private let blockingToken: String
+    private let gate: BlockingTokenSaveGate
+
+    init(blockingToken: String, gate: BlockingTokenSaveGate) {
+        self.blockingToken = blockingToken
+        self.gate = gate
+    }
+
+    var storedToken: String? {
+        lock.lock(); defer { lock.unlock() }
+        return token
+    }
+
+    func load() throws -> String? {
+        storedToken
+    }
+
+    func save(_ token: String) throws {
+        lock.lock()
+        self.token = token
+        lock.unlock()
+        if token == blockingToken {
+            gate.block()
+        }
+    }
+
+    func delete() throws {
+        lock.lock()
+        token = nil
+        lock.unlock()
+    }
+}
+
+private final class BlockingTokenSaveGate: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var isBlocked = false
+    private var isOpen = false
+
+    func block() {
+        condition.lock()
+        isBlocked = true
+        condition.broadcast()
+        while !isOpen {
+            condition.wait()
+        }
+        condition.unlock()
+    }
+
+    func waitUntilBlocked() async {
+        while !readBlocked() {
+            await Task.yield()
+        }
+    }
+
+    func open() {
+        condition.lock()
+        isOpen = true
+        condition.broadcast()
+        condition.unlock()
+    }
+
+    private func readBlocked() -> Bool {
+        condition.lock()
+        defer { condition.unlock() }
+        return isBlocked
+    }
+}
+
+private final class BlockingDeleteAccountTokenStore: CctransAccountTokenStore, @unchecked Sendable {
+    private let lock = NSLock()
+    private var token: String?
+    private let gate: BlockingTokenDeleteGate
+
+    init(token: String, gate: BlockingTokenDeleteGate) {
+        self.token = token
+        self.gate = gate
+    }
+
+    var storedToken: String? {
+        lock.lock(); defer { lock.unlock() }
+        return token
+    }
+
+    func load() throws -> String? {
+        storedToken
+    }
+
+    func save(_ token: String) throws {
+        lock.lock()
+        self.token = token
+        lock.unlock()
+    }
+
+    func delete() throws {
+        gate.block()
+        lock.lock()
+        token = nil
+        lock.unlock()
+    }
+}
+
+private final class BlockingTokenDeleteGate: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var isBlocked = false
+    private var isOpen = false
+
+    func block() {
+        condition.lock()
+        isBlocked = true
+        condition.broadcast()
+        while !isOpen {
+            condition.wait()
+        }
+        condition.unlock()
+    }
+
+    func waitUntilBlocked() async {
+        while !readBlocked() {
+            await Task.yield()
+        }
+    }
+
+    func open() {
+        condition.lock()
+        isOpen = true
+        condition.broadcast()
+        condition.unlock()
+    }
+
+    private func readBlocked() -> Bool {
+        condition.lock()
+        defer { condition.unlock() }
+        return isBlocked
     }
 }
 
@@ -513,9 +787,18 @@ private func accountObject(
 }
 
 private func temporarySummaryURL() -> URL {
+    temporaryAccountDirectory()
+        .appendingPathComponent("account-summary.json", isDirectory: false)
+}
+
+private func temporaryAccountDirectory() -> URL {
     FileManager.default.temporaryDirectory
         .appendingPathComponent("cctrans-account-tests-\(UUID().uuidString)", isDirectory: true)
-        .appendingPathComponent("account-summary.json", isDirectory: false)
+}
+
+private func accountLockURL(for summaryStore: CctransAccountSummaryStore) -> URL {
+    summaryStore.fileURL.deletingLastPathComponent()
+        .appendingPathComponent("account-session.lock", isDirectory: false)
 }
 
 private func json(_ object: [String: Any]) -> Data {

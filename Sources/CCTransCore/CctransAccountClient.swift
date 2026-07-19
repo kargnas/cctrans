@@ -30,11 +30,12 @@ public actor CctransAccountClient {
         self.appReceiptProvider = appReceiptProvider
     }
 
-    public init(
+    package init(
         session: URLSession = .shared,
         baseURL: String = defaultBaseURL,
         tokenStore: any CctransAccountTokenStore,
         summaryStore: CctransAccountSummaryStore,
+        lockFileURL: URL,
         attestor: (any CctransAttesting)? = nil,
         devTokenProvider: (@Sendable () -> String?)? = nil,
         appTransactionProvider: (@Sendable () async -> String?)? = nil,
@@ -44,7 +45,8 @@ public actor CctransAccountClient {
         self.baseURL = baseURL.hasSuffix("/") ? String(baseURL.dropLast()) : baseURL
         self.sessionCoordinator = CctransAccountSessionCoordinator(
             tokenStore: tokenStore,
-            summaryStore: summaryStore
+            summaryStore: summaryStore,
+            lockFileURL: lockFileURL
         )
         self.attestor = attestor
         self.devTokenProvider = devTokenProvider
