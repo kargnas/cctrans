@@ -1,4 +1,5 @@
 import CCTransCore
+import CryptoKit
 import Foundation
 import Testing
 
@@ -52,6 +53,113 @@ struct CctransAccountTests {
 
         #expect(tokenStore.storedToken == "previous-token")
         #expect(try summaryStore.load() == accountSummary)
+    }
+
+    @Test func pendingReplaceTransactionCompletesSummaryFromStoredToken() throws {
+        let directoryURL = temporaryAccountDirectory()
+        let summaryStore = CctransAccountSummaryStore(
+            fileURL: directoryURL.appendingPathComponent("account-summary.json")
+        )
+        try summaryStore.save(accountSummary)
+        let tokenStore = MockAccountTokenStore(token: "replacement-token")
+        let transactionURL = directoryURL.appendingPathComponent("account-session-transaction.json")
+        try json([
+            "kind": "replace",
+            "token_sha256": tokenSHA256("replacement-token"),
+            "account": accountObject(
+                plan: "lifetime",
+                lifetime: true,
+                name: "Replacement",
+                email: "replacement@example.com"
+            ),
+            "previous_token_sha256": tokenSHA256("previous-token"),
+            "previous_account": accountObject(plan: "pro", lifetime: false),
+        ]).write(to: transactionURL)
+        let coordinator = CctransAccountSessionCoordinator(
+            tokenStore: tokenStore,
+            summaryStore: summaryStore,
+            lockFileURL: accountLockURL(for: summaryStore)
+        )
+
+        #expect(try coordinator.loadToken() == "replacement-token")
+        #expect(try summaryStore.load()?.email == "replacement@example.com")
+        #expect(!FileManager.default.fileExists(atPath: transactionURL.path))
+    }
+
+    @Test func pendingClearTransactionRemovesSummaryWhenTokenIsMissing() throws {
+        let directoryURL = temporaryAccountDirectory()
+        let summaryStore = CctransAccountSummaryStore(
+            fileURL: directoryURL.appendingPathComponent("account-summary.json")
+        )
+        try summaryStore.save(accountSummary)
+        let transactionURL = directoryURL.appendingPathComponent("account-session-transaction.json")
+        try json([
+            "kind": "clear",
+            "previous_token_sha256": tokenSHA256("previous-token"),
+            "previous_account": accountObject(plan: "pro", lifetime: false),
+        ]).write(to: transactionURL)
+        let coordinator = CctransAccountSessionCoordinator(
+            tokenStore: MockAccountTokenStore(),
+            summaryStore: summaryStore,
+            lockFileURL: accountLockURL(for: summaryStore)
+        )
+
+        #expect(try coordinator.loadToken() == nil)
+        #expect(try summaryStore.load() == nil)
+        #expect(!FileManager.default.fileExists(atPath: transactionURL.path))
+    }
+
+    @Test func corruptedGenerationLengthsAreRejectedBeforeNetworkRequest() async throws {
+        for length in [7, 9] {
+            let directoryURL = temporaryAccountDirectory()
+            try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+            try Data(repeating: 0, count: length).write(
+                to: directoryURL.appendingPathComponent("account-session.generation")
+            )
+            let summaryStore = CctransAccountSummaryStore(
+                fileURL: directoryURL.appendingPathComponent("account-summary.json")
+            )
+            let captured = AccountRequestCapture()
+            let client = CctransAccountClient(
+                session: makeAccountSession { request in
+                    captured.record(request)
+                    return .response(200, accountSessionJSON(token: "unused-token"))
+                },
+                tokenStore: MockAccountTokenStore(),
+                summaryStore: summaryStore,
+                lockFileURL: accountLockURL(for: summaryStore)
+            )
+
+            do {
+                _ = try await client.login(email: "user@example.com", password: "password")
+                Issue.record("손상된 generation 파일을 거부해야 합니다.")
+            } catch let error as CocoaError {
+                #expect(error.code == .fileReadCorruptFile)
+            }
+            #expect(captured.lastRequest == nil)
+        }
+    }
+
+    @Test func generationUsesSharedLittleEndianUInt64Contract() async throws {
+        let directoryURL = temporaryAccountDirectory()
+        let summaryStore = CctransAccountSummaryStore(
+            fileURL: directoryURL.appendingPathComponent("account-summary.json")
+        )
+        let client = CctransAccountClient(
+            session: makeAccountSession { _ in
+                .response(200, accountSessionJSON(token: "stored-token"))
+            },
+            tokenStore: MockAccountTokenStore(),
+            summaryStore: summaryStore,
+            lockFileURL: accountLockURL(for: summaryStore)
+        )
+
+        _ = try await client.login(email: "user@example.com", password: "password")
+
+        let generation = try Data(contentsOf: directoryURL.appendingPathComponent(
+            "account-session.generation"
+        ))
+        #expect(generation == Data([1, 0, 0, 0, 0, 0, 0, 0]))
     }
 
     @Test func summaryPreservesAccountDisplayContractWithoutToken() throws {
@@ -158,6 +266,80 @@ struct CctransAccountTests {
         #expect(try summaryStore.load()?.email == "b@example.com")
     }
 
+    @Test func separateCoordinatorsRejectEarlierNetworkResponseThatArrivesLast() async throws {
+        let directoryURL = temporaryAccountDirectory()
+        let summaryStore = CctransAccountSummaryStore(
+            fileURL: directoryURL.appendingPathComponent("account-summary.json")
+        )
+        let lockURL = directoryURL.appendingPathComponent("account-session.lock")
+        let tokenStore = MockAccountTokenStore()
+        let coordinatorA = CctransAccountSessionCoordinator(
+            tokenStore: tokenStore,
+            summaryStore: summaryStore,
+            lockFileURL: lockURL
+        )
+        let coordinatorB = CctransAccountSessionCoordinator(
+            tokenStore: tokenStore,
+            summaryStore: summaryStore,
+            lockFileURL: lockURL
+        )
+        let gate = AccountRequestGate()
+        let sequence = AccountRequestSequence()
+        let session = makeAccountSession { _ in
+            if sequence.next() == 1 {
+                await gate.markStartedAndWait()
+                return .response(200, accountSessionJSON(
+                    token: "token-a",
+                    name: "Account A",
+                    email: "a@example.com"
+                ))
+            }
+            return .response(200, accountSessionJSON(
+                token: "token-b",
+                name: "Account B",
+                email: "b@example.com"
+            ))
+        }
+        let clientA = CctransAccountClient(session: session, sessionCoordinator: coordinatorA)
+        let clientB = CctransAccountClient(session: session, sessionCoordinator: coordinatorB)
+
+        let loginA = Task { try await clientA.login(email: "a@example.com", password: "password") }
+        await gate.waitUntilStarted()
+        let loginB = try await clientB.login(email: "b@example.com", password: "password")
+        await gate.open()
+
+        #expect(loginB.token == "token-b")
+        await #expect(throws: CctransAccountError.operationSuperseded) {
+            try await loginA.value
+        }
+        #expect(tokenStore.storedToken == "token-b")
+        #expect(try summaryStore.load()?.email == "b@example.com")
+    }
+
+    @Test func cancelledAppleRequestDoesNotCommitReturnedSession() async throws {
+        let tokenStore = MockAccountTokenStore()
+        let summaryStore = CctransAccountSummaryStore(fileURL: temporarySummaryURL())
+        let client = CctransAccountClient(
+            session: makeAccountSession { _ in
+                .response(200, accountSessionJSON(token: "unused-token"))
+            },
+            tokenStore: tokenStore,
+            summaryStore: summaryStore,
+            lockFileURL: accountLockURL(for: summaryStore)
+        )
+
+        await #expect(throws: CctransAccountError.operationSuperseded) {
+            try await client.signInWithApple(
+                identityToken: "identity-token",
+                nonce: "nonce",
+                shouldCommit: { false }
+            )
+        }
+
+        #expect(tokenStore.storedToken == nil)
+        #expect(try summaryStore.load() == nil)
+    }
+
     @Test func separateCoordinatorsSerializeClearAgainstNewLogin() async throws {
         let directoryURL = temporaryAccountDirectory()
         let summaryStore = CctransAccountSummaryStore(
@@ -194,7 +376,7 @@ struct CctransAccountTests {
         try await Task.sleep(for: .milliseconds(50))
 
         #expect(tokenStore.storedToken == "token-a")
-        #expect(try summaryStore.load() == nil)
+        #expect(try summaryStore.load() == accountSummary)
         deleteGate.open()
         try await clearA.value
         _ = try await loginB.value
@@ -459,7 +641,7 @@ private final class MockAccountTokenStore: CctransAccountTokenStore, @unchecked 
     private let lock = NSLock()
     private var token: String?
     private let loadError: MockAccountTokenStoreError?
-    private let saveError: MockAccountTokenStoreError?
+    private var saveError: MockAccountTokenStoreError?
     private let deleteError: MockAccountTokenStoreError?
 
     init(
@@ -490,6 +672,7 @@ private final class MockAccountTokenStore: CctransAccountTokenStore, @unchecked 
     func save(_ token: String) throws {
         lock.lock(); defer { lock.unlock() }
         if let saveError {
+            self.saveError = nil
             throw saveError
         }
         self.token = token
@@ -803,4 +986,8 @@ private func accountLockURL(for summaryStore: CctransAccountSummaryStore) -> URL
 
 private func json(_ object: [String: Any]) -> Data {
     try! JSONSerialization.data(withJSONObject: object)
+}
+
+private func tokenSHA256(_ token: String) -> String {
+    SHA256.hash(data: Data(token.utf8)).map { String(format: "%02x", $0) }.joined()
 }

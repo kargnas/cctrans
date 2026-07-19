@@ -79,7 +79,8 @@ public enum CctransAccountRequestFiles {
     public static func pendingRequests(
         in directoryURL: URL,
         now: Date = Date(),
-        staleAfter: TimeInterval = 30
+        staleAfter: TimeInterval = 30,
+        claimedStaleAfter: TimeInterval = 180
     ) throws -> [CctransAccountPendingRequest] {
         try FileManager.default.createDirectory(
             at: directoryURL,
@@ -97,6 +98,15 @@ public enum CctransAccountRequestFiles {
             if timestamp - (modifiedAt ?? 0) > staleAfter {
                 try? FileManager.default.removeItem(at: url)
             }
+        }
+
+        for url in entries where isClaimedFile(url) {
+            try recoverClaimedRequest(
+                at: url,
+                in: directoryURL,
+                timestamp: timestamp,
+                staleAfter: claimedStaleAfter
+            )
         }
 
         return entries
@@ -142,6 +152,19 @@ public enum CctransAccountRequestFiles {
         }
     }
 
+    public static func claim(_ request: CctransAccountPendingRequest) throws -> CctransAccountPendingRequest {
+        let claimedURL = request.requestURL.deletingLastPathComponent().appendingPathComponent(
+            "claimed-\(request.nonce).json",
+            isDirectory: false
+        )
+        try FileManager.default.moveItem(at: request.requestURL, to: claimedURL)
+        return CctransAccountPendingRequest(
+            action: request.action,
+            nonce: request.nonce,
+            requestURL: claimedURL
+        )
+    }
+
     private static func isRequestFile(_ url: URL) -> Bool {
         url.lastPathComponent.hasPrefix("req-") && url.pathExtension == "json"
     }
@@ -150,14 +173,49 @@ public enum CctransAccountRequestFiles {
         url.lastPathComponent.hasPrefix("resp-") && url.pathExtension == "json"
     }
 
+    private static func isClaimedFile(_ url: URL) -> Bool {
+        url.lastPathComponent.hasPrefix("claimed-") && url.pathExtension == "json"
+    }
+
+    private static func recoverClaimedRequest(
+        at url: URL,
+        in directoryURL: URL,
+        timestamp: TimeInterval,
+        staleAfter: TimeInterval
+    ) throws {
+        guard let data = try? Data(contentsOf: url),
+              let request = try? JSONDecoder().decode(Request.self, from: data),
+              isSafeNonce(request.nonce),
+              url.lastPathComponent == "claimed-\(request.nonce).json",
+              timestamp - request.createdAt <= staleAfter else {
+            try? FileManager.default.removeItem(at: url)
+            return
+        }
+
+        let responseURL = directoryURL.appendingPathComponent(
+            "resp-\(request.nonce).json",
+            isDirectory: false
+        )
+        if !FileManager.default.fileExists(atPath: responseURL.path) {
+            let response = CctransAccountActionResponse.success(
+                title: "Account Recovery",
+                message: "CCTrans restarted. The current account status was reloaded."
+            )
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            try OwnerOnlyAtomicFileWriter.write(encoder.encode(response), to: responseURL)
+        }
+        try FileManager.default.removeItem(at: url)
+    }
+
     private static func isSafeNonce(_ nonce: String) -> Bool {
         !nonce.isEmpty && nonce.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-") }
     }
 }
 
 public struct CctransAccountRequestDispatcher: Sendable {
-    public typealias Handler = @MainActor @Sendable () async -> CctransAccountActionResponse
-    public typealias StoreKitHandler = @MainActor @Sendable (CctransAccountRequestAction) async -> CctransAccountActionResponse
+    public typealias Handler = @MainActor @Sendable (CctransAccountPendingRequest) async -> CctransAccountActionResponse
+    public typealias StoreKitHandler = @MainActor @Sendable (CctransAccountRequestAction, CctransAccountPendingRequest) async -> CctransAccountActionResponse
 
     private let appleLogin: Handler
     private let logout: Handler
@@ -177,21 +235,21 @@ public struct CctransAccountRequestDispatcher: Sendable {
     }
 
     @MainActor
-    public func response(for action: CctransAccountRequestAction) async -> CctransAccountActionResponse {
-        switch action {
+    public func response(for request: CctransAccountPendingRequest) async -> CctransAccountActionResponse {
+        switch request.action {
         case .appleLogin:
-            await appleLogin()
+            await appleLogin(request)
         case .logout:
-            await logout()
+            await logout(request)
         case .refresh:
-            await refresh()
+            await refresh(request)
         case .purchase:
-            await storeKit?(.purchase) ?? .notAvailable(
+            await storeKit?(.purchase, request) ?? .notAvailable(
                 title: "Purchase",
                 message: "StoreKit purchases are not available yet."
             )
         case .restore:
-            await storeKit?(.restore) ?? .notAvailable(
+            await storeKit?(.restore, request) ?? .notAvailable(
                 title: "Restore",
                 message: "StoreKit restore is not available yet."
             )

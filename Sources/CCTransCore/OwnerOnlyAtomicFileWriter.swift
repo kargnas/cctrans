@@ -43,5 +43,33 @@ public enum OwnerOnlyAtomicFileWriter {
             throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
         }
         shouldRemoveTemporaryFile = false
+
+        try synchronizeDirectory(directoryURL)
+    }
+
+    public static func removeIfExists(at fileURL: URL) throws {
+        do {
+            try FileManager.default.removeItem(at: fileURL)
+        } catch {
+            let cocoaError = error as NSError
+            guard cocoaError.domain == NSCocoaErrorDomain,
+                  cocoaError.code == NSFileNoSuchFileError else {
+                throw error
+            }
+            return
+        }
+
+        try synchronizeDirectory(fileURL.deletingLastPathComponent())
+    }
+
+    private static func synchronizeDirectory(_ directoryURL: URL) throws {
+        let directoryDescriptor = Darwin.open(directoryURL.path, O_RDONLY | O_CLOEXEC)
+        guard directoryDescriptor >= 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        defer { Darwin.close(directoryDescriptor) }
+        guard Darwin.fsync(directoryDescriptor) == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
     }
 }

@@ -78,13 +78,20 @@ public actor CctransAccountClient {
     public func signInWithApple(
         identityToken: String,
         nonce: String,
-        name: String? = nil
+        name: String? = nil,
+        shouldCommit: @escaping @Sendable () -> Bool = { true },
+        didCommit: @escaping @Sendable (CctransAccountSession) throws -> Void = { _ in }
     ) async throws -> CctransAccountSession {
         var body = ["identity_token": identityToken, "nonce": nonce]
         if let name, !name.isEmpty {
             body["name"] = name
         }
-        return try await authenticate(path: "/auth/apple", body: body)
+        return try await authenticate(
+            path: "/auth/apple",
+            body: body,
+            shouldCommit: shouldCommit,
+            didCommit: didCommit
+        )
     }
 
     public func refresh() async throws -> CctransAccountSummary? {
@@ -135,14 +142,24 @@ public actor CctransAccountClient {
         _ = try await send(request)
     }
 
-    private func authenticate(path: String, body: [String: String]) async throws -> CctransAccountSession {
-        let operation = sessionCoordinator.beginOperation()
+    private func authenticate(
+        path: String,
+        body: [String: String],
+        shouldCommit: @escaping @Sendable () -> Bool = { true },
+        didCommit: @escaping @Sendable (CctransAccountSession) throws -> Void = { _ in }
+    ) async throws -> CctransAccountSession {
+        let operation = try sessionCoordinator.beginOperation()
         var request = try makeRequest(path: path, method: "POST")
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         let data = try await send(request)
         let response = try decode(SessionResponse.self, from: data)
         let accountSession = CctransAccountSession(token: response.token, account: response.account)
-        guard try sessionCoordinator.store(accountSession, for: operation) else {
+        guard try sessionCoordinator.store(
+            accountSession,
+            for: operation,
+            validation: shouldCommit,
+            didCommit: { try didCommit(accountSession) }
+        ) else {
             throw CctransAccountError.operationSuperseded
         }
         return accountSession

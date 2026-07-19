@@ -251,6 +251,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         source.resume()
         accountRequestWatcher = source
+        serveAccountRequests()
     }
 
     private func serveAccountRequests() {
@@ -264,11 +265,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 guard let request = requests.first else {
                     break
                 }
-                let response = await dispatcher.response(for: request.action)
+                guard let claimedRequest = try? CctransAccountRequestFiles.claim(request) else {
+                    continue
+                }
+                let response = await dispatcher.response(for: claimedRequest)
                 do {
-                    try CctransAccountRequestFiles.complete(request, with: response, in: directoryURL)
+                    try CctransAccountRequestFiles.complete(claimedRequest, with: response, in: directoryURL)
                 } catch {
-                    try? FileManager.default.removeItem(at: request.requestURL)
+                    try? FileManager.default.removeItem(at: claimedRequest.requestURL)
                 }
             }
             accountRequestTask = nil
@@ -280,26 +284,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func accountRequestDispatcher() -> CctransAccountRequestDispatcher {
         CctransAccountRequestDispatcher(
-            appleLogin: { [weak self] in
+            appleLogin: { [weak self] request in
                 guard let self else {
                     return .error(title: "Apple Sign In", message: "CCTrans is shutting down.")
                 }
+                let directoryURL = AppDelegate.accountRequestsDirectoryURL
                 do {
+                    let response: @Sendable (CctransAccountSession) -> CctransAccountActionResponse = { session in
+                        .success(
+                            title: "Apple Sign In",
+                            message: "Signed in as \(session.account.email)."
+                        )
+                    }
                     let credential = try await appleSignIn.authorize()
                     let session = try await accountClient.signInWithApple(
                         identityToken: credential.identityToken,
                         nonce: credential.nonce,
-                        name: credential.name
+                        name: credential.name,
+                        shouldCommit: {
+                            FileManager.default.fileExists(atPath: request.requestURL.path)
+                        },
+                        didCommit: { session in
+                            try CctransAccountRequestFiles.complete(
+                                request,
+                                with: response(session),
+                                in: directoryURL
+                            )
+                        }
                     )
-                    return .success(
-                        title: "Apple Sign In",
-                        message: "Signed in as \(session.account.email)."
-                    )
+                    return response(session)
                 } catch {
                     return .error(title: "Apple Sign In", message: error.localizedDescription)
                 }
             },
-            logout: { [weak self] in
+            logout: { [weak self] _ in
                 guard let self else {
                     return .error(title: "Logout", message: "CCTrans is shutting down.")
                 }
@@ -320,7 +338,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     return .error(title: "Logout", message: error.localizedDescription)
                 }
             },
-            refresh: { [weak self] in
+            refresh: { [weak self] _ in
                 guard let self else {
                     return .error(title: "Account Refresh", message: "CCTrans is shutting down.")
                 }

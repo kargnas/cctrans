@@ -28,6 +28,10 @@ export type ActionResult = {
   ok: boolean;
 };
 
+export type AccountActionResult = ActionResult & {
+  code: "success" | "error" | "not_available";
+};
+
 export const fallbackAccountState: CctransAccountState = {
   account: null
 };
@@ -50,7 +54,7 @@ export function registerCctransAccount(name: string, email: string, password: st
 }
 
 export function runCctransAccountAction(action: AccountShellAction) {
-  return invoke<ActionResult>("cctrans_account_shell_action", { action });
+  return invoke<AccountActionResult>("cctrans_account_shell_action", { action });
 }
 
 export function openCctransAccountWebSettings() {

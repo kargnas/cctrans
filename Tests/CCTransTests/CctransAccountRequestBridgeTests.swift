@@ -5,26 +5,27 @@ import Testing
 struct CctransAccountRequestBridgeTests {
     @Test func dispatcherRoutesNativeActionsAndRejectsUnknownAction() async {
         let dispatcher = CctransAccountRequestDispatcher(
-            appleLogin: { .success(title: "Apple", message: "apple") },
-            logout: { .success(title: "Logout", message: "logout") },
-            refresh: { .success(title: "Refresh", message: "refresh") }
+            appleLogin: { _ in .success(title: "Apple", message: "apple") },
+            logout: { _ in .success(title: "Logout", message: "logout") },
+            refresh: { _ in .success(title: "Refresh", message: "refresh") }
         )
+        let request = pendingRequest(action: .appleLogin)
 
-        #expect(await dispatcher.response(for: .appleLogin).message == "apple")
-        #expect(await dispatcher.response(for: .logout).message == "logout")
-        #expect(await dispatcher.response(for: .refresh).message == "refresh")
-        #expect(await dispatcher.response(for: .unknown("missing")).code == .error)
+        #expect(await dispatcher.response(for: request).message == "apple")
+        #expect(await dispatcher.response(for: pendingRequest(action: .logout)).message == "logout")
+        #expect(await dispatcher.response(for: pendingRequest(action: .refresh)).message == "refresh")
+        #expect(await dispatcher.response(for: pendingRequest(action: .unknown("missing"))).code == .error)
     }
 
     @Test func missingStoreKitHandlerReturnsTypedNotAvailableResponse() async {
         let dispatcher = CctransAccountRequestDispatcher(
-            appleLogin: { .success(title: "Apple", message: "apple") },
-            logout: { .success(title: "Logout", message: "logout") },
-            refresh: { .success(title: "Refresh", message: "refresh") }
+            appleLogin: { _ in .success(title: "Apple", message: "apple") },
+            logout: { _ in .success(title: "Logout", message: "logout") },
+            refresh: { _ in .success(title: "Refresh", message: "refresh") }
         )
 
-        #expect(await dispatcher.response(for: .purchase).code == .notAvailable)
-        #expect(await dispatcher.response(for: .restore).code == .notAvailable)
+        #expect(await dispatcher.response(for: pendingRequest(action: .purchase)).code == .notAvailable)
+        #expect(await dispatcher.response(for: pendingRequest(action: .restore)).code == .notAvailable)
     }
 
     @Test func parserWritesResponseAndCleansRequestAndStaleFiles() throws {
@@ -100,10 +101,83 @@ struct CctransAccountRequestBridgeTests {
         ))
     }
 
+    @Test func claimedRequestDisappearsWhenRequesterCancelsIt() throws {
+        let directoryURL = temporaryDirectory()
+        let requestURL = directoryURL.appendingPathComponent("req-cancelled.json")
+        try Data(#"{"action":"appleLogin","nonce":"cancelled","createdAt":100}"#.utf8)
+            .write(to: requestURL)
+        let request = try #require(CctransAccountRequestFiles.pendingRequests(
+            in: directoryURL,
+            now: Date(timeIntervalSince1970: 110)
+        ).first)
+        let claimed = try CctransAccountRequestFiles.claim(request)
+
+        try FileManager.default.removeItem(at: claimed.requestURL)
+        try CctransAccountRequestFiles.complete(
+            claimed,
+            with: .success(title: "Apple", message: "Signed in."),
+            in: directoryURL
+        )
+
+        #expect(!FileManager.default.fileExists(
+            atPath: directoryURL.appendingPathComponent("resp-cancelled.json").path
+        ))
+    }
+
+    @Test func freshClaimedRequestFromPreviousHostReloadsCurrentAccountState() throws {
+        let directoryURL = temporaryDirectory()
+        let claimedURL = directoryURL.appendingPathComponent("claimed-interrupted.json")
+        try Data(#"{"action":"appleLogin","nonce":"interrupted","createdAt":100}"#.utf8)
+            .write(to: claimedURL)
+
+        let requests = try CctransAccountRequestFiles.pendingRequests(
+            in: directoryURL,
+            now: Date(timeIntervalSince1970: 110)
+        )
+
+        let responseURL = directoryURL.appendingPathComponent("resp-interrupted.json")
+        let response = try JSONDecoder().decode(
+            CctransAccountActionResponse.self,
+            from: Data(contentsOf: responseURL)
+        )
+        #expect(requests.isEmpty)
+        #expect(response.code == .success)
+        #expect(response.ok)
+        #expect(!FileManager.default.fileExists(atPath: claimedURL.path))
+    }
+
+    @Test func claimedRequestOlderThanPendingTTLStillRespondsBeforeRequesterTimeout() throws {
+        let directoryURL = temporaryDirectory()
+        let claimedURL = directoryURL.appendingPathComponent("claimed-waiting.json")
+        try Data(#"{"action":"refresh","nonce":"waiting","createdAt":50}"#.utf8)
+            .write(to: claimedURL)
+
+        _ = try CctransAccountRequestFiles.pendingRequests(
+            in: directoryURL,
+            now: Date(timeIntervalSince1970: 110)
+        )
+
+        let responseURL = directoryURL.appendingPathComponent("resp-waiting.json")
+        let response = try JSONDecoder().decode(
+            CctransAccountActionResponse.self,
+            from: Data(contentsOf: responseURL)
+        )
+        #expect(response.code == .success)
+        #expect(!FileManager.default.fileExists(atPath: claimedURL.path))
+    }
+
     private func temporaryDirectory() -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("cctrans-account-request-tests-\(UUID().uuidString)")
         try! FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url
+    }
+
+    private func pendingRequest(action: CctransAccountRequestAction) -> CctransAccountPendingRequest {
+        CctransAccountPendingRequest(
+            action: action,
+            nonce: UUID().uuidString,
+            requestURL: temporaryDirectory().appendingPathComponent("claimed-request.json")
+        )
     }
 }
