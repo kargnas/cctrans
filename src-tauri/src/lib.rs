@@ -782,23 +782,10 @@ struct CctransAccountSummary {
     syncing: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct CctransAccountActions {
-    can_login_with_apple: bool,
-    can_email_auth: bool,
-    can_open_web_settings: bool,
-    can_storekit_purchase: bool,
-    can_storekit_restore: bool,
-}
-
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct CctransAccountState {
-    app_variant: String,
     account: Option<CctransAccountSummary>,
-    actions: CctransAccountActions,
-    summary_path: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -807,12 +794,26 @@ struct CctransAccountSessionResponse {
     account: CctransAccountSummary,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct AccountShellRequest {
     action: String,
     nonce: String,
     created_at: f64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct AccountShellResponse {
+    title: String,
+    message: String,
+    ok: bool,
+    code: String,
+}
+
+#[derive(Clone, Debug)]
+struct PublishedAccountRequest {
+    request_path: PathBuf,
+    response_path: PathBuf,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -1093,14 +1094,22 @@ async fn cctrans_account_email_login(
     email: String,
     password: String,
 ) -> Result<CctransAccountState, String> {
-    authenticate_cctrans_account(
-        &app,
-        "/auth/login",
-        serde_json::json!({
-            "email": email.trim(),
-            "password": password,
-        }),
-    )
+    let summary_path = account_summary_path(&app)?;
+    let lock_path = account_session_lock_path(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        authenticate_cctrans_account(
+            &summary_path,
+            &lock_path,
+            "/auth/login",
+            serde_json::json!({
+                "email": email.trim(),
+                "password": password,
+            }),
+        )
+    })
+    .await
+    .map_err(|error| format!("Account login task failed: {error}"))??;
+    cctrans_account_state(&app)
 }
 
 #[tauri::command]
@@ -1111,21 +1120,38 @@ async fn cctrans_account_email_register(
     password: String,
     password_confirmation: String,
 ) -> Result<CctransAccountState, String> {
-    authenticate_cctrans_account(
-        &app,
-        "/auth/register",
-        serde_json::json!({
-            "name": name.trim(),
-            "email": email.trim(),
-            "password": password,
-            "password_confirmation": password_confirmation,
-        }),
-    )
+    let summary_path = account_summary_path(&app)?;
+    let lock_path = account_session_lock_path(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        authenticate_cctrans_account(
+            &summary_path,
+            &lock_path,
+            "/auth/register",
+            serde_json::json!({
+                "name": name.trim(),
+                "email": email.trim(),
+                "password": password,
+                "password_confirmation": password_confirmation,
+            }),
+        )
+    })
+    .await
+    .map_err(|error| format!("Account registration task failed: {error}"))??;
+    cctrans_account_state(&app)
 }
 
 #[tauri::command]
-fn cctrans_account_shell_action(app: AppHandle, action: String) -> Result<ActionResult, String> {
-    request_account_shell_action(&app, &action)
+async fn cctrans_account_shell_action(
+    app: AppHandle,
+    action: String,
+) -> Result<ActionResult, String> {
+    let directory = account_requests_dir(&app)?;
+    let variant = settings_runtime().variant;
+    tauri::async_runtime::spawn_blocking(move || {
+        request_account_shell_action(&directory, variant, &action, Duration::from_secs(120))
+    })
+    .await
+    .map_err(|error| format!("Account action task failed: {error}"))?
 }
 
 #[tauri::command]
@@ -3755,30 +3781,19 @@ fn set_launch_at_login_impl(app: &AppHandle, enabled: bool) -> Result<LoginItemS
     request_login_item(app, "set", Some(enabled))
 }
 
-fn account_actions_for_variant(variant: AppVariant) -> CctransAccountActions {
-    CctransAccountActions {
-        can_login_with_apple: true,
-        can_email_auth: true,
-        can_open_web_settings: variant == AppVariant::Direct,
-        can_storekit_purchase: variant == AppVariant::MacAppStore,
-        can_storekit_restore: variant == AppVariant::MacAppStore,
-    }
-}
-
 fn cctrans_account_state(app: &AppHandle) -> Result<CctransAccountState, String> {
-    let runtime = settings_runtime();
     let summary_path = account_summary_path(app)?;
-    let account = read_account_summary(&summary_path)?;
-    Ok(CctransAccountState {
-        app_variant: runtime.app_variant_name().to_string(),
-        account,
-        actions: account_actions_for_variant(runtime.variant),
-        summary_path: summary_path.display().to_string(),
-    })
+    let lock_path = account_session_lock_path(app)?;
+    let account = with_account_session_lock(&lock_path, || read_account_summary(&summary_path))?;
+    Ok(CctransAccountState { account })
 }
 
 fn account_summary_path(app: &AppHandle) -> Result<PathBuf, String> {
     shared_data_dir(app).map(|dir| dir.join(CCTRANS_ACCOUNT_SUMMARY_FILE))
+}
+
+fn account_session_lock_path(app: &AppHandle) -> Result<PathBuf, String> {
+    shared_data_dir(app).map(|dir| dir.join("account-session.lock"))
 }
 
 fn read_account_summary(path: &Path) -> Result<Option<CctransAccountSummary>, String> {
@@ -3795,16 +3810,23 @@ fn decode_account_summary(data: &str) -> Result<CctransAccountSummary, String> {
 }
 
 fn authenticate_cctrans_account(
-    app: &AppHandle,
+    summary_path: &Path,
+    lock_path: &Path,
     path: &str,
     body: serde_json::Value,
-) -> Result<CctransAccountState, String> {
+) -> Result<(), String> {
     let base_url = std::env::var("CCTRANS_ACCOUNT_API_BASE_URL")
         .ok()
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| CCTRANS_ACCOUNT_API_BASE_URL.to_string());
     let url = format!("{}{}", base_url.trim_end_matches('/'), path);
-    let response = ureq::post(&url)
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(Duration::from_secs(10))
+        .timeout_read(Duration::from_secs(15))
+        .timeout_write(Duration::from_secs(15))
+        .build();
+    let response = agent
+        .post(&url)
         .set("Accept", "application/json")
         .set("Content-Type", "application/json")
         .send_json(body)
@@ -3812,8 +3834,7 @@ fn authenticate_cctrans_account(
     let session: CctransAccountSessionResponse = response
         .into_json()
         .map_err(|error| format!("Could not decode account response: {error}"))?;
-    store_cctrans_account_session(app, session)?;
-    cctrans_account_state(app)
+    store_cctrans_account_session(&PlatformAccountTokenStore, summary_path, lock_path, session)
 }
 
 fn account_http_error(error: ureq::Error) -> String {
@@ -3838,32 +3859,121 @@ fn account_http_error(error: ureq::Error) -> String {
     }
 }
 
-fn store_cctrans_account_session(
-    app: &AppHandle,
+trait AccountTokenStore {
+    fn load(&self) -> Result<Option<String>, String>;
+    fn save(&self, token: &str) -> Result<(), String>;
+    fn delete(&self) -> Result<(), String>;
+}
+
+struct PlatformAccountTokenStore;
+
+fn store_cctrans_account_session<S: AccountTokenStore + ?Sized>(
+    token_store: &S,
+    summary_path: &Path,
+    lock_path: &Path,
     session: CctransAccountSessionResponse,
 ) -> Result<(), String> {
-    let token = session.token.trim();
+    let token = session.token.trim().to_string();
     if token.is_empty() {
         return Err("CCTrans account response did not include a token.".to_string());
     }
-    save_account_token(token)?;
-    let summary_path = account_summary_path(app)?;
     if let Some(parent) = summary_path.parent() {
         fs::create_dir_all(parent)
             .map_err(|error| format!("Could not create account summary dir: {error}"))?;
     }
     let data = serde_json::to_string_pretty(&session.account)
         .map_err(|error| format!("Could not encode account summary: {error}"))?;
-    if let Err(error) = replace_file_contents(&summary_path, &data) {
-        let _ = delete_account_token();
-        return Err(error);
+    with_account_session_lock(lock_path, || {
+        commit_account_session(token_store, &token, || {
+            replace_private_file_contents(summary_path, &data)
+        })
+    })
+}
+
+fn commit_account_session<S, W>(
+    token_store: &S,
+    token: &str,
+    write_summary: W,
+) -> Result<(), String>
+where
+    S: AccountTokenStore + ?Sized,
+    W: FnOnce() -> Result<(), String>,
+{
+    let previous_token = token_store.load()?;
+    token_store.save(token)?;
+    if let Err(error) = write_summary() {
+        let rollback = match previous_token {
+            Some(previous_token) => token_store.save(&previous_token),
+            None => token_store.delete(),
+        };
+        return match rollback {
+            Ok(()) => Err(error),
+            Err(rollback_error) => Err(format!(
+                "Could not save account session: {error}. Token rollback also failed: {rollback_error}"
+            )),
+        };
     }
     Ok(())
 }
 
+#[cfg(unix)]
+fn with_account_session_lock<T>(
+    lock_path: &Path,
+    operation: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    if let Some(parent) = lock_path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("Could not create account session directory: {error}"))?;
+    }
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .mode(0o600)
+        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
+        .open(lock_path)
+        .map_err(|error| format!("Could not open account session lock: {error}"))?;
+    let descriptor = file.as_raw_fd();
+    if unsafe { libc::fchmod(descriptor, 0o600) } != 0 {
+        return Err(format!(
+            "Could not secure account session lock: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    loop {
+        if unsafe { libc::flock(descriptor, libc::LOCK_EX) } == 0 {
+            break;
+        }
+        let error = std::io::Error::last_os_error();
+        if error.kind() != std::io::ErrorKind::Interrupted {
+            return Err(format!("Could not lock account session: {error}"));
+        }
+    }
+    let result = operation();
+    let unlock_result = unsafe { libc::flock(descriptor, libc::LOCK_UN) };
+    if unlock_result != 0 && result.is_ok() {
+        return Err(format!(
+            "Could not unlock account session: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    result
+}
+
+#[cfg(not(unix))]
+fn with_account_session_lock<T>(
+    _lock_path: &Path,
+    operation: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    operation()
+}
+
 #[cfg(target_os = "macos")]
-fn save_account_token(token: &str) -> Result<(), String> {
-    use security_framework::passwords::{set_generic_password_options, PasswordOptions};
+fn account_password_options() -> security_framework::passwords::PasswordOptions {
+    use security_framework::passwords::PasswordOptions;
 
     let mut options = PasswordOptions::new_generic_password(
         CCTRANS_ACCOUNT_TOKEN_SERVICE,
@@ -3871,46 +3981,112 @@ fn save_account_token(token: &str) -> Result<(), String> {
     );
     options.set_access_group(CCTRANS_ACCOUNT_ACCESS_GROUP);
     options.set_access_synchronized(Some(false));
-    set_generic_password_options(token.as_bytes(), options)
-        .map_err(|error| format!("Could not save account token to Keychain: {error}"))
-}
-
-#[cfg(not(target_os = "macos"))]
-fn save_account_token(_token: &str) -> Result<(), String> {
-    Err("Account token Keychain storage is only available on macOS.".to_string())
+    options
 }
 
 #[cfg(target_os = "macos")]
-fn delete_account_token() -> Result<(), String> {
-    use security_framework::passwords::{delete_generic_password_options, PasswordOptions};
+fn account_password_options_for_new_item() -> security_framework::passwords::PasswordOptions {
+    use core_foundation::base::TCFType;
+    use core_foundation::string::{CFString, CFStringRef};
 
-    let mut options = PasswordOptions::new_generic_password(
-        CCTRANS_ACCOUNT_TOKEN_SERVICE,
-        CCTRANS_ACCOUNT_TOKEN_ACCOUNT,
-    );
-    options.set_access_group(CCTRANS_ACCOUNT_ACCESS_GROUP);
-    options.set_access_synchronized(Some(false));
-    delete_generic_password_options(options)
-        .map_err(|error| format!("Could not delete account token from Keychain: {error}"))
+    extern "C" {
+        static kSecAttrAccessible: CFStringRef;
+        static kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly: CFStringRef;
+    }
+
+    let mut options = account_password_options();
+    #[allow(deprecated)]
+    unsafe {
+        options.query.push((
+            CFString::wrap_under_get_rule(kSecAttrAccessible),
+            CFString::wrap_under_get_rule(kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly)
+                .into_CFType(),
+        ));
+    }
+    options
+}
+
+#[cfg(target_os = "macos")]
+impl AccountTokenStore for PlatformAccountTokenStore {
+    fn load(&self) -> Result<Option<String>, String> {
+        use security_framework::passwords::generic_password;
+        use security_framework_sys::base::errSecItemNotFound;
+
+        match generic_password(account_password_options()) {
+            Ok(data) => String::from_utf8(data)
+                .map(Some)
+                .map_err(|_| "Could not decode account token from Keychain.".to_string()),
+            Err(error) if error.code() == errSecItemNotFound => Ok(None),
+            Err(error) => Err(format!(
+                "Could not load account token from Keychain: {error}"
+            )),
+        }
+    }
+
+    fn save(&self, token: &str) -> Result<(), String> {
+        use security_framework::passwords::{generic_password, set_generic_password_options};
+        use security_framework_sys::base::errSecItemNotFound;
+
+        if token.is_empty() {
+            return Err("Could not save an empty account token.".to_string());
+        }
+        let options = match generic_password(account_password_options()) {
+            Ok(_) => account_password_options(),
+            Err(error) if error.code() == errSecItemNotFound => {
+                account_password_options_for_new_item()
+            }
+            Err(error) => {
+                return Err(format!(
+                    "Could not inspect account token in Keychain: {error}"
+                ))
+            }
+        };
+        set_generic_password_options(token.as_bytes(), options)
+            .map_err(|error| format!("Could not save account token to Keychain: {error}"))
+    }
+
+    fn delete(&self) -> Result<(), String> {
+        use security_framework::passwords::delete_generic_password_options;
+        use security_framework_sys::base::errSecItemNotFound;
+
+        match delete_generic_password_options(account_password_options()) {
+            Ok(()) => Ok(()),
+            Err(error) if error.code() == errSecItemNotFound => Ok(()),
+            Err(error) => Err(format!(
+                "Could not delete account token from Keychain: {error}"
+            )),
+        }
+    }
 }
 
 #[cfg(not(target_os = "macos"))]
-fn delete_account_token() -> Result<(), String> {
-    Ok(())
+impl AccountTokenStore for PlatformAccountTokenStore {
+    fn load(&self) -> Result<Option<String>, String> {
+        Ok(None)
+    }
+
+    fn save(&self, _token: &str) -> Result<(), String> {
+        Err("Account token Keychain storage is only available on macOS.".to_string())
+    }
+
+    fn delete(&self) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 fn account_requests_dir(app: &AppHandle) -> Result<PathBuf, String> {
     shared_data_dir(app).map(|dir| dir.join("account-requests"))
 }
 
-fn request_account_shell_action(app: &AppHandle, action: &str) -> Result<ActionResult, String> {
-    let runtime = settings_runtime();
-    let title = match action {
-        "appleLogin" => "Apple Sign In",
-        "logout" => "Logout",
-        "refresh" => "Account Refresh",
-        "purchase" if runtime.variant == AppVariant::MacAppStore => "Purchase",
-        "restore" if runtime.variant == AppVariant::MacAppStore => "Restore",
+fn request_account_shell_action(
+    directory: &Path,
+    variant: AppVariant,
+    action: &str,
+    timeout: Duration,
+) -> Result<ActionResult, String> {
+    match action {
+        "appleLogin" | "logout" | "refresh" => {}
+        "purchase" | "restore" if variant == AppVariant::MacAppStore => {}
         "purchase" | "restore" => {
             return Err(
                 "StoreKit purchase and restore are only available in the Mac App Store build."
@@ -3918,16 +4094,15 @@ fn request_account_shell_action(app: &AppHandle, action: &str) -> Result<ActionR
             )
         }
         _ => return Err(format!("Unknown account action: {action}")),
-    };
-    publish_account_shell_request(&account_requests_dir(app)?, action)?;
-    Ok(action_result(
-        title,
-        "Requested in the CCTrans host app.",
-        true,
-    ))
+    }
+    let request = publish_account_shell_request(directory, action)?;
+    wait_for_account_shell_response(&request, timeout)
 }
 
-fn publish_account_shell_request(dir: &Path, action: &str) -> Result<PathBuf, String> {
+fn publish_account_shell_request(
+    dir: &Path,
+    action: &str,
+) -> Result<PublishedAccountRequest, String> {
     fs::create_dir_all(dir)
         .map_err(|error| format!("Could not create account-requests dir: {error}"))?;
     let created_at = std::time::SystemTime::now()
@@ -3942,13 +4117,46 @@ fn publish_account_shell_request(dir: &Path, action: &str) -> Result<PathBuf, St
     };
     let body = serde_json::to_string_pretty(&request)
         .map_err(|error| format!("Could not encode account request: {error}"))?;
-    let tmp_path = dir.join(format!(".tmp-req-{nonce}.json"));
     let request_path = dir.join(format!("req-{nonce}.json"));
-    fs::write(&tmp_path, body)
-        .map_err(|error| format!("Could not write account request: {error}"))?;
-    fs::rename(&tmp_path, &request_path)
-        .map_err(|error| format!("Could not publish account request: {error}"))?;
-    Ok(request_path)
+    replace_private_file_contents(&request_path, &body)?;
+    Ok(PublishedAccountRequest {
+        response_path: dir.join(format!("resp-{nonce}.json")),
+        request_path,
+    })
+}
+
+fn wait_for_account_shell_response(
+    request: &PublishedAccountRequest,
+    timeout: Duration,
+) -> Result<ActionResult, String> {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if let Ok(data) = fs::read_to_string(&request.response_path) {
+            let parsed = serde_json::from_str::<AccountShellResponse>(&data);
+            let _ = fs::remove_file(&request.response_path);
+            let _ = fs::remove_file(&request.request_path);
+            let response = parsed
+                .map_err(|error| format!("Could not parse account host response: {error}"))?;
+            let valid_code = matches!(
+                (response.ok, response.code.as_str()),
+                (true, "success") | (false, "error") | (false, "not_available")
+            );
+            if !valid_code {
+                return Err("Account host returned an invalid response status.".to_string());
+            }
+            return Ok(ActionResult {
+                title: response.title,
+                message: response.message,
+                ok: response.ok,
+            });
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = fs::remove_file(&request.request_path);
+            let _ = fs::remove_file(&request.response_path);
+            return Err("CCTrans host did not respond to the account request.".to_string());
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
 
 fn open_external_url(url: &str) -> Result<(), String> {
@@ -4549,6 +4757,43 @@ extern "C" {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct FakeAccountTokenStore {
+        token: Mutex<Option<String>>,
+    }
+
+    impl FakeAccountTokenStore {
+        fn with_token(token: &str) -> Self {
+            Self {
+                token: Mutex::new(Some(token.to_string())),
+            }
+        }
+    }
+
+    impl AccountTokenStore for FakeAccountTokenStore {
+        fn load(&self) -> Result<Option<String>, String> {
+            Ok(self.token.lock().unwrap().clone())
+        }
+
+        fn save(&self, token: &str) -> Result<(), String> {
+            *self.token.lock().unwrap() = Some(token.to_string());
+            Ok(())
+        }
+
+        fn delete(&self) -> Result<(), String> {
+            *self.token.lock().unwrap() = None;
+            Ok(())
+        }
+    }
+
+    fn account_test_directory(name: &str) -> PathBuf {
+        let directory =
+            std::env::temp_dir().join(format!("cctrans-{name}-{}", login_request_nonce()));
+        fs::create_dir_all(&directory).unwrap();
+        directory
+    }
 
     #[test]
     fn stored_settings_omits_defaults() {
@@ -4623,16 +4868,20 @@ mod tests {
     }
 
     #[test]
-    fn account_actions_follow_build_variant() {
-        let mas = account_actions_for_variant(AppVariant::MacAppStore);
-        let direct = account_actions_for_variant(AppVariant::Direct);
+    fn direct_variant_rejects_storekit_before_publishing_request() {
+        let directory = account_test_directory("account-direct-variant");
 
-        assert!(!mas.can_open_web_settings);
-        assert!(mas.can_storekit_purchase);
-        assert!(mas.can_storekit_restore);
-        assert!(direct.can_open_web_settings);
-        assert!(!direct.can_storekit_purchase);
-        assert!(!direct.can_storekit_restore);
+        let error = request_account_shell_action(
+            &directory,
+            AppVariant::Direct,
+            "purchase",
+            Duration::from_millis(10),
+        )
+        .unwrap_err();
+
+        assert!(error.contains("Mac App Store"));
+        assert_eq!(fs::read_dir(&directory).unwrap().count(), 0);
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
@@ -4665,19 +4914,16 @@ mod tests {
     }
 
     #[test]
-    fn account_logout_and_refresh_publish_shell_events() {
-        let dir = std::env::temp_dir().join(format!(
-            "cctrans-account-requests-test-{}",
-            std::process::id()
-        ));
-        let _ = fs::remove_dir_all(&dir);
+    fn account_request_publish_uses_private_files_and_typed_payloads() {
+        use std::os::unix::fs::PermissionsExt;
 
+        let dir = account_test_directory("account-request-publish");
         let logout = publish_account_shell_request(&dir, "logout").unwrap();
         let refresh = publish_account_shell_request(&dir, "refresh").unwrap();
         let logout_json: serde_json::Value =
-            serde_json::from_str(&fs::read_to_string(logout).unwrap()).unwrap();
+            serde_json::from_str(&fs::read_to_string(&logout.request_path).unwrap()).unwrap();
         let refresh_json: serde_json::Value =
-            serde_json::from_str(&fs::read_to_string(refresh).unwrap()).unwrap();
+            serde_json::from_str(&fs::read_to_string(&refresh.request_path).unwrap()).unwrap();
 
         assert_eq!(logout_json["action"], "logout");
         assert_eq!(refresh_json["action"], "refresh");
@@ -4699,8 +4945,178 @@ mod tests {
                 .count(),
             0
         );
+        assert_eq!(
+            fs::metadata(logout.request_path)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
 
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn account_request_waits_for_host_response_and_cleans_files() {
+        let directory = account_test_directory("account-request-success");
+        let responder_directory = directory.clone();
+        let responder = std::thread::spawn(move || loop {
+            let request_path = fs::read_dir(&responder_directory)
+                .unwrap()
+                .flatten()
+                .map(|entry| entry.path())
+                .find(|path| {
+                    path.file_name()
+                        .unwrap()
+                        .to_string_lossy()
+                        .starts_with("req-")
+                });
+            if let Some(request_path) = request_path {
+                let request: AccountShellRequest =
+                    serde_json::from_str(&fs::read_to_string(&request_path).unwrap()).unwrap();
+                let response = AccountShellResponse {
+                    title: "Logout".to_string(),
+                    message: "Signed out.".to_string(),
+                    ok: true,
+                    code: "success".to_string(),
+                };
+                let response_path =
+                    responder_directory.join(format!("resp-{}.json", request.nonce));
+                replace_private_file_contents(
+                    &response_path,
+                    &serde_json::to_string(&response).unwrap(),
+                )
+                .unwrap();
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        });
+
+        let result = request_account_shell_action(
+            &directory,
+            AppVariant::Direct,
+            "logout",
+            Duration::from_secs(2),
+        )
+        .unwrap();
+        responder.join().unwrap();
+
+        assert!(result.ok);
+        assert_eq!(result.message, "Signed out.");
+        assert_eq!(fs::read_dir(&directory).unwrap().count(), 0);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn account_request_timeout_cleans_request_and_response_paths() {
+        let directory = account_test_directory("account-request-timeout");
+
+        let error = request_account_shell_action(
+            &directory,
+            AppVariant::Direct,
+            "refresh",
+            Duration::from_millis(10),
+        )
+        .unwrap_err();
+
+        assert!(error.contains("did not respond"));
+        assert_eq!(fs::read_dir(&directory).unwrap().count(), 0);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn account_session_commit_rolls_back_previous_token_on_summary_failure() {
+        let directory = account_test_directory("account-session-rollback");
+        let summary_path = directory.join("account-summary.json");
+        fs::write(&summary_path, "previous-summary").unwrap();
+        let token_store = FakeAccountTokenStore::with_token("previous-token");
+        let error = commit_account_session(&token_store, "replacement-token", || {
+            Err("summary write failed".to_string())
+        })
+        .unwrap_err();
+
+        assert_eq!(
+            token_store.load().unwrap().as_deref(),
+            Some("previous-token")
+        );
+        assert_eq!(error, "summary write failed");
+        assert!(!error.contains("replacement-token"));
+        assert_eq!(
+            fs::read_to_string(&summary_path).unwrap(),
+            "previous-summary"
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn account_error_payload_cannot_decode_as_session_token() {
+        let decoded = serde_json::from_str::<CctransAccountSessionResponse>(
+            r#"{"error":"invalid_credentials"}"#,
+        );
+
+        assert!(decoded.is_err());
+    }
+
+    #[test]
+    fn account_session_commit_writes_owner_only_summary() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = account_test_directory("account-session-private");
+        let summary_path = directory.join("account-summary.json");
+        let lock_path = directory.join("account-session.lock");
+        let token_store = FakeAccountTokenStore::default();
+        let session = CctransAccountSessionResponse {
+            token: "secret-token".to_string(),
+            account: decode_account_summary(
+                r#"{"uuid":"5D0AA963-289D-4F3B-9D70-5F4AA41F49E4","name":"Kars","email":"kars@example.com","email_verified":true,"apple_linked":false,"plan":"free","lifetime":false,"syncing":false}"#,
+            )
+            .unwrap(),
+        };
+
+        store_cctrans_account_session(&token_store, &summary_path, &lock_path, session).unwrap();
+
+        assert_eq!(token_store.load().unwrap().as_deref(), Some("secret-token"));
+        assert_eq!(
+            fs::metadata(&summary_path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(
+            fs::metadata(&lock_path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert!(!fs::read_to_string(&summary_path)
+            .unwrap()
+            .contains("secret-token"));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn account_session_lock_blocks_another_process() {
+        let directory = account_test_directory("account-session-lock");
+        let lock_path = directory.join("account-session.lock");
+        let marker_path = directory.join("child-acquired");
+        let mut child = None;
+
+        with_account_session_lock(&lock_path, || {
+            child = Some(Command::new("/usr/bin/perl")
+                .args([
+                    "-MFcntl=:flock",
+                    "-e",
+                    "open(my $lock, '>>', $ARGV[0]) or die $!; flock($lock, LOCK_EX) or die $!; open(my $marker, '>', $ARGV[1]) or die $!; print $marker 'acquired';",
+                    lock_path.to_str().unwrap(),
+                    marker_path.to_str().unwrap(),
+                ])
+                .spawn()
+                .unwrap());
+            std::thread::sleep(Duration::from_millis(100));
+            assert!(!marker_path.exists());
+            Ok(())
+        })
+        .unwrap();
+        child.unwrap().wait().unwrap();
+        assert!(marker_path.exists());
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

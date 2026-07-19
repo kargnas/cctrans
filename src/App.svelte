@@ -1605,7 +1605,7 @@
           </div>
         </section>
       {:else if activeSection === "account"}
-        <AccountSettings />
+        <AccountSettings appVariant={settingsState.appVariant} />
       {:else if activeSection === "shortcuts"}
         <section class="pane">
           <h2>Global Shortcuts</h2>

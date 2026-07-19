@@ -16,19 +16,8 @@ export type CctransAccountSummary = {
   syncing: boolean;
 };
 
-export type CctransAccountActions = {
-  canLoginWithApple: boolean;
-  canEmailAuth: boolean;
-  canOpenWebSettings: boolean;
-  canStorekitPurchase: boolean;
-  canStorekitRestore: boolean;
-};
-
 export type CctransAccountState = {
-  appVariant: "mas" | "direct";
   account: CctransAccountSummary | null;
-  actions: CctransAccountActions;
-  summaryPath: string;
 };
 
 export type AccountShellAction = "appleLogin" | "logout" | "refresh" | "purchase" | "restore";
@@ -40,16 +29,7 @@ export type ActionResult = {
 };
 
 export const fallbackAccountState: CctransAccountState = {
-  appVariant: "direct",
-  account: null,
-  actions: {
-    canLoginWithApple: true,
-    canEmailAuth: true,
-    canOpenWebSettings: true,
-    canStorekitPurchase: false,
-    canStorekitRestore: false
-  },
-  summaryPath: "~/Library/Application Support/as.kargn.cctrans/account-summary.json"
+  account: null
 };
 
 export function loadCctransAccount(isTauri: boolean) {

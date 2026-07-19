@@ -281,10 +281,13 @@ name = "cctrans-tauri"
 version = "0.1.0"
 dependencies = [
  "block2",
+ "core-foundation",
+ "libc",
  "objc2",
  "objc2-app-kit",
  "objc2-foundation",
  "security-framework",
+ "security-framework-sys",
  "serde",
  "serde_json",
  "tauri",

@@ -26,6 +26,8 @@
     type CctransAccountSummary
   } from "../lib/account";
 
+  let { appVariant }: { appVariant: "mas" | "direct" } = $props();
+
   let accountState: CctransAccountState = $state(fallbackAccountState);
   let isTauri = $state(false);
   let isLoading = $state(true);
@@ -42,11 +44,11 @@
     void refreshAccount();
   });
 
-  async function refreshAccount() {
+  async function refreshAccount(clearMessage = true) {
     isLoading = true;
     try {
       accountState = await loadCctransAccount(isTauri);
-      message = null;
+      if (clearMessage) message = null;
     } catch (error) {
       message = { text: formatError(error), ok: false };
     } finally {
@@ -83,8 +85,8 @@
     isWorking = true;
     try {
       const result = await runCctransAccountAction(action);
+      await refreshAccount(false);
       message = { text: result.message, ok: result.ok };
-      await refreshAccount();
     } catch (error) {
       message = { text: formatError(error), ok: false };
     } finally {
@@ -257,38 +259,32 @@
           <Mail size={13} />{mode === "login" ? "Continue with Email" : "Create Account"}
         </button>
       </form>
-      {#if accountState.actions.canLoginWithApple}
-        <div class="account-auth-footer">
-          <button
-            type="button"
-            title="Continue with Apple"
-            aria-label="Continue with Apple"
-            disabled={isWorking}
-            onclick={() => runShellAction("appleLogin")}
-          >
-            <Apple size={13} />Continue with Apple
-          </button>
-        </div>
-      {/if}
+      <div class="account-auth-footer">
+        <button
+          type="button"
+          title="Continue with Apple"
+          aria-label="Continue with Apple"
+          disabled={isWorking}
+          onclick={() => runShellAction("appleLogin")}
+        >
+          <Apple size={13} />Continue with Apple
+        </button>
+      </div>
     </div>
   {/if}
 
   <h2>Billing</h2>
   <div class="setting-group">
-    {#if accountState.actions.canStorekitPurchase || accountState.actions.canStorekitRestore}
+    {#if appVariant === "mas"}
       <div class="action-grid">
-        {#if accountState.actions.canStorekitPurchase}
-          <button type="button" title="Purchase Pro with StoreKit" aria-label="Purchase Pro with StoreKit" disabled={isWorking} onclick={() => runShellAction("purchase")}>
-            <CreditCard size={14} />Purchase Pro
-          </button>
-        {/if}
-        {#if accountState.actions.canStorekitRestore}
-          <button type="button" title="Restore App Store purchases" aria-label="Restore App Store purchases" disabled={isWorking} onclick={() => runShellAction("restore")}>
-            <RotateCcw size={14} />Restore
-          </button>
-        {/if}
+        <button type="button" title="Purchase Pro with StoreKit" aria-label="Purchase Pro with StoreKit" disabled={isWorking} onclick={() => runShellAction("purchase")}>
+          <CreditCard size={14} />Purchase Pro
+        </button>
+        <button type="button" title="Restore App Store purchases" aria-label="Restore App Store purchases" disabled={isWorking} onclick={() => runShellAction("restore")}>
+          <RotateCcw size={14} />Restore
+        </button>
       </div>
-    {:else if accountState.actions.canOpenWebSettings}
+    {:else}
       <div class="action-grid single">
         <button type="button" title="Open web account settings" aria-label="Open web account settings" disabled={isWorking} onclick={openWebSettings}>
           <ExternalLink size={14} />Open Web Settings

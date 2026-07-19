@@ -33,8 +33,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         fileURL: SharedAppStorage.fileURL("onboarding-progress.json")
     )
     private let credentialsProvider = CredentialsProvider()
-    private let accountClient = CctransAccountClient(
-        sessionCoordinator: CctransAccountStorage.sessionCoordinator
+    private lazy var accountClient = CctransAccountClient(
+        sessionCoordinator: CctransAccountStorage.sessionCoordinator,
+        attestor: CctransAppAttestor.shared,
+        devTokenProvider: { CredentialsProvider().credentials().cctransDevToken },
+        appTransactionProvider: { await CctransAppTransactionProvider.shared.signedAppTransaction() },
+        appReceiptProvider: { await CctransAppTransactionProvider.shared.appStoreReceipt() }
     )
     private let appleSignIn = CctransAppleSignIn()
     private let translationService = TranslationService(
@@ -82,6 +86,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hasStarted = false
     private var permissionStatusTimer: Timer?
     private var permissionRequestWatcher: DispatchSourceFileSystemObject?
+    private var accountRequestWatcher: DispatchSourceFileSystemObject?
+    private var accountRequestTask: Task<Void, Never>?
     // Last status written to permission-status.json; only rewrite the shared file
     // when a grant actually flips, so the steady-state poll never churns the shared
     // directory watchers (SettingsStore / the Tauri helper) every tick.
@@ -163,6 +169,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // read our TCC grants itself.
         writePermissionStatusCache()
         startPermissionRequestWatcher()
+        startAccountRequestWatcher()
         startPermissionStatusTimer()
         githubStarPrompter.scheduleIfEligible(
             hasWorkspaceRoot: resolveWorkspaceRootURL() != nil,
@@ -213,10 +220,120 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         terminateTauriHelper(matching: "--translation-preview")
         permissionStatusTimer?.invalidate()
         permissionRequestWatcher?.cancel()
+        accountRequestWatcher?.cancel()
+        accountRequestTask?.cancel()
         #if MAS_BUILD
         loginRequestWatcher?.cancel()
         screenshotRequestWatcher?.cancel()
         #endif
+    }
+
+    private static var accountRequestsDirectoryURL: URL {
+        SharedAppStorage.directoryURL.appendingPathComponent("account-requests", isDirectory: true)
+    }
+
+    private func startAccountRequestWatcher() {
+        let directoryURL = AppDelegate.accountRequestsDirectoryURL
+        try? FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+        serveAccountRequests()
+        let descriptor = open(directoryURL.path, O_EVTONLY)
+        guard descriptor >= 0 else { return }
+        let source = DispatchSource.makeFileSystemObjectSource(
+            fileDescriptor: descriptor,
+            eventMask: [.write, .delete, .rename],
+            queue: .main
+        )
+        source.setEventHandler { [weak self] in
+            self?.serveAccountRequests()
+        }
+        source.setCancelHandler {
+            close(descriptor)
+        }
+        source.resume()
+        accountRequestWatcher = source
+    }
+
+    private func serveAccountRequests() {
+        guard accountRequestTask == nil else { return }
+        accountRequestTask = Task { [weak self] in
+            guard let self else { return }
+            let directoryURL = AppDelegate.accountRequestsDirectoryURL
+            let dispatcher = accountRequestDispatcher()
+            while !Task.isCancelled {
+                let requests = (try? CctransAccountRequestFiles.pendingRequests(in: directoryURL)) ?? []
+                guard let request = requests.first else {
+                    break
+                }
+                let response = await dispatcher.response(for: request.action)
+                do {
+                    try CctransAccountRequestFiles.complete(request, with: response, in: directoryURL)
+                } catch {
+                    try? FileManager.default.removeItem(at: request.requestURL)
+                }
+            }
+            accountRequestTask = nil
+            if (try? CctransAccountRequestFiles.pendingRequests(in: directoryURL).isEmpty) == false {
+                serveAccountRequests()
+            }
+        }
+    }
+
+    private func accountRequestDispatcher() -> CctransAccountRequestDispatcher {
+        CctransAccountRequestDispatcher(
+            appleLogin: { [weak self] in
+                guard let self else {
+                    return .error(title: "Apple Sign In", message: "CCTrans is shutting down.")
+                }
+                do {
+                    let credential = try await appleSignIn.authorize()
+                    let session = try await accountClient.signInWithApple(
+                        identityToken: credential.identityToken,
+                        nonce: credential.nonce,
+                        name: credential.name
+                    )
+                    return .success(
+                        title: "Apple Sign In",
+                        message: "Signed in as \(session.account.email)."
+                    )
+                } catch {
+                    return .error(title: "Apple Sign In", message: error.localizedDescription)
+                }
+            },
+            logout: { [weak self] in
+                guard let self else {
+                    return .error(title: "Logout", message: "CCTrans is shutting down.")
+                }
+                do {
+                    try await accountClient.logout()
+                    return .success(title: "Logout", message: "Signed out on this Mac.")
+                } catch {
+                    do {
+                        guard try CctransAccountStorage.sessionCoordinator.loadToken() != nil else {
+                            return .success(
+                                title: "Logout",
+                                message: "Signed out on this Mac. The server could not be reached."
+                            )
+                        }
+                    } catch {
+                        return .error(title: "Logout", message: error.localizedDescription)
+                    }
+                    return .error(title: "Logout", message: error.localizedDescription)
+                }
+            },
+            refresh: { [weak self] in
+                guard let self else {
+                    return .error(title: "Account Refresh", message: "CCTrans is shutting down.")
+                }
+                do {
+                    let account = try await accountClient.refresh()
+                    return account.map {
+                        .success(title: "Account Refresh", message: "Account status refreshed for \($0.email).")
+                    } ?? .success(title: "Account Refresh", message: "No signed-in account was found.")
+                } catch {
+                    return .error(title: "Account Refresh", message: error.localizedDescription)
+                }
+            }
+        )
     }
 
     #if MAS_BUILD
