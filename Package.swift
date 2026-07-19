@@ -33,6 +33,7 @@ let package = Package(
             swiftSettings: isMASBuild ? [.define("MAS_BUILD")] : [],
             linkerSettings: [
                 .linkedFramework("AppKit"),
+                .linkedFramework("AuthenticationServices"),
                 .linkedFramework("Carbon"),
                 .linkedFramework("CoreGraphics"),
                 .linkedFramework("ScreenCaptureKit"),

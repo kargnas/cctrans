@@ -33,6 +33,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         fileURL: SharedAppStorage.fileURL("onboarding-progress.json")
     )
     private let credentialsProvider = CredentialsProvider()
+    private let accountClient = CctransAccountClient(
+        sessionCoordinator: CctransAccountStorage.sessionCoordinator
+    )
+    private let appleSignIn = CctransAppleSignIn()
     private let translationService = TranslationService(
         appleBackend: AppleTranslationHost.shared,
         // CCTrans Cloud client. MAS prefers the signed StoreKit AppTransaction and
@@ -1677,12 +1681,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             settingsStore: settingsStore,
             progressStore: onboardingProgressStore,
             resumeProgress: resumeProgress,
+            accountClient: accountClient,
+            appleSignIn: appleSignIn,
+            existingAccount: loadExistingAccountSummary(),
             onPermissionStatusChanged: { [weak self] in self?.writePermissionStatusCache() }
         )
         flowModel.progressError = initialProgressError
         let controller = onboardingController ?? OnboardingWindowController()
         onboardingController = controller
         controller.show(flowModel: flowModel)
+    }
+
+    private func loadExistingAccountSummary() -> CctransAccountSummary? {
+        guard (try? CctransAccountStorage.sessionCoordinator.loadToken()) != nil else {
+            return nil
+        }
+        return try? CctransAccountStorage.summaryStore.load()
     }
 
     private func showOnboardingOnLaunchIfNeeded() {

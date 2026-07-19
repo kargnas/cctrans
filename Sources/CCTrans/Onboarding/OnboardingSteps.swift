@@ -153,31 +153,46 @@ struct ModelStepView: View {
     }
 
     var body: some View {
-        ScrollView(.vertical, showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 14) {
-                StepHeader(
-                    title: "Choose a model",
-                    subtitle: "Pick how CCTrans translates. You can fine-tune the model in Settings later."
-                )
+        ScrollViewReader { proxy in
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 14) {
+                    StepHeader(
+                        title: "Choose a model",
+                        subtitle: "Pick how CCTrans translates. You can fine-tune the model in Settings later."
+                    )
 
-                LazyVGrid(columns: columns, spacing: 12) {
-                    ForEach(options) { option in
-                        ModelCardView(
-                            option: option,
-                            isSelected: model.selectedProvider == option.provider,
-                            action: {
-                                withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
-                                    model.selectProvider(option.provider)
+                    LazyVGrid(columns: columns, spacing: 12) {
+                        ForEach(options) { option in
+                            ModelCardView(
+                                option: option,
+                                isSelected: model.selectedProvider == option.provider,
+                                action: {
+                                    withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                                        model.selectProvider(option.provider)
+                                    }
                                 }
-                            }
-                        )
+                            )
+                        }
                     }
-                }
 
-                inlineFollowUp
-                    .animation(.spring(response: 0.35, dampingFraction: 0.85), value: model.selectedProvider)
+                    inlineFollowUp
+                        .id("model-inline-follow-up")
+                        .animation(.spring(response: 0.35, dampingFraction: 0.85), value: model.selectedProvider)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .onAppear {
+                guard model.selectedProvider == .kargnasManaged else { return }
+                DispatchQueue.main.async {
+                    proxy.scrollTo("model-inline-follow-up", anchor: .bottom)
+                }
+            }
+            .onChange(of: model.selectedProvider) { _, provider in
+                guard provider == .kargnasManaged else { return }
+                withAnimation(.spring(response: 0.35, dampingFraction: 0.9)) {
+                    proxy.scrollTo("model-inline-follow-up", anchor: .bottom)
+                }
+            }
         }
     }
 
@@ -196,7 +211,8 @@ struct ModelStepView: View {
             InlineNote(text: "Downloads automatically on first use.")
                 .transition(.opacity.combined(with: .move(edge: .top)))
         case .kargnasManaged:
-            EmptyView()
+            CloudAccountFollowUp(model: model)
+                .transition(.opacity.combined(with: .move(edge: .top)))
         }
     }
 }
@@ -312,6 +328,190 @@ private struct OpenRouterKeyField: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(12)
         .background(Color(NSColor.controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+private struct CloudAccountFollowUp: View {
+    private enum Field: Hashable {
+        case email
+        case password
+    }
+
+    @ObservedObject var model: OnboardingFlowModel
+    @FocusState private var focusedField: Field?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if let account = model.accountState.account {
+                signedInContent(account)
+            } else if model.accountState.isShowingEmailForm {
+                emailContent
+            } else {
+                choiceContent
+            }
+        }
+        .frame(maxWidth: .infinity, minHeight: 210, alignment: .topLeading)
+        .padding(12)
+        .background(Color(NSColor.controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Color(NSColor.separatorColor), lineWidth: 1)
+        )
+    }
+
+    private var choiceContent: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Use CCTrans Cloud")
+                .font(.caption.weight(.semibold))
+            Button(action: model.signInWithApple) {
+                Label("Continue with Apple", systemImage: "apple.logo")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(model.accountState.isLoading)
+            .accessibilityLabel("Continue with Apple")
+
+            Button(action: model.showEmailAccountForm) {
+                Label("Continue with Email", systemImage: "envelope.fill")
+                    .frame(maxWidth: .infinity)
+            }
+            .disabled(model.accountState.isLoading)
+            .accessibilityLabel("Continue with Email")
+
+            Button("Start Free Without an Account", action: model.continueWithoutAccount)
+                .buttonStyle(.link)
+                .disabled(model.accountState.isLoading)
+
+            accountStatus
+        }
+    }
+
+    private var emailContent: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Continue with Email")
+                    .font(.caption.weight(.semibold))
+                Spacer()
+                Button(action: model.hideEmailAccountForm) {
+                    Image(systemName: "xmark")
+                }
+                .buttonStyle(.plain)
+                .help("Back to account choices")
+                .accessibilityLabel("Back to account choices")
+            }
+
+            Picker("Email mode", selection: emailModeBinding) {
+                Text("Login").tag(CctransOnboardingAccountState.EmailMode.login)
+                Text("Register").tag(CctransOnboardingAccountState.EmailMode.register)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .disabled(model.accountState.isLoading)
+
+            TextField("Email", text: $model.accountState.email)
+                .textFieldStyle(.roundedBorder)
+                .focused($focusedField, equals: .email)
+                .onSubmit { focusedField = .password }
+                .disabled(model.accountState.isLoading)
+                .accessibilityLabel("Email address")
+
+            SecureField("Password", text: $model.accountState.password)
+                .textFieldStyle(.roundedBorder)
+                .focused($focusedField, equals: .password)
+                .onSubmit(model.submitEmailAccount)
+                .disabled(model.accountState.isLoading)
+                .accessibilityLabel("Password")
+
+            Button(emailSubmitTitle, action: model.submitEmailAccount)
+                .keyboardShortcut(.defaultAction)
+                .disabled(model.accountState.isLoading)
+
+            accountStatus
+        }
+        .onAppear { focusedField = .email }
+    }
+
+    private func signedInContent(_ account: CctransAccountSummary) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label("Account ready", systemImage: "checkmark.circle.fill")
+                .font(.callout.weight(.semibold))
+                .foregroundStyle(.green)
+            Text(account.email)
+                .font(.callout)
+                .textSelection(.enabled)
+            if account.emailVerified {
+                Text("Your account is verified. Continue to finish model setup.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                Label(
+                    "Verification pending. You can continue now, but purchases stay unavailable until the email is verified.",
+                    systemImage: "envelope.badge"
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    @ViewBuilder
+    private var accountStatus: some View {
+        Group {
+            if model.accountState.isLoading {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Signing in…")
+                        .foregroundStyle(.secondary)
+                }
+            } else if model.accountState.isAnonymous {
+                Label("Free without an account selected.", systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+            } else if let failure = model.accountState.failure {
+                Label(failureMessage(failure), systemImage: failureSymbol(failure))
+                    .foregroundStyle(failure == .cancelled ? Color.secondary : Color.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                Text("Choose an account option to continue with CCTrans Cloud.")
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .font(.caption)
+        .frame(maxWidth: .infinity, minHeight: 34, alignment: .topLeading)
+    }
+
+    private var emailModeBinding: Binding<CctransOnboardingAccountState.EmailMode> {
+        Binding(
+            get: { model.accountState.emailMode },
+            set: { model.selectEmailMode($0) }
+        )
+    }
+
+    private var emailSubmitTitle: String {
+        model.accountState.emailMode == .login ? "Login" : "Register"
+    }
+
+    private func failureMessage(_ failure: CctransOnboardingAccountState.Failure) -> String {
+        switch failure {
+        case let .validation(message), let .request(message):
+            message
+        case .cancelled:
+            "Sign in with Apple was cancelled."
+        case .accountLinkRequired:
+            "This Apple email already has an account. Continue with Email, then link Apple in Settings."
+        }
+    }
+
+    private func failureSymbol(_ failure: CctransOnboardingAccountState.Failure) -> String {
+        switch failure {
+        case .cancelled:
+            "xmark.circle"
+        case .accountLinkRequired:
+            "person.crop.circle.badge.exclamationmark"
+        case .validation, .request:
+            "exclamationmark.triangle.fill"
+        }
     }
 }
 

@@ -65,6 +65,7 @@ final class OnboardingFlowModel: ObservableObject {
     @Published var openRouterKeySaved: Bool = false
     @Published var openRouterKeyError: String?
     @Published var progressError: String?
+    @Published var accountState: CctransOnboardingAccountState
     // Set when the user advances past the model step with OpenRouter selected but no
     // saved key; a one-line nudge, not a block (App Review-friendly, and they can add
     // the key in Settings).
@@ -77,6 +78,7 @@ final class OnboardingFlowModel: ObservableObject {
     @Published private(set) var hasTranslated = false
     private var tryItGate = OnboardingTryItGate()
     private var isActive = true
+    private var accountTask: Task<Void, Never>?
 
     let mode: Mode
     let settingsStore: SettingsStore
@@ -85,17 +87,24 @@ final class OnboardingFlowModel: ObservableObject {
     let appBundleURL = Bundle.main.bundleURL
     // Set by the window controller so a SwiftUI button can close the window.
     var onDismiss: () -> Void = {}
+    private let accountClient: CctransAccountClient
+    private let appleSignIn: CctransAppleSignIn
 
     init(
         mode: Mode,
         settingsStore: SettingsStore,
         progressStore: OnboardingProgressStore,
         resumeProgress: Bool,
+        accountClient: CctransAccountClient,
+        appleSignIn: CctransAppleSignIn,
+        existingAccount: CctransAccountSummary?,
         onPermissionStatusChanged: @escaping () -> Void
     ) {
         self.mode = mode
         self.settingsStore = settingsStore
         self.progressStore = progressStore
+        self.accountClient = accountClient
+        self.appleSignIn = appleSignIn
         self.onPermissionStatusChanged = onPermissionStatusChanged
 
         let initialStep: Step
@@ -111,12 +120,15 @@ final class OnboardingFlowModel: ObservableObject {
         // Apple Translation is the onboarding default without changing the
         // global direct-build default. A resumed session uses the provider that
         // was committed when the user advanced from the model screen.
-        selectedProvider = OnboardingProviderPolicy.initialProvider(
+        let initialProvider = OnboardingProviderPolicy.initialProvider(
             current: settingsStore.settings.provider,
             startsAtModel: mode == .fullFlow && initialStep == .model,
             hasCompletedOnboarding: settingsStore.settings.hasCompletedOnboarding,
             hadExistingAppStateAtLaunch: settingsStore.hadExistingAppStateAtLaunch
         )
+        selectedProvider = initialProvider
+        accountState = CctransOnboardingAccountState(account: existingAccount)
+        accountState.setCloudSelected(initialProvider == .kargnasManaged)
 
         if selectedProvider == .appleTranslation {
             translationDownload = Self.makeTranslationDownloadModel(settings: settingsStore.settings)
@@ -220,6 +232,11 @@ final class OnboardingFlowModel: ObservableObject {
 
     func selectProvider(_ provider: TranslationProvider) {
         selectedProvider = provider
+        if provider != .kargnasManaged {
+            accountTask?.cancel()
+            accountTask = nil
+        }
+        accountState.setCloudSelected(provider == .kargnasManaged)
         // Build the Apple language-pack download model lazily, only once Apple
         // Translation is actually chosen (it queries LanguageAvailability).
         if provider == .appleTranslation, translationDownload == nil {
@@ -249,9 +266,103 @@ final class OnboardingFlowModel: ObservableObject {
         }
     }
 
+    var canAdvanceFromModel: Bool {
+        selectedProvider != .kargnasManaged || accountState.canContinue
+    }
+
+    func showEmailAccountForm() {
+        accountState.showEmailForm()
+    }
+
+    func hideEmailAccountForm() {
+        accountState.hideEmailForm()
+    }
+
+    func selectEmailMode(_ mode: CctransOnboardingAccountState.EmailMode) {
+        accountState.selectEmailMode(mode)
+    }
+
+    func continueWithoutAccount() {
+        accountTask?.cancel()
+        accountTask = nil
+        accountState.continueAnonymously()
+    }
+
+    func submitEmailAccount() {
+        guard !accountState.isLoading,
+              let submission = accountState.beginEmailSubmission() else { return }
+        accountTask?.cancel()
+        accountTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let session: CctransAccountSession
+                switch submission.mode {
+                case .login:
+                    session = try await accountClient.login(
+                        email: submission.email,
+                        password: submission.password
+                    )
+                case .register:
+                    let name = submission.email.split(separator: "@").first.map(String.init) ?? submission.email
+                    session = try await accountClient.register(
+                        name: name,
+                        email: submission.email,
+                        password: submission.password,
+                        passwordConfirmation: submission.password
+                    )
+                }
+                guard !Task.isCancelled else { return }
+                accountState.succeed(session.account)
+            } catch {
+                guard !Task.isCancelled else { return }
+                accountState.fail(Self.accountFailure(for: error))
+            }
+        }
+    }
+
+    func signInWithApple() {
+        guard !accountState.isLoading else { return }
+        accountTask?.cancel()
+        accountState.beginAppleAuthentication()
+        accountTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let credential = try await appleSignIn.authorize()
+                let session = try await accountClient.signInWithApple(
+                    identityToken: credential.identityToken,
+                    nonce: credential.nonce,
+                    name: credential.name
+                )
+                guard !Task.isCancelled else { return }
+                accountState.succeed(session.account)
+            } catch {
+                guard !Task.isCancelled else { return }
+                accountState.fail(Self.accountFailure(for: error))
+            }
+        }
+    }
+
+    private static func accountFailure(for error: any Error) -> CctransOnboardingAccountState.Failure {
+        if let appleError = error as? CctransAppleSignInError,
+           case .cancelled = appleError {
+            return .cancelled
+        }
+        if let accountError = error as? CctransAccountError {
+            switch accountError {
+            case .api(_, .accountLinkRequired):
+                return .accountLinkRequired
+            case .api(_, .invalidCredentials):
+                return .request("The email or password is incorrect.")
+            default:
+                break
+            }
+        }
+        return .request(error.localizedDescription)
+    }
+
     @discardableResult
     func advanceFromModel() -> Bool {
-        guard mode == .fullFlow, step == .model else { return false }
+        guard mode == .fullFlow, step == .model, canAdvanceFromModel else { return false }
         flagOpenRouterKeyIfMissing()
 
         var settings = settingsStore.settings
@@ -289,6 +400,9 @@ final class OnboardingFlowModel: ObservableObject {
 
     func deactivate() {
         isActive = false
+        accountTask?.cancel()
+        accountTask = nil
+        accountState.cancelLoading()
         tryItGate.deactivate()
     }
 
@@ -548,7 +662,10 @@ private struct OnboardingLeftPane: View {
         } else if model.step == .model || model.step == .permissions {
             Button("Next") { goNext() }
                 .keyboardShortcut(.defaultAction)
-                .disabled(model.step == .permissions && !model.allGranted)
+                .disabled(
+                    (model.step == .permissions && !model.allGranted)
+                        || (model.step == .model && !model.canAdvanceFromModel)
+                )
         } else if model.hasTranslated {
             Button("Done") { finish() }
                 .keyboardShortcut(.defaultAction)
