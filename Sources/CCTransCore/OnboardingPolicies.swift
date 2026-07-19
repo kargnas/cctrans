@@ -96,8 +96,7 @@ public struct CctransOnboardingAccountState: Equatable, Sendable {
     }
 
     public mutating func hideEmailForm() {
-        resetSensitiveState()
-        isShowingEmailForm = false
+        cancelAuthentication(hideEmailForm: true)
     }
 
     public mutating func selectEmailMode(_ mode: EmailMode) {
@@ -148,6 +147,14 @@ public struct CctransOnboardingAccountState: Equatable, Sendable {
 
     public mutating func cancelLoading() {
         isLoading = false
+    }
+
+    public mutating func cancelAuthentication(hideEmailForm: Bool) {
+        isLoading = false
+        resetSensitiveState()
+        if hideEmailForm {
+            isShowingEmailForm = false
+        }
     }
 
     private mutating func resetSensitiveState() {

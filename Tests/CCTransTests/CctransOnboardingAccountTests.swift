@@ -76,13 +76,35 @@ struct CctransOnboardingAccountTests {
         state.setCloudSelected(true)
 
         state.beginAppleAuthentication()
-        state.cancelLoading()
+        state.cancelAuthentication(hideEmailForm: false)
         #expect(state.isLoading == false)
         #expect(state.canContinue == false)
 
         state.beginAppleAuthentication()
         #expect(state.isLoading == true)
         #expect(state.failure == nil)
+    }
+
+    @Test func hidingEmailFormWhileLoadingClearsTransientStateAndKeepsAccount() {
+        let summary = accountSummary(emailVerified: true)
+        var state = CctransOnboardingAccountState(account: summary)
+        state.setCloudSelected(true)
+        state.showEmailForm()
+        state.email = "user@example.com"
+        state.password = "secret-password"
+        _ = state.beginEmailSubmission()
+        state.fail(.request("Try again."))
+        state.password = "retry-password"
+        _ = state.beginEmailSubmission()
+
+        state.hideEmailForm()
+
+        #expect(state.isShowingEmailForm == false)
+        #expect(state.isLoading == false)
+        #expect(state.password.isEmpty)
+        #expect(state.failure == nil)
+        #expect(state.account == summary)
+        #expect(state.email == "user@example.com")
     }
 
     @Test func switchingModeOrLeavingCloudResetsSensitiveStateOnly() {

@@ -275,8 +275,7 @@ final class OnboardingFlowModel: ObservableObject {
     }
 
     func hideEmailAccountForm() {
-        cancelAccountFlow()
-        accountState.hideEmailForm()
+        cancelAccountFlow(hideEmailForm: true)
     }
 
     func selectEmailMode(_ mode: CctransOnboardingAccountState.EmailMode) {
@@ -402,14 +401,14 @@ final class OnboardingFlowModel: ObservableObject {
     func deactivate() {
         isActive = false
         cancelAccountFlow()
-        accountState.cancelLoading()
         tryItGate.deactivate()
     }
 
-    private func cancelAccountFlow() {
+    private func cancelAccountFlow(hideEmailForm: Bool = false) {
         accountTask?.cancel()
         accountTask = nil
         appleSignIn.cancel()
+        accountState.cancelAuthentication(hideEmailForm: hideEmailForm)
     }
 
     @discardableResult
