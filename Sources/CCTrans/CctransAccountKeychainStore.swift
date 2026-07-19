@@ -3,13 +3,17 @@ import Foundation
 import Security
 
 enum CctransAccountStorage {
-    static let tokenStore = CctransAccountKeychainStore()
-    static let summaryStore = CctransAccountSummaryStore(
+    nonisolated static let tokenStore = CctransAccountKeychainStore()
+    nonisolated static let summaryStore = CctransAccountSummaryStore(
         fileURL: SharedAppStorage.fileURL("account-summary.json")
+    )
+    nonisolated static let sessionCoordinator = CctransAccountSessionCoordinator(
+        tokenStore: tokenStore,
+        summaryStore: summaryStore
     )
 }
 
-final class CctransAccountKeychainStore: CctransAccountTokenStore, @unchecked Sendable {
+struct CctransAccountKeychainStore: CctransAccountTokenStore {
     func load() throws -> String? {
         var query = baseQuery
         query[kSecReturnData as String] = true

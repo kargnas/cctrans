@@ -49,6 +49,7 @@ else
   APP_DISPLAY_NAME="${CCTRANS_MAS_APP_DISPLAY_NAME:-$APP_BUNDLE_NAME}"
   BUNDLE_ID="${CCTRANS_MAS_BUNDLE_ID:-as.kargn.cctrans}"
 fi
+HELPER_BUNDLE_ID="${CCTRANS_MAS_HELPER_BUNDLE_ID:-$BUNDLE_ID.helper}"
 
 if [[ "$LOCAL_VERIFICATION" == "0" ]]; then
   if [[ -z "$TEAM_ID" || -z "$PROFILE_PATH" || -z "$HELPER_PROFILE_PATH" ]]; then
@@ -60,7 +61,6 @@ if [[ "$LOCAL_VERIFICATION" == "0" ]]; then
     exit 1
   fi
 fi
-HELPER_BUNDLE_ID="${CCTRANS_MAS_HELPER_BUNDLE_ID:-$BUNDLE_ID.helper}"
 APP_DIR="$DIST_DIR/$APP_BUNDLE_NAME.app"
 CONTENTS_DIR="$APP_DIR/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
@@ -75,6 +75,41 @@ TAURI_HELPER_SOURCE="$ROOT/src-tauri/target/release/bundle/macos/CCTrans.app"
 TAURI_HELPER_DEST="$RESOURCES_DIR/CCTransTauri.app"
 # cctrans-cli lives next to cctrans-tauri so the helper resolves it as a sibling.
 CLI_HELPER_DEST="$TAURI_HELPER_DEST/Contents/MacOS/cctrans-cli"
+
+WORK_DIR="$(mktemp -d)"
+trap 'rm -rf "$WORK_DIR"' EXIT
+
+profile_allows_keychain_group() {
+  local profile="$1"
+  local expected_app_id="$2"
+  local decoded="$WORK_DIR/$(basename "$profile").plist"
+  security cms -D -i "$profile" > "$decoded"
+  local app_id
+  app_id="$(/usr/libexec/PlistBuddy -c "Print :Entitlements:com.apple.application-identifier" "$decoded" 2>/dev/null || true)"
+  if [[ "$app_id" != "$expected_app_id" ]]; then
+    echo "ERROR: provisioning profile application identifier must be $expected_app_id: $profile" >&2
+    exit 1
+  fi
+  if /usr/libexec/PlistBuddy -c "Print :Entitlements:keychain-access-groups" "$decoded" 2>/dev/null \
+      | grep -Eq "${KEYCHAIN_ACCESS_GROUP//./\\.}|${TEAM_ID}\\.\\*"; then
+    return
+  fi
+  echo "ERROR: provisioning profile does not allow Keychain group $KEYCHAIN_ACCESS_GROUP: $profile" >&2
+  exit 1
+}
+
+if [[ "$LOCAL_VERIFICATION" == "0" ]]; then
+  profile_allows_keychain_group "$PROFILE_PATH" "$TEAM_ID.$BUNDLE_ID"
+  profile_allows_keychain_group "$HELPER_PROFILE_PATH" "$TEAM_ID.$HELPER_BUNDLE_ID"
+fi
+if [[ "${CCTRANS_PROFILE_VALIDATION_ONLY:-0}" == "1" ]]; then
+  if [[ "$LOCAL_VERIFICATION" == "1" ]]; then
+    echo "ERROR: profile validation requires the MAS team and both provisioning profiles." >&2
+    exit 1
+  fi
+  echo "MAS provisioning profiles validated."
+  exit 0
+fi
 
 cd "$ROOT"
 CCTRANS_MAS_BUILD=1 swift build -c release --scratch-path .build-mas
@@ -144,8 +179,6 @@ fi
 
 # Working copies of the entitlements; identifier keys are appended only when a
 # team id is available because they must match the provisioning profile.
-WORK_DIR="$(mktemp -d)"
-trap 'rm -rf "$WORK_DIR"' EXIT
 APP_ENTITLEMENTS="$WORK_DIR/CCTrans.entitlements"
 HELPER_ENTITLEMENTS="$WORK_DIR/CCTransTauri.entitlements"
 # No work copy / identifier keys for the CLI: an inherited-sandbox helper must
@@ -154,22 +187,6 @@ CLI_ENTITLEMENTS="$CLI_ENTITLEMENTS_SRC"
 cp "$ENTITLEMENTS_SRC" "$APP_ENTITLEMENTS"
 cp "$HELPER_ENTITLEMENTS_SRC" "$HELPER_ENTITLEMENTS"
 
-profile_allows_keychain_group() {
-  local profile="$1"
-  local decoded="$WORK_DIR/$(basename "$profile").plist"
-  security cms -D -i "$profile" > "$decoded"
-  if /usr/libexec/PlistBuddy -c "Print :Entitlements:keychain-access-groups" "$decoded" 2>/dev/null \
-      | grep -Eq "${KEYCHAIN_ACCESS_GROUP//./\\.}|${TEAM_ID}\\.\\*"; then
-    return
-  fi
-  echo "ERROR: provisioning profile does not allow Keychain group $KEYCHAIN_ACCESS_GROUP: $profile" >&2
-  exit 1
-}
-
-if [[ "$LOCAL_VERIFICATION" == "0" ]]; then
-  profile_allows_keychain_group "$PROFILE_PATH"
-  profile_allows_keychain_group "$HELPER_PROFILE_PATH"
-fi
 if [[ -n "$TEAM_ID" ]]; then
   /usr/libexec/PlistBuddy -c "Add :com.apple.application-identifier string $TEAM_ID.$BUNDLE_ID" "$APP_ENTITLEMENTS"
   /usr/libexec/PlistBuddy -c "Add :com.apple.developer.team-identifier string $TEAM_ID" "$APP_ENTITLEMENTS"

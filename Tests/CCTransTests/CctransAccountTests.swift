@@ -28,6 +28,30 @@ struct CctransAccountTests {
         #expect(!storedJSON.contains("token"))
     }
 
+    @Test func loginPropagatesTokenSaveFailureWithoutReplacingSummary() async throws {
+        let tokenStore = MockAccountTokenStore(token: "previous-token", saveError: .saveFailed)
+        let summaryStore = CctransAccountSummaryStore(fileURL: temporarySummaryURL())
+        try summaryStore.save(accountSummary)
+        let client = CctransAccountClient(
+            session: makeAccountSession { _ in
+                .response(200, accountSessionJSON(
+                    token: "replacement-token",
+                    name: "Replacement",
+                    email: "replacement@example.com"
+                ))
+            },
+            tokenStore: tokenStore,
+            summaryStore: summaryStore
+        )
+
+        await #expect(throws: MockAccountTokenStoreError.saveFailed) {
+            try await client.login(email: "replacement@example.com", password: "password")
+        }
+
+        #expect(tokenStore.storedToken == "previous-token")
+        #expect(try summaryStore.load() == accountSummary)
+    }
+
     @Test func summaryPreservesAccountDisplayContractWithoutToken() throws {
         let summary = try JSONDecoder().decode(
             CctransAccountSummary.self,
@@ -99,6 +123,27 @@ struct CctransAccountTests {
         #expect(try summaryStore.load() == nil)
     }
 
+    @Test func unauthorizedRefreshPropagatesTokenDeleteFailureAndKeepsSession() async throws {
+        let tokenStore = MockAccountTokenStore(token: "expired-token", deleteError: .deleteFailed)
+        let summaryStore = CctransAccountSummaryStore(fileURL: temporarySummaryURL())
+        try summaryStore.save(accountSummary)
+        let client = CctransAccountClient(
+            session: makeAccountSession { _ in
+                .response(401, json(["ok": false, "error": "invalid_token"]))
+            },
+            tokenStore: tokenStore,
+            summaryStore: summaryStore,
+            appTransactionProvider: { "signed-app-transaction" }
+        )
+
+        await #expect(throws: MockAccountTokenStoreError.deleteFailed) {
+            try await client.refresh()
+        }
+
+        #expect(tokenStore.storedToken == "expired-token")
+        #expect(try summaryStore.load() == accountSummary)
+    }
+
     @Test func networkFailureKeepsLastSummary() async throws {
         let tokenStore = MockAccountTokenStore(token: "stored-token")
         let summaryStore = CctransAccountSummaryStore(fileURL: temporarySummaryURL())
@@ -138,6 +183,121 @@ struct CctransAccountTests {
         #expect(try tokenStore.load() == nil)
         #expect(try summaryStore.load() == nil)
     }
+
+    @Test func logoutPropagatesTokenDeleteFailureWithoutClaimingSuccess() async throws {
+        let tokenStore = MockAccountTokenStore(token: "stored-token", deleteError: .deleteFailed)
+        let summaryStore = CctransAccountSummaryStore(fileURL: temporarySummaryURL())
+        try summaryStore.save(accountSummary)
+        let captured = AccountRequestCapture()
+        let client = CctransAccountClient(
+            session: makeAccountSession { request in
+                captured.record(request)
+                return .response(200, json(["ok": true]))
+            },
+            tokenStore: tokenStore,
+            summaryStore: summaryStore
+        )
+
+        await #expect(throws: MockAccountTokenStoreError.deleteFailed) {
+            try await client.logout()
+        }
+
+        #expect(captured.lastRequest == nil)
+        #expect(tokenStore.storedToken == "stored-token")
+        #expect(try summaryStore.load() == accountSummary)
+    }
+
+    @Test func tokenLoadFailureDoesNotBecomeAnonymousRefresh() async throws {
+        let tokenStore = MockAccountTokenStore(token: "stored-token", loadError: .loadFailed)
+        let summaryStore = CctransAccountSummaryStore(fileURL: temporarySummaryURL())
+        try summaryStore.save(accountSummary)
+        let captured = AccountRequestCapture()
+        let client = CctransAccountClient(
+            session: makeAccountSession { request in
+                captured.record(request)
+                return .response(200, accountSummaryJSON(plan: "pro", lifetime: false))
+            },
+            tokenStore: tokenStore,
+            summaryStore: summaryStore
+        )
+
+        await #expect(throws: MockAccountTokenStoreError.loadFailed) {
+            try await client.refresh()
+        }
+
+        #expect(captured.lastRequest == nil)
+        #expect(try summaryStore.load() == accountSummary)
+    }
+
+    @Test func laterLoginWinsWhenEarlierResponseArrivesLast() async throws {
+        let tokenStore = MockAccountTokenStore()
+        let summaryStore = CctransAccountSummaryStore(fileURL: temporarySummaryURL())
+        let gate = AccountRequestGate()
+        let sequence = AccountRequestSequence()
+        let client = CctransAccountClient(
+            session: makeAccountSession { _ in
+                if sequence.next() == 1 {
+                    await gate.markStartedAndWait()
+                    return .response(200, accountSessionJSON(
+                        token: "token-a",
+                        name: "Account A",
+                        email: "a@example.com"
+                    ))
+                }
+                return .response(200, accountSessionJSON(
+                    token: "token-b",
+                    name: "Account B",
+                    email: "b@example.com"
+                ))
+            },
+            tokenStore: tokenStore,
+            summaryStore: summaryStore
+        )
+
+        let loginA = Task {
+            try await client.login(email: "a@example.com", password: "password")
+        }
+        await gate.waitUntilStarted()
+        let loginB = try await client.login(email: "b@example.com", password: "password")
+        await gate.open()
+
+        #expect(loginB.token == "token-b")
+        await #expect(throws: CctransAccountError.operationSuperseded) {
+            try await loginA.value
+        }
+        #expect(tokenStore.storedToken == "token-b")
+        #expect(try summaryStore.load()?.email == "b@example.com")
+    }
+
+    @Test func logoutPreventsInFlightRefreshFromResurrectingSummary() async throws {
+        let tokenStore = MockAccountTokenStore(token: "stored-token")
+        let summaryStore = CctransAccountSummaryStore(fileURL: temporarySummaryURL())
+        try summaryStore.save(accountSummary)
+        let gate = AccountRequestGate()
+        let client = CctransAccountClient(
+            session: makeAccountSession { request in
+                if request.url?.path.hasSuffix("/account") == true {
+                    await gate.markStartedAndWait()
+                    return .response(200, accountSummaryJSON(plan: "lifetime", lifetime: true))
+                }
+                return .response(200, json(["ok": true]))
+            },
+            tokenStore: tokenStore,
+            summaryStore: summaryStore,
+            appTransactionProvider: { "signed-app-transaction" }
+        )
+
+        let refresh = Task { try await client.refresh() }
+        await gate.waitUntilStarted()
+        try await client.logout()
+        await gate.open()
+
+        await #expect(throws: CctransAccountError.operationSuperseded) {
+            try await refresh.value
+        }
+        #expect(tokenStore.storedToken == nil)
+        #expect(try summaryStore.load() == nil)
+    }
 }
 
 private let accountUUID = UUID(uuidString: "5D0BBD71-10D3-4F2C-B034-C5860B076E11")!
@@ -154,27 +314,100 @@ private let accountSummary = CctransAccountSummary(
     syncing: false
 )
 
+private enum MockAccountTokenStoreError: Error {
+    case loadFailed
+    case saveFailed
+    case deleteFailed
+}
+
 private final class MockAccountTokenStore: CctransAccountTokenStore, @unchecked Sendable {
     private let lock = NSLock()
     private var token: String?
+    private let loadError: MockAccountTokenStoreError?
+    private let saveError: MockAccountTokenStoreError?
+    private let deleteError: MockAccountTokenStoreError?
 
-    init(token: String? = nil) {
+    init(
+        token: String? = nil,
+        loadError: MockAccountTokenStoreError? = nil,
+        saveError: MockAccountTokenStoreError? = nil,
+        deleteError: MockAccountTokenStoreError? = nil
+    ) {
         self.token = token
+        self.loadError = loadError
+        self.saveError = saveError
+        self.deleteError = deleteError
+    }
+
+    var storedToken: String? {
+        lock.lock(); defer { lock.unlock() }
+        return token
     }
 
     func load() throws -> String? {
         lock.lock(); defer { lock.unlock() }
+        if let loadError {
+            throw loadError
+        }
         return token
     }
 
     func save(_ token: String) throws {
         lock.lock(); defer { lock.unlock() }
+        if let saveError {
+            throw saveError
+        }
         self.token = token
     }
 
     func delete() throws {
         lock.lock(); defer { lock.unlock() }
+        if let deleteError {
+            throw deleteError
+        }
         token = nil
+    }
+}
+
+private final class AccountRequestSequence: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+
+    func next() -> Int {
+        lock.lock(); defer { lock.unlock() }
+        value += 1
+        return value
+    }
+}
+
+private actor AccountRequestGate {
+    private var started = false
+    private var isOpen = false
+    private var continuations: [CheckedContinuation<Void, Never>] = []
+
+    func markStartedAndWait() async {
+        started = true
+        guard !isOpen else {
+            return
+        }
+        await withCheckedContinuation { continuation in
+            continuations.append(continuation)
+        }
+    }
+
+    func waitUntilStarted() async {
+        while !started {
+            await Task.yield()
+        }
+    }
+
+    func open() {
+        isOpen = true
+        let waiting = continuations
+        continuations.removeAll()
+        for continuation in waiting {
+            continuation.resume()
+        }
     }
 }
 
@@ -199,7 +432,7 @@ private final class AccountRequestCapture: @unchecked Sendable {
 }
 
 private func makeAccountSession(
-    handler: @escaping @Sendable (URLRequest) -> AccountStubResult
+    handler: @escaping @Sendable (URLRequest) async -> AccountStubResult
 ) -> URLSession {
     CctransAccountStubURLProtocol.handler = handler
     let configuration = URLSessionConfiguration.ephemeral
@@ -208,7 +441,7 @@ private func makeAccountSession(
 }
 
 private final class CctransAccountStubURLProtocol: URLProtocol, @unchecked Sendable {
-    nonisolated(unsafe) static var handler: (@Sendable (URLRequest) -> AccountStubResult)?
+    nonisolated(unsafe) static var handler: (@Sendable (URLRequest) async -> AccountStubResult)?
 
     override class func canInit(with request: URLRequest) -> Bool {
         request.url?.host == "kargn.as"
@@ -217,7 +450,18 @@ private final class CctransAccountStubURLProtocol: URLProtocol, @unchecked Senda
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
     override func startLoading() {
-        switch Self.handler?(request) ?? .response(500, Data()) {
+        let request = request
+        let protocolInstance = self
+        Task { @Sendable in
+            let result = await Self.handler?(request) ?? .response(500, Data())
+            protocolInstance.finish(result, request: request)
+        }
+    }
+
+    override func stopLoading() {}
+
+    private func finish(_ result: AccountStubResult, request: URLRequest) {
+        switch result {
         case let .response(status, data):
             let response = HTTPURLResponse(
                 url: request.url!,
@@ -232,15 +476,17 @@ private final class CctransAccountStubURLProtocol: URLProtocol, @unchecked Senda
             client?.urlProtocol(self, didFailWithError: error)
         }
     }
-
-    override func stopLoading() {}
 }
 
-private func accountSessionJSON(token: String) -> Data {
+private func accountSessionJSON(
+    token: String,
+    name: String = "CCTrans User",
+    email: String = "user@example.com"
+) -> Data {
     json([
         "ok": true,
         "token": token,
-        "account": accountObject(plan: "pro", lifetime: false),
+        "account": accountObject(plan: "pro", lifetime: false, name: name, email: email),
     ])
 }
 
@@ -248,11 +494,16 @@ private func accountSummaryJSON(plan: String, lifetime: Bool) -> Data {
     json(["ok": true, "account": accountObject(plan: plan, lifetime: lifetime)])
 }
 
-private func accountObject(plan: String, lifetime: Bool) -> [String: Any] {
+private func accountObject(
+    plan: String,
+    lifetime: Bool,
+    name: String = "CCTrans User",
+    email: String = "user@example.com"
+) -> [String: Any] {
     [
         "uuid": accountUUID.uuidString.lowercased(),
-        "name": "CCTrans User",
-        "email": "user@example.com",
+        "name": name,
+        "email": email,
         "email_verified": true,
         "apple_linked": false,
         "plan": plan,

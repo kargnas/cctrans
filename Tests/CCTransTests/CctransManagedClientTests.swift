@@ -1,6 +1,7 @@
 import CCTransCore
 import CryptoKit
 import Foundation
+import Synchronization
 import Testing
 
 /// CCTrans Cloud (kargn.as managed) wire-contract tests.
@@ -250,12 +251,125 @@ struct CctransManagedClientTests {
         let anonymousRequest = try #require(anonymous.request(path: "/translate"))
         #expect(authenticatedRequest.value(forHTTPHeaderField: "Authorization") == "Bearer account-token")
         #expect(anonymousRequest.value(forHTTPHeaderField: "Authorization") == nil)
+        let body = try #require(authenticatedRequest.httpBodyData)
+        var authenticatedCopy = URLRequest(url: URL(string: "https://kargn.as/v1/cctrans/translate")!)
+        authenticatedCopy.httpBody = body
+        var anonymousCopy = authenticatedCopy
+        _ = try authenticatedClient.applyBearerToken(to: &authenticatedCopy)
+        _ = try anonymousClient.applyBearerToken(to: &anonymousCopy)
+        #expect(authenticatedCopy.httpBodyData == anonymousCopy.httpBodyData)
         #expect(authenticatedRequest.jsonBody?["mode"] as? String == "text")
         #expect(anonymousRequest.jsonBody?["mode"] as? String == "text")
         #expect(authenticatedRequest.jsonBody?["text"] as? String == "Hello")
         #expect(anonymousRequest.jsonBody?["text"] as? String == "Hello")
         #expect(authenticatedRequest.jsonBody?["target"] as? String == "ko")
         #expect(anonymousRequest.jsonBody?["target"] as? String == "ko")
+    }
+
+    @Test func bearerLoadFailureDoesNotFallBackToAnonymousRequest() async throws {
+        let captured = RequestCapture()
+        let client = CctransManagedClient(
+            session: makeManagedSession { request in
+                captured.record(request)
+                return (200, json(["ok": true, "result": ["kind": "text", "text": "ok", "imageUrl": NSNull()]]))
+            },
+            attestor: nil,
+            bearerTokenProvider: { throw ManagedBearerTestError.loadFailed }
+        )
+
+        await #expect(throws: ManagedBearerTestError.loadFailed) {
+            try await client.translate(
+                mode: "text", text: "Hello", imageDataURL: nil, targetCode: "ko", devToken: "dev-token"
+            )
+        }
+
+        #expect(captured.request(path: "/translate") == nil)
+    }
+
+    @Test func invalidAccountBearer401ClearsMatchingSession() async throws {
+        let tokenStore = ManagedTokenStore(token: "account-token")
+        let summaryStore = CctransAccountSummaryStore(fileURL: temporaryManagedSummaryURL())
+        try summaryStore.save(managedAccountSummary)
+        let coordinator = CctransAccountSessionCoordinator(
+            tokenStore: tokenStore,
+            summaryStore: summaryStore
+        )
+        let response = json(["ok": false, "error": "invalid_token"])
+        let client = CctransManagedClient(
+            session: makeManagedSession { _ in (401, response) },
+            attestor: nil,
+            bearerTokenProvider: { try coordinator.loadToken() },
+            invalidBearerHandler: { token in try coordinator.clearIfTokenMatches(token) }
+        )
+
+        await #expect(throws: CctransManagedError.httpStatus(
+            401,
+            String(data: response, encoding: .utf8)!
+        )) {
+            try await client.translate(
+                mode: "text", text: "Hello", imageDataURL: nil, targetCode: "ko", devToken: "dev-token"
+            )
+        }
+
+        #expect(tokenStore.storedToken == nil)
+        #expect(try summaryStore.load() == nil)
+    }
+
+    @Test func invalidAccountBearer401PropagatesClearFailure() async throws {
+        let tokenStore = ManagedTokenStore(token: "account-token", deleteError: .deleteFailed)
+        let summaryStore = CctransAccountSummaryStore(fileURL: temporaryManagedSummaryURL())
+        try summaryStore.save(managedAccountSummary)
+        let coordinator = CctransAccountSessionCoordinator(
+            tokenStore: tokenStore,
+            summaryStore: summaryStore
+        )
+        let client = CctransManagedClient(
+            session: makeManagedSession { _ in
+                (401, json(["ok": false, "error": "invalid_token"]))
+            },
+            attestor: nil,
+            bearerTokenProvider: { try coordinator.loadToken() },
+            invalidBearerHandler: { token in try coordinator.clearIfTokenMatches(token) }
+        )
+
+        await #expect(throws: ManagedTokenStoreError.deleteFailed) {
+            try await client.translate(
+                mode: "text", text: "Hello", imageDataURL: nil, targetCode: "ko", devToken: "dev-token"
+            )
+        }
+
+        #expect(tokenStore.storedToken == "account-token")
+        #expect(try summaryStore.load() == managedAccountSummary)
+    }
+
+    @Test func appTrust401DoesNotClearAccountSession() async throws {
+        let tokenStore = ManagedTokenStore(token: "account-token")
+        let summaryStore = CctransAccountSummaryStore(fileURL: temporaryManagedSummaryURL())
+        try summaryStore.save(managedAccountSummary)
+        let coordinator = CctransAccountSessionCoordinator(
+            tokenStore: tokenStore,
+            summaryStore: summaryStore
+        )
+        let response = json(["ok": false, "error": "invalid_app_transaction"])
+        let client = CctransManagedClient(
+            session: makeManagedSession { _ in (401, response) },
+            attestor: nil,
+            appTransactionProvider: { "signed-app-transaction" },
+            bearerTokenProvider: { try coordinator.loadToken() },
+            invalidBearerHandler: { token in try coordinator.clearIfTokenMatches(token) }
+        )
+
+        await #expect(throws: CctransManagedError.httpStatus(
+            401,
+            String(data: response, encoding: .utf8)!
+        )) {
+            try await client.translate(
+                mode: "text", text: "Hello", imageDataURL: nil, targetCode: "ko", devToken: nil
+            )
+        }
+
+        #expect(tokenStore.storedToken == "account-token")
+        #expect(try summaryStore.load() == managedAccountSummary)
     }
 
     @Test func attestPathReusesStoredKeyIDWithoutReRegistering() async throws {
@@ -394,6 +508,61 @@ private final class RequestCapture: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         return requests.last { $0.url?.path.hasSuffix(suffix) == true }
     }
+}
+
+private enum ManagedBearerTestError: Error {
+    case loadFailed
+}
+
+private enum ManagedTokenStoreError: Error {
+    case deleteFailed
+}
+
+private final class ManagedTokenStore: CctransAccountTokenStore, Sendable {
+    private let storage: Mutex<String?>
+    private let deleteError: ManagedTokenStoreError?
+
+    init(token: String?, deleteError: ManagedTokenStoreError? = nil) {
+        self.storage = Mutex(token)
+        self.deleteError = deleteError
+    }
+
+    var storedToken: String? {
+        storage.withLock { $0 }
+    }
+
+    func load() throws -> String? {
+        storage.withLock { $0 }
+    }
+
+    func save(_ token: String) throws {
+        storage.withLock { $0 = token }
+    }
+
+    func delete() throws {
+        if let deleteError {
+            throw deleteError
+        }
+        storage.withLock { $0 = nil }
+    }
+}
+
+private let managedAccountSummary = CctransAccountSummary(
+    uuid: UUID(uuidString: "27F0720E-C066-4D9D-A1AA-D4EBBF3E244A")!,
+    name: "Managed User",
+    email: "managed@example.com",
+    emailVerified: true,
+    appleLinked: false,
+    plan: .pro,
+    source: .stripe,
+    proUntil: Date(timeIntervalSince1970: 1_900_000_000),
+    lifetime: false
+)
+
+private func temporaryManagedSummaryURL() -> URL {
+    FileManager.default.temporaryDirectory
+        .appendingPathComponent("cctrans-managed-tests-\(UUID().uuidString)", isDirectory: true)
+        .appendingPathComponent("account-summary.json", isDirectory: false)
 }
 
 private func makeManagedSession(

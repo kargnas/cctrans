@@ -1,17 +1,34 @@
 import CryptoKit
 import Foundation
 
-public final class CctransAccountClient: @unchecked Sendable {
+public actor CctransAccountClient {
     public static let defaultBaseURL = "https://kargn.as/v1/cctrans"
 
     private let session: URLSession
     private let baseURL: String
-    private let tokenStore: any CctransAccountTokenStore
-    private let summaryStore: CctransAccountSummaryStore
+    private let sessionCoordinator: CctransAccountSessionCoordinator
     private let attestor: (any CctransAttesting)?
     private let devTokenProvider: (@Sendable () -> String?)?
     private let appTransactionProvider: (@Sendable () async -> String?)?
     private let appReceiptProvider: (@Sendable () async -> String?)?
+
+    public init(
+        session: URLSession = .shared,
+        baseURL: String = defaultBaseURL,
+        sessionCoordinator: CctransAccountSessionCoordinator,
+        attestor: (any CctransAttesting)? = nil,
+        devTokenProvider: (@Sendable () -> String?)? = nil,
+        appTransactionProvider: (@Sendable () async -> String?)? = nil,
+        appReceiptProvider: (@Sendable () async -> String?)? = nil
+    ) {
+        self.session = session
+        self.baseURL = baseURL.hasSuffix("/") ? String(baseURL.dropLast()) : baseURL
+        self.sessionCoordinator = sessionCoordinator
+        self.attestor = attestor
+        self.devTokenProvider = devTokenProvider
+        self.appTransactionProvider = appTransactionProvider
+        self.appReceiptProvider = appReceiptProvider
+    }
 
     public init(
         session: URLSession = .shared,
@@ -25,8 +42,10 @@ public final class CctransAccountClient: @unchecked Sendable {
     ) {
         self.session = session
         self.baseURL = baseURL.hasSuffix("/") ? String(baseURL.dropLast()) : baseURL
-        self.tokenStore = tokenStore
-        self.summaryStore = summaryStore
+        self.sessionCoordinator = CctransAccountSessionCoordinator(
+            tokenStore: tokenStore,
+            summaryStore: summaryStore
+        )
         self.attestor = attestor
         self.devTokenProvider = devTokenProvider
         self.appTransactionProvider = appTransactionProvider
@@ -67,44 +86,62 @@ public final class CctransAccountClient: @unchecked Sendable {
     }
 
     public func refresh() async throws -> CctransAccountSummary? {
-        guard let token = try tokenStore.load()?.nilIfBlank else {
-            try summaryStore.delete()
+        let context = try sessionCoordinator.beginAuthenticatedOperation()
+        guard let token = context.token else {
+            guard try sessionCoordinator.clear(
+                for: context.operation,
+                expectedToken: nil
+            ) else {
+                throw CctransAccountError.operationSuperseded
+            }
             return nil
         }
 
         var request = try makeRequest(path: "/account", method: "GET")
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         try await applyAppTrust(to: &request)
-        let data = try await send(request, clearsSessionOnUnauthorized: true)
+        let data = try await send(
+            request,
+            unauthorizedContext: (context.operation, token)
+        )
         let response = try decode(AccountResponse.self, from: data)
-        try summaryStore.save(response.account)
+        guard try sessionCoordinator.store(
+            response.account,
+            for: context.operation,
+            expectedToken: token
+        ) else {
+            throw CctransAccountError.operationSuperseded
+        }
         return response.account
     }
 
     public func logout() async throws {
-        let token = try tokenStore.load()?.nilIfBlank
-        defer { clearLocalSession() }
+        let context = try sessionCoordinator.beginAuthenticatedOperation()
+        guard try sessionCoordinator.clear(
+            for: context.operation,
+            expectedToken: context.token
+        ) else {
+            throw CctransAccountError.operationSuperseded
+        }
+        let token = context.token
         guard let token else {
             return
         }
 
         var request = try makeRequest(path: "/auth/logout", method: "POST")
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        _ = try await send(request, clearsSessionOnUnauthorized: true)
+        _ = try await send(request)
     }
 
     private func authenticate(path: String, body: [String: String]) async throws -> CctransAccountSession {
+        let operation = sessionCoordinator.beginOperation()
         var request = try makeRequest(path: path, method: "POST")
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        let data = try await send(request, clearsSessionOnUnauthorized: false)
+        let data = try await send(request)
         let response = try decode(SessionResponse.self, from: data)
         let accountSession = CctransAccountSession(token: response.token, account: response.account)
-        do {
-            try tokenStore.save(response.token)
-            try summaryStore.save(response.account)
-        } catch {
-            clearLocalSession()
-            throw error
+        guard try sessionCoordinator.store(accountSession, for: operation) else {
+            throw CctransAccountError.operationSuperseded
         }
         return accountSession
     }
@@ -154,7 +191,7 @@ public final class CctransAccountClient: @unchecked Sendable {
             "attestation": attestation.base64EncodedString(),
             "challenge": challenge,
         ])
-        _ = try await send(request, clearsSessionOnUnauthorized: false)
+        _ = try await send(request)
         attestor.saveKeyID(keyID)
         return keyID
     }
@@ -162,7 +199,7 @@ public final class CctransAccountClient: @unchecked Sendable {
     private func fetchChallenge(type: String, keyID: String) async throws -> String {
         var request = try makeRequest(path: "/attest/challenge", method: "POST")
         request.httpBody = try JSONSerialization.data(withJSONObject: ["type": type, "key_id": keyID])
-        let data = try await send(request, clearsSessionOnUnauthorized: false)
+        let data = try await send(request)
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let challenge = object["challenge"] as? String,
               !challenge.isEmpty else {
@@ -182,15 +219,23 @@ public final class CctransAccountClient: @unchecked Sendable {
         return request
     }
 
-    private func send(_ request: URLRequest, clearsSessionOnUnauthorized: Bool) async throws -> Data {
+    private func send(
+        _ request: URLRequest,
+        unauthorizedContext: (operation: CctransAccountSessionCoordinator.Operation, token: String)? = nil
+    ) async throws -> Data {
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else {
             throw CctransAccountError.malformedResponse
         }
         guard (200..<300).contains(http.statusCode) else {
             let code = Self.apiErrorCode(from: data)
-            if http.statusCode == 401, clearsSessionOnUnauthorized {
-                clearLocalSession()
+            if http.statusCode == 401, let unauthorizedContext {
+                guard try sessionCoordinator.clear(
+                    for: unauthorizedContext.operation,
+                    expectedToken: unauthorizedContext.token
+                ) else {
+                    throw CctransAccountError.operationSuperseded
+                }
             }
             throw CctransAccountError.api(status: http.statusCode, code: code)
         }
@@ -203,11 +248,6 @@ public final class CctransAccountClient: @unchecked Sendable {
         } catch {
             throw CctransAccountError.malformedResponse
         }
-    }
-
-    private func clearLocalSession() {
-        try? tokenStore.delete()
-        try? summaryStore.delete()
     }
 
     private static func apiErrorCode(from data: Data) -> CctransAccountAPIErrorCode? {

@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 public enum CctransAccountCredential {
     public static let service = "as.kargn.cctrans.account"
@@ -147,7 +148,7 @@ public struct CctransAccountSession: Equatable, Sendable {
     }
 }
 
-public final class CctransAccountSummaryStore: @unchecked Sendable {
+public struct CctransAccountSummaryStore: Sendable {
     public let fileURL: URL
 
     public init(fileURL: URL) {
@@ -175,6 +176,140 @@ public final class CctransAccountSummaryStore: @unchecked Sendable {
     }
 }
 
+public final class CctransAccountSessionCoordinator: Sendable {
+    struct Operation: Equatable, Sendable {
+        fileprivate let revision: UInt64
+    }
+
+    private let tokenStore: any CctransAccountTokenStore
+    private let summaryStore: CctransAccountSummaryStore
+    private let state = Mutex(State())
+
+    private struct State: Sendable {
+        var revision: UInt64 = 0
+    }
+
+    public init(
+        tokenStore: any CctransAccountTokenStore,
+        summaryStore: CctransAccountSummaryStore
+    ) {
+        self.tokenStore = tokenStore
+        self.summaryStore = summaryStore
+    }
+
+    public func loadToken() throws -> String? {
+        try state.withLock { _ in
+            try normalizedStoredToken()
+        }
+    }
+
+    public func clearIfTokenMatches(_ token: String) throws {
+        try state.withLock { state in
+            guard try normalizedStoredToken() == token else {
+                return
+            }
+            state.revision &+= 1
+            try clearStoredSession()
+        }
+    }
+
+    func beginOperation() -> Operation {
+        state.withLock { state in
+            state.revision &+= 1
+            return Operation(revision: state.revision)
+        }
+    }
+
+    func beginAuthenticatedOperation() throws -> (operation: Operation, token: String?) {
+        try state.withLock { state in
+            state.revision &+= 1
+            return (Operation(revision: state.revision), try normalizedStoredToken())
+        }
+    }
+
+    func store(
+        _ session: CctransAccountSession,
+        for operation: Operation
+    ) throws -> Bool {
+        try state.withLock { state in
+            guard operation.revision == state.revision else {
+                return false
+            }
+            try replaceStoredSession(with: session)
+            return true
+        }
+    }
+
+    func store(
+        _ summary: CctransAccountSummary,
+        for operation: Operation,
+        expectedToken: String
+    ) throws -> Bool {
+        try state.withLock { state in
+            guard operation.revision == state.revision,
+                  try normalizedStoredToken() == expectedToken else {
+                return false
+            }
+            try summaryStore.save(summary)
+            return true
+        }
+    }
+
+    func clear(
+        for operation: Operation,
+        expectedToken: String?
+    ) throws -> Bool {
+        try state.withLock { state in
+            guard operation.revision == state.revision,
+                  try normalizedStoredToken() == expectedToken else {
+                return false
+            }
+            try clearStoredSession()
+            return true
+        }
+    }
+
+    private func normalizedStoredToken() throws -> String? {
+        guard let token = try tokenStore.load() else {
+            return nil
+        }
+        let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : token
+    }
+
+    private func replaceStoredSession(with session: CctransAccountSession) throws {
+        let previousToken = try tokenStore.load()
+        try tokenStore.save(session.token)
+        do {
+            try summaryStore.save(session.account)
+        } catch {
+            try restoreToken(previousToken)
+            throw error
+        }
+    }
+
+    private func clearStoredSession() throws {
+        let previousSummary = try summaryStore.load()
+        try summaryStore.delete()
+        do {
+            try tokenStore.delete()
+        } catch {
+            if let previousSummary {
+                try summaryStore.save(previousSummary)
+            }
+            throw error
+        }
+    }
+
+    private func restoreToken(_ token: String?) throws {
+        if let token {
+            try tokenStore.save(token)
+        } else {
+            try tokenStore.delete()
+        }
+    }
+}
+
 public enum CctransAccountAPIErrorCode: String, Codable, Sendable {
     case invalidToken = "invalid_token"
     case invalidCredentials = "invalid_credentials"
@@ -191,6 +326,7 @@ public enum CctransAccountError: LocalizedError, Equatable, Sendable {
     case invalidURL(String)
     case api(status: Int, code: CctransAccountAPIErrorCode?)
     case malformedResponse
+    case operationSuperseded
 
     public var errorDescription: String? {
         switch self {
@@ -202,6 +338,8 @@ public enum CctransAccountError: LocalizedError, Equatable, Sendable {
             "CCTrans account request failed with HTTP \(status)\(code.map { ": \($0.rawValue)" } ?? "")."
         case .malformedResponse:
             "CCTrans account returned an unexpected response."
+        case .operationSuperseded:
+            "A newer CCTrans account operation replaced this request."
         }
     }
 }

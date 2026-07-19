@@ -43,7 +43,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             attestor: CctransAppAttestor.shared,
             appTransactionProvider: { await CctransAppTransactionProvider.shared.signedAppTransaction() },
             appReceiptProvider: { await CctransAppTransactionProvider.shared.appStoreReceipt() },
-            bearerTokenProvider: { try? CctransAccountStorage.tokenStore.load() }
+            bearerTokenProvider: {
+                try CctransAccountStorage.sessionCoordinator.loadToken()
+            },
+            invalidBearerHandler: { token in
+                try CctransAccountStorage.sessionCoordinator.clearIfTokenMatches(token)
+            }
         ),
         openRouterModelCapabilities: SharedOpenRouterModelCache.capabilities(for:)
     )

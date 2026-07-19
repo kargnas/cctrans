@@ -85,7 +85,8 @@ public final class CctransManagedClient: @unchecked Sendable {
     private let attestor: (any CctransAttesting)?
     private let appTransactionProvider: (@Sendable () async -> String?)?
     private let appReceiptProvider: (@Sendable () async -> String?)?
-    private let bearerTokenProvider: (@Sendable () -> String?)?
+    private let bearerTokenProvider: (@Sendable () throws -> String?)?
+    private let invalidBearerHandler: (@Sendable (String) throws -> Void)?
 
     public init(
         session: URLSession = .shared,
@@ -93,7 +94,8 @@ public final class CctransManagedClient: @unchecked Sendable {
         attestor: (any CctransAttesting)? = nil,
         appTransactionProvider: (@Sendable () async -> String?)? = nil,
         appReceiptProvider: (@Sendable () async -> String?)? = nil,
-        bearerTokenProvider: (@Sendable () -> String?)? = nil
+        bearerTokenProvider: (@Sendable () throws -> String?)? = nil,
+        invalidBearerHandler: (@Sendable (String) throws -> Void)? = nil
     ) {
         self.session = session
         // Normalize so `baseURL + "/translate"` never produces a double slash.
@@ -102,6 +104,7 @@ public final class CctransManagedClient: @unchecked Sendable {
         self.appTransactionProvider = appTransactionProvider
         self.appReceiptProvider = appReceiptProvider
         self.bearerTokenProvider = bearerTokenProvider
+        self.invalidBearerHandler = invalidBearerHandler
     }
 
     /// Send a single translation. `mode` is `"text"`, `"vision"`, or `"image"`;
@@ -119,26 +122,26 @@ public final class CctransManagedClient: @unchecked Sendable {
             let body = try encodeBody(challenge: nil, mode: mode, text: text, image: imageDataURL, target: targetCode, appReceipt: nil)
             var request = try makeRequest(path: "/translate")
             request.setValue(devToken, forHTTPHeaderField: "X-Cctrans-Dev-Token")
-            applyBearerToken(to: &request)
+            let bearerToken = try applyBearerToken(to: &request)
             request.httpBody = body
-            return try await sendTranslate(request)
+            return try await sendTranslate(request, bearerToken: bearerToken)
         }
 
         if let appTransaction = await appTransactionProvider?(), !appTransaction.isEmpty {
             let body = try encodeBody(challenge: nil, mode: mode, text: text, image: imageDataURL, target: targetCode, appReceipt: nil)
             var request = try makeRequest(path: "/translate")
             request.setValue(appTransaction, forHTTPHeaderField: "X-Cctrans-App-Transaction")
-            applyBearerToken(to: &request)
+            let bearerToken = try applyBearerToken(to: &request)
             request.httpBody = body
-            return try await sendTranslate(request)
+            return try await sendTranslate(request, bearerToken: bearerToken)
         }
 
         if let appReceipt = await appReceiptProvider?(), !appReceipt.isEmpty {
             let body = try encodeBody(challenge: nil, mode: mode, text: text, image: imageDataURL, target: targetCode, appReceipt: appReceipt)
             var request = try makeRequest(path: "/translate")
-            applyBearerToken(to: &request)
+            let bearerToken = try applyBearerToken(to: &request)
             request.httpBody = body
-            return try await sendTranslate(request)
+            return try await sendTranslate(request, bearerToken: bearerToken)
         }
 
         guard let attestor, attestor.isSupported else {
@@ -157,9 +160,9 @@ public final class CctransManagedClient: @unchecked Sendable {
         var request = try makeRequest(path: "/translate")
         request.setValue(keyID, forHTTPHeaderField: "X-Cctrans-Key-Id")
         request.setValue(assertion.base64EncodedString(), forHTTPHeaderField: "X-Cctrans-Assertion")
-        applyBearerToken(to: &request)
+        let bearerToken = try applyBearerToken(to: &request)
         request.httpBody = body
-        return try await sendTranslate(request)
+        return try await sendTranslate(request, bearerToken: bearerToken)
     }
 
     /// Return a registered keyID, performing one-time attestation if needed.
@@ -236,20 +239,29 @@ public final class CctransManagedClient: @unchecked Sendable {
         return request
     }
 
-    private func applyBearerToken(to request: inout URLRequest) {
-        guard let token = bearerTokenProvider?()?.nilIfBlank else {
-            return
+    package func applyBearerToken(to request: inout URLRequest) throws -> String? {
+        guard let token = try bearerTokenProvider?()?.nilIfBlank else {
+            return nil
         }
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        return token
     }
 
     /// `/translate` returns HTTP 200 for BOTH success and quota blocks (ok:true/false);
     /// only auth (401) and engine (502) failures are non-2xx. `send` throws on those.
-    private func sendTranslate(_ request: URLRequest) async throws -> CctransManagedOutcome {
+    private func sendTranslate(
+        _ request: URLRequest,
+        bearerToken: String?
+    ) async throws -> CctransManagedOutcome {
         let data: Data
         do {
             data = try await send(request)
         } catch let CctransManagedError.httpStatus(status, body) {
+            if status == 401,
+               let bearerToken,
+               Self.accountErrorCode(from: body) == .invalidToken {
+                try invalidBearerHandler?(bearerToken)
+            }
             // 502 = engine/upstream failure (not a quota block); give it a distinct case
             // so callers can treat it as retryable instead of a hard provider error.
             if status == 502 {
@@ -294,6 +306,15 @@ public final class CctransManagedClient: @unchecked Sendable {
             throw CctransManagedError.httpStatus(http.statusCode, String(data: data, encoding: .utf8) ?? "")
         }
         return data
+    }
+
+    private static func accountErrorCode(from body: String) -> CctransAccountAPIErrorCode? {
+        guard let data = body.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let rawValue = object["error"] as? String else {
+            return nil
+        }
+        return CctransAccountAPIErrorCode(rawValue: rawValue)
     }
 }
 
