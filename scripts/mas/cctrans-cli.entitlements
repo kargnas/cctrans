@@ -16,7 +16,8 @@
        sandbox instead of creating its own, so libsecinit does not re-init a
        container. An inherited helper therefore MUST NOT declare its own
        application-groups, application-identifier, or network entitlements — it
-       receives all of them (App Group + network.client) from cctrans-tauri.
+       receives all of them (App Group + Keychain group + network.client) from
+       cctrans-tauri.
        build-mas.zsh deliberately does not append identifier keys to this file. -->
   <key>com.apple.security.app-sandbox</key>
   <true/>

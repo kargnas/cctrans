@@ -268,7 +268,8 @@ if CommandLine.arguments.contains("--translate-text-once") {
         managedClient: CctransManagedClient(
             attestor: CctransAppAttestor.shared,
             appTransactionProvider: { await CctransAppTransactionProvider.shared.signedAppTransaction() },
-            appReceiptProvider: { await CctransAppTransactionProvider.shared.appStoreReceipt() }
+            appReceiptProvider: { await CctransAppTransactionProvider.shared.appStoreReceipt() },
+            bearerTokenProvider: { try? CctransAccountStorage.tokenStore.load() }
         ),
         openRouterModelCapabilities: SharedOpenRouterModelCache.capabilities(for:)
     ).translateText(

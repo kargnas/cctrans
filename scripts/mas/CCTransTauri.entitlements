@@ -18,5 +18,9 @@
   <array>
     <string>6YQH3QFFK8.as.kargn.cctrans</string>
   </array>
+  <key>keychain-access-groups</key>
+  <array>
+    <string>6YQH3QFFK8.as.kargn.cctrans</string>
+  </array>
 </dict>
 </plist>

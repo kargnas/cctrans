@@ -85,13 +85,15 @@ public final class CctransManagedClient: @unchecked Sendable {
     private let attestor: (any CctransAttesting)?
     private let appTransactionProvider: (@Sendable () async -> String?)?
     private let appReceiptProvider: (@Sendable () async -> String?)?
+    private let bearerTokenProvider: (@Sendable () -> String?)?
 
     public init(
         session: URLSession = .shared,
         baseURL: String = defaultBaseURL,
         attestor: (any CctransAttesting)? = nil,
         appTransactionProvider: (@Sendable () async -> String?)? = nil,
-        appReceiptProvider: (@Sendable () async -> String?)? = nil
+        appReceiptProvider: (@Sendable () async -> String?)? = nil,
+        bearerTokenProvider: (@Sendable () -> String?)? = nil
     ) {
         self.session = session
         // Normalize so `baseURL + "/translate"` never produces a double slash.
@@ -99,6 +101,7 @@ public final class CctransManagedClient: @unchecked Sendable {
         self.attestor = attestor
         self.appTransactionProvider = appTransactionProvider
         self.appReceiptProvider = appReceiptProvider
+        self.bearerTokenProvider = bearerTokenProvider
     }
 
     /// Send a single translation. `mode` is `"text"`, `"vision"`, or `"image"`;
@@ -116,6 +119,7 @@ public final class CctransManagedClient: @unchecked Sendable {
             let body = try encodeBody(challenge: nil, mode: mode, text: text, image: imageDataURL, target: targetCode, appReceipt: nil)
             var request = try makeRequest(path: "/translate")
             request.setValue(devToken, forHTTPHeaderField: "X-Cctrans-Dev-Token")
+            applyBearerToken(to: &request)
             request.httpBody = body
             return try await sendTranslate(request)
         }
@@ -124,6 +128,7 @@ public final class CctransManagedClient: @unchecked Sendable {
             let body = try encodeBody(challenge: nil, mode: mode, text: text, image: imageDataURL, target: targetCode, appReceipt: nil)
             var request = try makeRequest(path: "/translate")
             request.setValue(appTransaction, forHTTPHeaderField: "X-Cctrans-App-Transaction")
+            applyBearerToken(to: &request)
             request.httpBody = body
             return try await sendTranslate(request)
         }
@@ -131,6 +136,7 @@ public final class CctransManagedClient: @unchecked Sendable {
         if let appReceipt = await appReceiptProvider?(), !appReceipt.isEmpty {
             let body = try encodeBody(challenge: nil, mode: mode, text: text, image: imageDataURL, target: targetCode, appReceipt: appReceipt)
             var request = try makeRequest(path: "/translate")
+            applyBearerToken(to: &request)
             request.httpBody = body
             return try await sendTranslate(request)
         }
@@ -151,6 +157,7 @@ public final class CctransManagedClient: @unchecked Sendable {
         var request = try makeRequest(path: "/translate")
         request.setValue(keyID, forHTTPHeaderField: "X-Cctrans-Key-Id")
         request.setValue(assertion.base64EncodedString(), forHTTPHeaderField: "X-Cctrans-Assertion")
+        applyBearerToken(to: &request)
         request.httpBody = body
         return try await sendTranslate(request)
     }
@@ -227,6 +234,13 @@ public final class CctransManagedClient: @unchecked Sendable {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         return request
+    }
+
+    private func applyBearerToken(to request: inout URLRequest) {
+        guard let token = bearerTokenProvider?()?.nilIfBlank else {
+            return
+        }
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
     }
 
     /// `/translate` returns HTTP 200 for BOTH success and quota blocks (ok:true/false);

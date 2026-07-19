@@ -17,6 +17,12 @@
   <array>
     <string>6YQH3QFFK8.as.kargn.cctrans</string>
   </array>
+  <!-- Sanctum account tokens stay in one generic-password item shared by
+       the outer app and the separately signed Tauri helper. -->
+  <key>keychain-access-groups</key>
+  <array>
+    <string>6YQH3QFFK8.as.kargn.cctrans</string>
+  </array>
   <!-- build-mas.zsh appends com.apple.application-identifier and
        com.apple.developer.team-identifier here (required to match the
        embedded provisioning profile) when CCTRANS_TEAM_ID is set. They are

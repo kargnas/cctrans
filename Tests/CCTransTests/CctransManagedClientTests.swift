@@ -185,7 +185,8 @@ struct CctransManagedClientTests {
                 }
                 return (404, Data())
             },
-            attestor: attestor
+            attestor: attestor,
+            bearerTokenProvider: { "account-token" }
         )
 
         let outcome = try await client.translate(
@@ -207,6 +208,7 @@ struct CctransManagedClientTests {
         #expect(translate.value(forHTTPHeaderField: "X-Cctrans-Key-Id") == "KEYID-base64")
         #expect(translate.value(forHTTPHeaderField: "X-Cctrans-Assertion") == Data("ASSERT".utf8).base64EncodedString())
         #expect(translate.value(forHTTPHeaderField: "X-Cctrans-Dev-Token") == nil)
+        #expect(translate.value(forHTTPHeaderField: "Authorization") == "Bearer account-token")
         let translateBody = try #require(translate.httpBodyData)
         let bodyObject = try #require(try JSONSerialization.jsonObject(with: translateBody) as? [String: Any])
         #expect(bodyObject["challenge"] as? String == "chal-assert")
@@ -214,6 +216,46 @@ struct CctransManagedClientTests {
         // The assertion signed SHA256 of the EXACT bytes that were transmitted — this is what
         // stops a cheap-path body from being swapped for an expensive one server-side.
         #expect(attestor.lastAssertionHash == Data(SHA256.hash(data: translateBody)))
+    }
+
+    @Test func missingBearerTokenKeepsAnonymousRequestShape() async throws {
+        let authenticated = RequestCapture()
+        let anonymous = RequestCapture()
+        let response = json(["ok": true, "result": ["kind": "text", "text": "ok", "imageUrl": NSNull()]])
+        let authenticatedClient = CctransManagedClient(
+            session: makeManagedSession { request in
+                authenticated.record(request)
+                return (200, response)
+            },
+            attestor: nil,
+            bearerTokenProvider: { "account-token" }
+        )
+        _ = try await authenticatedClient.translate(
+            mode: "text", text: "Hello", imageDataURL: nil, targetCode: "ko", devToken: "dev-token"
+        )
+
+        let anonymousClient = CctransManagedClient(
+            session: makeManagedSession { request in
+                anonymous.record(request)
+                return (200, response)
+            },
+            attestor: nil,
+            bearerTokenProvider: { nil }
+        )
+        _ = try await anonymousClient.translate(
+            mode: "text", text: "Hello", imageDataURL: nil, targetCode: "ko", devToken: "dev-token"
+        )
+
+        let authenticatedRequest = try #require(authenticated.request(path: "/translate"))
+        let anonymousRequest = try #require(anonymous.request(path: "/translate"))
+        #expect(authenticatedRequest.value(forHTTPHeaderField: "Authorization") == "Bearer account-token")
+        #expect(anonymousRequest.value(forHTTPHeaderField: "Authorization") == nil)
+        #expect(authenticatedRequest.jsonBody?["mode"] as? String == "text")
+        #expect(anonymousRequest.jsonBody?["mode"] as? String == "text")
+        #expect(authenticatedRequest.jsonBody?["text"] as? String == "Hello")
+        #expect(anonymousRequest.jsonBody?["text"] as? String == "Hello")
+        #expect(authenticatedRequest.jsonBody?["target"] as? String == "ko")
+        #expect(anonymousRequest.jsonBody?["target"] as? String == "ko")
     }
 
     @Test func attestPathReusesStoredKeyIDWithoutReRegistering() async throws {

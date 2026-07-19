@@ -35,6 +35,7 @@ PROFILE_PATH="${CCTRANS_MAS_PROFILE:-}"
 HELPER_PROFILE_PATH="${CCTRANS_MAS_HELPER_PROFILE:-}"
 INSTALLER_IDENTITY="${CCTRANS_MAS_INSTALLER_IDENTITY:-}"
 LOCAL_SANDBOX="${CCTRANS_MAS_LOCAL_SANDBOX:-0}"
+KEYCHAIN_ACCESS_GROUP="6YQH3QFFK8.as.kargn.cctrans"
 LOCAL_VERIFICATION=0
 if [[ -z "$PROFILE_PATH" && -z "$HELPER_PROFILE_PATH" && -z "$TEAM_ID" && "$LOCAL_SANDBOX" != "1" ]]; then
   LOCAL_VERIFICATION=1
@@ -47,6 +48,17 @@ else
   APP_BUNDLE_NAME="${CCTRANS_MAS_APP_BUNDLE_NAME:-$APP_NAME}"
   APP_DISPLAY_NAME="${CCTRANS_MAS_APP_DISPLAY_NAME:-$APP_BUNDLE_NAME}"
   BUNDLE_ID="${CCTRANS_MAS_BUNDLE_ID:-as.kargn.cctrans}"
+fi
+
+if [[ "$LOCAL_VERIFICATION" == "0" ]]; then
+  if [[ -z "$TEAM_ID" || -z "$PROFILE_PATH" || -z "$HELPER_PROFILE_PATH" ]]; then
+    echo "ERROR: sandboxed MAS signing requires CCTRANS_TEAM_ID, CCTRANS_MAS_PROFILE, and CCTRANS_MAS_HELPER_PROFILE." >&2
+    exit 1
+  fi
+  if [[ "$KEYCHAIN_ACCESS_GROUP" != "$TEAM_ID."* ]]; then
+    echo "ERROR: the shared Keychain group must use the CCTRANS_TEAM_ID prefix." >&2
+    exit 1
+  fi
 fi
 HELPER_BUNDLE_ID="${CCTRANS_MAS_HELPER_BUNDLE_ID:-$BUNDLE_ID.helper}"
 APP_DIR="$DIST_DIR/$APP_BUNDLE_NAME.app"
@@ -141,6 +153,23 @@ HELPER_ENTITLEMENTS="$WORK_DIR/CCTransTauri.entitlements"
 CLI_ENTITLEMENTS="$CLI_ENTITLEMENTS_SRC"
 cp "$ENTITLEMENTS_SRC" "$APP_ENTITLEMENTS"
 cp "$HELPER_ENTITLEMENTS_SRC" "$HELPER_ENTITLEMENTS"
+
+profile_allows_keychain_group() {
+  local profile="$1"
+  local decoded="$WORK_DIR/$(basename "$profile").plist"
+  security cms -D -i "$profile" > "$decoded"
+  if /usr/libexec/PlistBuddy -c "Print :Entitlements:keychain-access-groups" "$decoded" 2>/dev/null \
+      | grep -Eq "${KEYCHAIN_ACCESS_GROUP//./\\.}|${TEAM_ID}\\.\\*"; then
+    return
+  fi
+  echo "ERROR: provisioning profile does not allow Keychain group $KEYCHAIN_ACCESS_GROUP: $profile" >&2
+  exit 1
+}
+
+if [[ "$LOCAL_VERIFICATION" == "0" ]]; then
+  profile_allows_keychain_group "$PROFILE_PATH"
+  profile_allows_keychain_group "$HELPER_PROFILE_PATH"
+fi
 if [[ -n "$TEAM_ID" ]]; then
   /usr/libexec/PlistBuddy -c "Add :com.apple.application-identifier string $TEAM_ID.$BUNDLE_ID" "$APP_ENTITLEMENTS"
   /usr/libexec/PlistBuddy -c "Add :com.apple.developer.team-identifier string $TEAM_ID" "$APP_ENTITLEMENTS"
@@ -201,6 +230,14 @@ if [[ "$USE_SANDBOX_ENTITLEMENTS" == "1" ]]; then
     echo "ERROR: cctrans-cli is missing com.apple.security.inherit after signing." >&2
     exit 1
   fi
+  for BUNDLE in "$APP_DIR" "$TAURI_HELPER_DEST"; do
+    if ! codesign -d --entitlements - --xml "$BUNDLE" 2>/dev/null \
+        | plutil -convert xml1 -o - - 2>/dev/null \
+        | grep -q "$KEYCHAIN_ACCESS_GROUP"; then
+      echo "ERROR: shared Keychain access group missing from $BUNDLE" >&2
+      exit 1
+    fi
+  done
 fi
 
 echo "Signed with: $SIGN_IDENTITY"

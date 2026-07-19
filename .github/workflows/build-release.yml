@@ -1,5 +1,9 @@
 # Release pipeline: build (SwiftPM + Tauri) -> Developer ID sign -> notarize ->
 # DMG -> Sparkle EdDSA sign -> appcast.xml -> GitHub Release.
+# Shared account Keychain access requires Developer ID provisioning profiles for
+# both the outer app and the nested helper:
+#   CCTRANS_DIRECT_PROFILE_BASE64
+#   CCTRANS_DIRECT_HELPER_PROFILE_BASE64
 # The Sparkle feed URL baked into Info.plist points at
 # releases/latest/download/appcast.xml, so every release must upload appcast.xml.
 name: Build and Release
@@ -85,7 +89,18 @@ jobs:
           CCTRANS_VERSION: ${{ env.APP_VERSION }}
           CCTRANS_HARDENED_RUNTIME: '1'
           CCTRANS_CODE_SIGN_IDENTITY: 'Developer ID Application'
-        run: ./scripts/build-app.zsh
+          PROFILE_BASE64: ${{ secrets.CCTRANS_DIRECT_PROFILE_BASE64 }}
+          HELPER_PROFILE_BASE64: ${{ secrets.CCTRANS_DIRECT_HELPER_PROFILE_BASE64 }}
+        run: |
+          if [[ -z "$PROFILE_BASE64" || -z "$HELPER_PROFILE_BASE64" ]]; then
+            echo "CCTRANS_DIRECT_PROFILE_BASE64 / CCTRANS_DIRECT_HELPER_PROFILE_BASE64 secrets are missing." >&2
+            exit 1
+          fi
+          echo -n "$PROFILE_BASE64" | base64 --decode -o "$RUNNER_TEMP/cctrans-direct.provisionprofile"
+          echo -n "$HELPER_PROFILE_BASE64" | base64 --decode -o "$RUNNER_TEMP/cctrans-direct-helper.provisionprofile"
+          CCTRANS_DIRECT_PROFILE="$RUNNER_TEMP/cctrans-direct.provisionprofile" \
+          CCTRANS_DIRECT_HELPER_PROFILE="$RUNNER_TEMP/cctrans-direct-helper.provisionprofile" \
+          ./scripts/build-app.zsh
 
       - name: Notarize app
         env:
