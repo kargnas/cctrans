@@ -71,6 +71,20 @@ struct CctransOnboardingAccountTests {
         #expect(state.canContinue == false)
     }
 
+    @Test func cancelledAppleAttemptCanRetryImmediately() {
+        var state = CctransOnboardingAccountState()
+        state.setCloudSelected(true)
+
+        state.beginAppleAuthentication()
+        state.cancelLoading()
+        #expect(state.isLoading == false)
+        #expect(state.canContinue == false)
+
+        state.beginAppleAuthentication()
+        #expect(state.isLoading == true)
+        #expect(state.failure == nil)
+    }
+
     @Test func switchingModeOrLeavingCloudResetsSensitiveStateOnly() {
         let summary = accountSummary(emailVerified: true)
         var state = CctransOnboardingAccountState(account: summary)

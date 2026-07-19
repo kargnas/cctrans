@@ -233,8 +233,7 @@ final class OnboardingFlowModel: ObservableObject {
     func selectProvider(_ provider: TranslationProvider) {
         selectedProvider = provider
         if provider != .kargnasManaged {
-            accountTask?.cancel()
-            accountTask = nil
+            cancelAccountFlow()
         }
         accountState.setCloudSelected(provider == .kargnasManaged)
         // Build the Apple language-pack download model lazily, only once Apple
@@ -271,27 +270,29 @@ final class OnboardingFlowModel: ObservableObject {
     }
 
     func showEmailAccountForm() {
+        cancelAccountFlow()
         accountState.showEmailForm()
     }
 
     func hideEmailAccountForm() {
+        cancelAccountFlow()
         accountState.hideEmailForm()
     }
 
     func selectEmailMode(_ mode: CctransOnboardingAccountState.EmailMode) {
+        cancelAccountFlow()
         accountState.selectEmailMode(mode)
     }
 
     func continueWithoutAccount() {
-        accountTask?.cancel()
-        accountTask = nil
+        cancelAccountFlow()
         accountState.continueAnonymously()
     }
 
     func submitEmailAccount() {
         guard !accountState.isLoading,
               let submission = accountState.beginEmailSubmission() else { return }
-        accountTask?.cancel()
+        cancelAccountFlow()
         accountTask = Task { [weak self] in
             guard let self else { return }
             do {
@@ -322,7 +323,7 @@ final class OnboardingFlowModel: ObservableObject {
 
     func signInWithApple() {
         guard !accountState.isLoading else { return }
-        accountTask?.cancel()
+        cancelAccountFlow()
         accountState.beginAppleAuthentication()
         accountTask = Task { [weak self] in
             guard let self else { return }
@@ -400,10 +401,15 @@ final class OnboardingFlowModel: ObservableObject {
 
     func deactivate() {
         isActive = false
-        accountTask?.cancel()
-        accountTask = nil
+        cancelAccountFlow()
         accountState.cancelLoading()
         tryItGate.deactivate()
+    }
+
+    private func cancelAccountFlow() {
+        accountTask?.cancel()
+        accountTask = nil
+        appleSignIn.cancel()
     }
 
     @discardableResult

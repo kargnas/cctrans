@@ -80,10 +80,20 @@ final class CctransAppleSignIn: NSObject, ASAuthorizationControllerDelegate,
         }
     }
 
+    func cancel() {
+        let continuation = continuation
+        let controller = controller
+        self.continuation = nil
+        self.controller = nil
+        controller?.cancel()
+        continuation?.resume(throwing: CctransAppleSignInError.cancelled)
+    }
+
     func authorizationController(
         controller: ASAuthorizationController,
         didCompleteWithAuthorization authorization: ASAuthorization
     ) {
+        guard self.controller === controller else { return }
         guard let credential = authorization.credential as? ASAuthorizationAppleIDCredential,
               let identityToken = credential.identityToken else {
             finish(.failure(CctransAppleSignInError.invalidCredential))
@@ -96,6 +106,7 @@ final class CctransAppleSignIn: NSObject, ASAuthorizationControllerDelegate,
         controller: ASAuthorizationController,
         didCompleteWithError error: any Error
     ) {
+        guard self.controller === controller else { return }
         if (error as? ASAuthorizationError)?.code == .canceled {
             finish(.failure(CctransAppleSignInError.cancelled))
         } else {
