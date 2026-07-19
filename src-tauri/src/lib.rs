@@ -738,6 +738,83 @@ struct ActionResult {
     ok: bool,
 }
 
+const CCTRANS_ACCOUNT_API_BASE_URL: &str = "https://kargn.as/v1/cctrans";
+const CCTRANS_ACCOUNT_WEB_SETTINGS_URL: &str = "https://kargn.as/settings";
+const CCTRANS_ACCOUNT_SUMMARY_FILE: &str = "account-summary.json";
+const CCTRANS_ACCOUNT_TOKEN_SERVICE: &str = "as.kargn.cctrans.account";
+const CCTRANS_ACCOUNT_TOKEN_ACCOUNT: &str = "sanctum-token";
+const CCTRANS_ACCOUNT_ACCESS_GROUP: &str = "6YQH3QFFK8.as.kargn.cctrans";
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+enum CctransAccountPlan {
+    #[serde(rename = "free")]
+    Free,
+    #[serde(rename = "pro")]
+    Pro,
+    #[serde(rename = "lifetime")]
+    Lifetime,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+enum CctransAccountEntitlementSource {
+    #[serde(rename = "storekit")]
+    StoreKit,
+    #[serde(rename = "stripe")]
+    Stripe,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+struct CctransAccountSummary {
+    uuid: String,
+    name: String,
+    email: String,
+    #[serde(rename = "email_verified")]
+    email_verified: bool,
+    #[serde(rename = "apple_linked")]
+    apple_linked: bool,
+    plan: CctransAccountPlan,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source: Option<CctransAccountEntitlementSource>,
+    #[serde(rename = "pro_until", skip_serializing_if = "Option::is_none")]
+    pro_until: Option<String>,
+    lifetime: bool,
+    #[serde(default)]
+    syncing: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CctransAccountActions {
+    can_login_with_apple: bool,
+    can_email_auth: bool,
+    can_open_web_settings: bool,
+    can_storekit_purchase: bool,
+    can_storekit_restore: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CctransAccountState {
+    app_variant: String,
+    account: Option<CctransAccountSummary>,
+    actions: CctransAccountActions,
+    summary_path: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct CctransAccountSessionResponse {
+    token: String,
+    account: CctransAccountSummary,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AccountShellRequest {
+    action: String,
+    nonce: String,
+    created_at: f64,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct PermissionRequest {
     action: String,
@@ -1003,6 +1080,67 @@ fn save_openrouter_api_key(value: String) -> Result<OpenRouterAPIKeyState, Strin
 fn clear_openrouter_api_key() -> Result<OpenRouterAPIKeyState, String> {
     write_env_key("OPENROUTER_API_KEY", None)?;
     openrouter_api_key_state()
+}
+
+#[tauri::command]
+fn load_cctrans_account(app: AppHandle) -> Result<CctransAccountState, String> {
+    cctrans_account_state(&app)
+}
+
+#[tauri::command]
+async fn cctrans_account_email_login(
+    app: AppHandle,
+    email: String,
+    password: String,
+) -> Result<CctransAccountState, String> {
+    authenticate_cctrans_account(
+        &app,
+        "/auth/login",
+        serde_json::json!({
+            "email": email.trim(),
+            "password": password,
+        }),
+    )
+}
+
+#[tauri::command]
+async fn cctrans_account_email_register(
+    app: AppHandle,
+    name: String,
+    email: String,
+    password: String,
+    password_confirmation: String,
+) -> Result<CctransAccountState, String> {
+    authenticate_cctrans_account(
+        &app,
+        "/auth/register",
+        serde_json::json!({
+            "name": name.trim(),
+            "email": email.trim(),
+            "password": password,
+            "password_confirmation": password_confirmation,
+        }),
+    )
+}
+
+#[tauri::command]
+fn cctrans_account_shell_action(app: AppHandle, action: String) -> Result<ActionResult, String> {
+    request_account_shell_action(&app, &action)
+}
+
+#[tauri::command]
+fn open_cctrans_account_web_settings() -> Result<ActionResult, String> {
+    if is_mas_variant() {
+        return Err(
+            "Web billing settings are not available in the Mac App Store build.".to_string(),
+        );
+    }
+    open_external_url(CCTRANS_ACCOUNT_WEB_SETTINGS_URL)?;
+    Ok(action_result(
+        "Account",
+        "Opened CCTrans account settings in your browser.",
+        true,
+    ))
 }
 
 #[tauri::command]
@@ -1675,6 +1813,11 @@ pub fn run() {
             load_openrouter_api_key_state,
             save_openrouter_api_key,
             clear_openrouter_api_key,
+            load_cctrans_account,
+            cctrans_account_email_login,
+            cctrans_account_email_register,
+            cctrans_account_shell_action,
+            open_cctrans_account_web_settings,
             perform_settings_action,
             open_app_surface,
             complete_local_model_setup,
@@ -3612,6 +3755,227 @@ fn set_launch_at_login_impl(app: &AppHandle, enabled: bool) -> Result<LoginItemS
     request_login_item(app, "set", Some(enabled))
 }
 
+fn account_actions_for_variant(variant: AppVariant) -> CctransAccountActions {
+    CctransAccountActions {
+        can_login_with_apple: true,
+        can_email_auth: true,
+        can_open_web_settings: variant == AppVariant::Direct,
+        can_storekit_purchase: variant == AppVariant::MacAppStore,
+        can_storekit_restore: variant == AppVariant::MacAppStore,
+    }
+}
+
+fn cctrans_account_state(app: &AppHandle) -> Result<CctransAccountState, String> {
+    let runtime = settings_runtime();
+    let summary_path = account_summary_path(app)?;
+    let account = read_account_summary(&summary_path)?;
+    Ok(CctransAccountState {
+        app_variant: runtime.app_variant_name().to_string(),
+        account,
+        actions: account_actions_for_variant(runtime.variant),
+        summary_path: summary_path.display().to_string(),
+    })
+}
+
+fn account_summary_path(app: &AppHandle) -> Result<PathBuf, String> {
+    shared_data_dir(app).map(|dir| dir.join(CCTRANS_ACCOUNT_SUMMARY_FILE))
+}
+
+fn read_account_summary(path: &Path) -> Result<Option<CctransAccountSummary>, String> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let data = fs::read_to_string(path)
+        .map_err(|error| format!("Could not read account summary: {error}"))?;
+    decode_account_summary(&data).map(Some)
+}
+
+fn decode_account_summary(data: &str) -> Result<CctransAccountSummary, String> {
+    serde_json::from_str(data).map_err(|error| format!("Could not parse account summary: {error}"))
+}
+
+fn authenticate_cctrans_account(
+    app: &AppHandle,
+    path: &str,
+    body: serde_json::Value,
+) -> Result<CctransAccountState, String> {
+    let base_url = std::env::var("CCTRANS_ACCOUNT_API_BASE_URL")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| CCTRANS_ACCOUNT_API_BASE_URL.to_string());
+    let url = format!("{}{}", base_url.trim_end_matches('/'), path);
+    let response = ureq::post(&url)
+        .set("Accept", "application/json")
+        .set("Content-Type", "application/json")
+        .send_json(body)
+        .map_err(account_http_error)?;
+    let session: CctransAccountSessionResponse = response
+        .into_json()
+        .map_err(|error| format!("Could not decode account response: {error}"))?;
+    store_cctrans_account_session(app, session)?;
+    cctrans_account_state(app)
+}
+
+fn account_http_error(error: ureq::Error) -> String {
+    match error {
+        ureq::Error::Status(status, response) => {
+            let message = response
+                .into_json::<serde_json::Value>()
+                .ok()
+                .and_then(|value| {
+                    value
+                        .get("error")
+                        .or_else(|| value.get("message"))
+                        .and_then(|message| message.as_str())
+                        .map(str::to_string)
+                })
+                .unwrap_or_else(|| "request_failed".to_string());
+            format!("CCTrans account request failed with HTTP {status}: {message}")
+        }
+        ureq::Error::Transport(error) => {
+            format!("Could not reach CCTrans account server: {error}")
+        }
+    }
+}
+
+fn store_cctrans_account_session(
+    app: &AppHandle,
+    session: CctransAccountSessionResponse,
+) -> Result<(), String> {
+    let token = session.token.trim();
+    if token.is_empty() {
+        return Err("CCTrans account response did not include a token.".to_string());
+    }
+    save_account_token(token)?;
+    let summary_path = account_summary_path(app)?;
+    if let Some(parent) = summary_path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("Could not create account summary dir: {error}"))?;
+    }
+    let data = serde_json::to_string_pretty(&session.account)
+        .map_err(|error| format!("Could not encode account summary: {error}"))?;
+    if let Err(error) = replace_file_contents(&summary_path, &data) {
+        let _ = delete_account_token();
+        return Err(error);
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn save_account_token(token: &str) -> Result<(), String> {
+    use security_framework::passwords::{set_generic_password_options, PasswordOptions};
+
+    let mut options = PasswordOptions::new_generic_password(
+        CCTRANS_ACCOUNT_TOKEN_SERVICE,
+        CCTRANS_ACCOUNT_TOKEN_ACCOUNT,
+    );
+    options.set_access_group(CCTRANS_ACCOUNT_ACCESS_GROUP);
+    options.set_access_synchronized(Some(false));
+    set_generic_password_options(token.as_bytes(), options)
+        .map_err(|error| format!("Could not save account token to Keychain: {error}"))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn save_account_token(_token: &str) -> Result<(), String> {
+    Err("Account token Keychain storage is only available on macOS.".to_string())
+}
+
+#[cfg(target_os = "macos")]
+fn delete_account_token() -> Result<(), String> {
+    use security_framework::passwords::{delete_generic_password_options, PasswordOptions};
+
+    let mut options = PasswordOptions::new_generic_password(
+        CCTRANS_ACCOUNT_TOKEN_SERVICE,
+        CCTRANS_ACCOUNT_TOKEN_ACCOUNT,
+    );
+    options.set_access_group(CCTRANS_ACCOUNT_ACCESS_GROUP);
+    options.set_access_synchronized(Some(false));
+    delete_generic_password_options(options)
+        .map_err(|error| format!("Could not delete account token from Keychain: {error}"))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn delete_account_token() -> Result<(), String> {
+    Ok(())
+}
+
+fn account_requests_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    shared_data_dir(app).map(|dir| dir.join("account-requests"))
+}
+
+fn request_account_shell_action(app: &AppHandle, action: &str) -> Result<ActionResult, String> {
+    let runtime = settings_runtime();
+    let title = match action {
+        "appleLogin" => "Apple Sign In",
+        "logout" => "Logout",
+        "refresh" => "Account Refresh",
+        "purchase" if runtime.variant == AppVariant::MacAppStore => "Purchase",
+        "restore" if runtime.variant == AppVariant::MacAppStore => "Restore",
+        "purchase" | "restore" => {
+            return Err(
+                "StoreKit purchase and restore are only available in the Mac App Store build."
+                    .to_string(),
+            )
+        }
+        _ => return Err(format!("Unknown account action: {action}")),
+    };
+    publish_account_shell_request(&account_requests_dir(app)?, action)?;
+    Ok(action_result(
+        title,
+        "Requested in the CCTrans host app.",
+        true,
+    ))
+}
+
+fn publish_account_shell_request(dir: &Path, action: &str) -> Result<PathBuf, String> {
+    fs::create_dir_all(dir)
+        .map_err(|error| format!("Could not create account-requests dir: {error}"))?;
+    let created_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|error| format!("Clock error: {error}"))?
+        .as_secs_f64();
+    let nonce = login_request_nonce();
+    let request = AccountShellRequest {
+        action: action.to_string(),
+        nonce: nonce.clone(),
+        created_at,
+    };
+    let body = serde_json::to_string_pretty(&request)
+        .map_err(|error| format!("Could not encode account request: {error}"))?;
+    let tmp_path = dir.join(format!(".tmp-req-{nonce}.json"));
+    let request_path = dir.join(format!("req-{nonce}.json"));
+    fs::write(&tmp_path, body)
+        .map_err(|error| format!("Could not write account request: {error}"))?;
+    fs::rename(&tmp_path, &request_path)
+        .map_err(|error| format!("Could not publish account request: {error}"))?;
+    Ok(request_path)
+}
+
+fn open_external_url(url: &str) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("/usr/bin/open")
+            .arg(url)
+            .spawn()
+            .map_err(|error| format!("Could not open browser: {error}"))?;
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        Command::new("xdg-open")
+            .arg(url)
+            .spawn()
+            .map_err(|error| format!("Could not open browser: {error}"))?;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        Command::new("cmd")
+            .args(["/C", "start", "", url])
+            .spawn()
+            .map_err(|error| format!("Could not open browser: {error}"))?;
+    }
+    Ok(())
+}
+
 // A correlation id for one login round-trip. Avoids pulling in a uuid crate:
 // pid + epoch nanos + a process-local counter is unique enough to name a
 // request/response pair in the shared dir.
@@ -4256,6 +4620,87 @@ mod tests {
         let stored = runtime.stored_from_effective(&defaults);
 
         assert_eq!(stored.provider, Some(TranslationProvider::AppleTranslation));
+    }
+
+    #[test]
+    fn account_actions_follow_build_variant() {
+        let mas = account_actions_for_variant(AppVariant::MacAppStore);
+        let direct = account_actions_for_variant(AppVariant::Direct);
+
+        assert!(!mas.can_open_web_settings);
+        assert!(mas.can_storekit_purchase);
+        assert!(mas.can_storekit_restore);
+        assert!(direct.can_open_web_settings);
+        assert!(!direct.can_storekit_purchase);
+        assert!(!direct.can_storekit_restore);
+    }
+
+    #[test]
+    fn account_summary_decodes_task6_json_contract() {
+        let summary = decode_account_summary(
+            r#"{
+                "uuid":"5D0AA963-289D-4F3B-9D70-5F4AA41F49E4",
+                "name":"Kars",
+                "email":"kars@example.com",
+                "email_verified":true,
+                "apple_linked":true,
+                "plan":"pro",
+                "source":"storekit",
+                "pro_until":"2026-08-01T12:00:00Z",
+                "lifetime":false,
+                "syncing":true
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(summary.uuid, "5D0AA963-289D-4F3B-9D70-5F4AA41F49E4");
+        assert_eq!(summary.email, "kars@example.com");
+        assert_eq!(summary.plan, CctransAccountPlan::Pro);
+        assert_eq!(
+            summary.source,
+            Some(CctransAccountEntitlementSource::StoreKit)
+        );
+        assert_eq!(summary.pro_until.as_deref(), Some("2026-08-01T12:00:00Z"));
+        assert!(summary.syncing);
+    }
+
+    #[test]
+    fn account_logout_and_refresh_publish_shell_events() {
+        let dir = std::env::temp_dir().join(format!(
+            "cctrans-account-requests-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+
+        let logout = publish_account_shell_request(&dir, "logout").unwrap();
+        let refresh = publish_account_shell_request(&dir, "refresh").unwrap();
+        let logout_json: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(logout).unwrap()).unwrap();
+        let refresh_json: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(refresh).unwrap()).unwrap();
+
+        assert_eq!(logout_json["action"], "logout");
+        assert_eq!(refresh_json["action"], "refresh");
+        assert!(logout_json["nonce"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty()));
+        assert!(refresh_json["createdAt"]
+            .as_f64()
+            .is_some_and(|value| value > 0.0));
+        assert_eq!(
+            fs::read_dir(&dir)
+                .unwrap()
+                .filter(|entry| entry
+                    .as_ref()
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".tmp-"))
+                .count(),
+            0
+        );
+
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

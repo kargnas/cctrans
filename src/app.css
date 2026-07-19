@@ -1073,6 +1073,93 @@ input {
   padding: 0 10px;
 }
 
+.account-status-row {
+  grid-template-columns: minmax(146px, 1fr) max-content 26px;
+}
+
+.account-plan.warning {
+  color: var(--favorite-ink);
+}
+
+.account-plan.syncing svg {
+  animation: account-spin 900ms linear infinite;
+}
+
+.account-auth-tabs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  padding: 10px 11px 0;
+}
+
+.account-auth-tabs button,
+.account-form button,
+.account-auth-footer button,
+.account-logout button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 28px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--surface-solid);
+  color: var(--control-ink);
+  font-size: 11px;
+  font-weight: 540;
+}
+
+.account-auth-tabs button.active {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--blue);
+}
+
+.account-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  padding: 10px 11px;
+  border-bottom: 1px solid var(--border);
+}
+
+.account-form button {
+  grid-column: 1 / -1;
+}
+
+.account-auth-footer {
+  padding: 0 11px 10px;
+}
+
+.account-auth-footer button {
+  width: 100%;
+}
+
+.account-logout {
+  padding: 0;
+}
+
+.account-message {
+  margin-top: 10px;
+  padding: 9px 11px;
+  border: 1px solid rgba(255, 59, 48, 0.28);
+  border-radius: 8px;
+  background: var(--toast-bg);
+  color: var(--secondary);
+  font-size: 11px;
+}
+
+.account-message.ok {
+  border-color: color-mix(in srgb, var(--green-text) 28%, transparent);
+  color: var(--green-text);
+}
+
+@keyframes account-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 kbd {
   display: inline-flex;
   align-items: center;

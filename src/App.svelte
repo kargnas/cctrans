@@ -22,8 +22,10 @@
     ShieldCheck,
     SlidersHorizontal,
     Star,
-    TriangleAlert
+    TriangleAlert,
+    User
   } from "@lucide/svelte";
+  import AccountSettings from "./components/AccountSettings.svelte";
   import {
     cloneFallbackState,
     type ActionResult,
@@ -38,7 +40,7 @@
   } from "./lib/settings";
   import RangeSlider from "./lib/RangeSlider.svelte";
 
-  type Section = "general" | "models" | "shortcuts" | "excluded" | "advanced" | "info";
+  type Section = "general" | "models" | "account" | "shortcuts" | "excluded" | "advanced" | "info";
   type OpenRouterSortKey = "model" | "releaseDate" | "dailyRank" | "throughputRank" | "latencyRank" | "inputPrice" | "outputPrice" | "context" | "maxCompletion";
   type SortDirection = "asc" | "desc";
   type OpenRouterAPIKeyState = {
@@ -98,6 +100,7 @@
   const sectionTitles: Record<Section, string> = {
     general: "General",
     models: "Models",
+    account: "Account",
     shortcuts: "Shortcuts",
     excluded: "Excluded Apps",
     advanced: "Advanced",
@@ -1088,6 +1091,10 @@
         <Cpu size={15} />
         <span>Models</span>
       </button>
+      <button class:active={activeSection === "account"} onclick={() => (activeSection = "account")}>
+        <User size={15} />
+        <span>Account</span>
+      </button>
       <button class:active={activeSection === "shortcuts"} onclick={() => (activeSection = "shortcuts")}>
         <Keyboard size={15} />
         <span>Shortcuts</span>
@@ -1597,6 +1604,8 @@
             {/each}
           </div>
         </section>
+      {:else if activeSection === "account"}
+        <AccountSettings />
       {:else if activeSection === "shortcuts"}
         <section class="pane">
           <h2>Global Shortcuts</h2>
