@@ -1,7 +1,7 @@
 import Foundation
 
 public enum CctransAccountRequestAction: Equatable, Sendable {
-    case appleLogin
+    case browserLogin
     case logout
     case refresh
     case purchase
@@ -10,7 +10,7 @@ public enum CctransAccountRequestAction: Equatable, Sendable {
 
     public init(rawValue: String) {
         self = switch rawValue {
-        case "appleLogin": .appleLogin
+        case "browserLogin", "appleLogin": .browserLogin
         case "logout": .logout
         case "refresh": .refresh
         case "purchase": .purchase
@@ -217,18 +217,18 @@ public struct CctransAccountRequestDispatcher: Sendable {
     public typealias Handler = @MainActor @Sendable (CctransAccountPendingRequest) async -> CctransAccountActionResponse
     public typealias StoreKitHandler = @MainActor @Sendable (CctransAccountRequestAction, CctransAccountPendingRequest) async -> CctransAccountActionResponse
 
-    private let appleLogin: Handler
+    private let browserLogin: Handler
     private let logout: Handler
     private let refresh: Handler
     private let storeKit: StoreKitHandler?
 
     public init(
-        appleLogin: @escaping Handler,
+        browserLogin: @escaping Handler,
         logout: @escaping Handler,
         refresh: @escaping Handler,
         storeKit: StoreKitHandler? = nil
     ) {
-        self.appleLogin = appleLogin
+        self.browserLogin = browserLogin
         self.logout = logout
         self.refresh = refresh
         self.storeKit = storeKit
@@ -237,8 +237,8 @@ public struct CctransAccountRequestDispatcher: Sendable {
     @MainActor
     public func response(for request: CctransAccountPendingRequest) async -> CctransAccountActionResponse {
         switch request.action {
-        case .appleLogin:
-            await appleLogin(request)
+        case .browserLogin:
+            await browserLogin(request)
         case .logout:
             await logout(request)
         case .refresh:

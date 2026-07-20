@@ -88,7 +88,7 @@ final class OnboardingFlowModel: ObservableObject {
     // Set by the window controller so a SwiftUI button can close the window.
     var onDismiss: () -> Void = {}
     private let accountClient: CctransAccountClient
-    private let appleSignIn: CctransAppleSignIn
+    private let oauthSignIn: CctransOAuthSignIn
 
     init(
         mode: Mode,
@@ -96,7 +96,7 @@ final class OnboardingFlowModel: ObservableObject {
         progressStore: OnboardingProgressStore,
         resumeProgress: Bool,
         accountClient: CctransAccountClient,
-        appleSignIn: CctransAppleSignIn,
+        oauthSignIn: CctransOAuthSignIn,
         existingAccount: CctransAccountSummary?,
         onPermissionStatusChanged: @escaping () -> Void
     ) {
@@ -104,7 +104,7 @@ final class OnboardingFlowModel: ObservableObject {
         self.settingsStore = settingsStore
         self.progressStore = progressStore
         self.accountClient = accountClient
-        self.appleSignIn = appleSignIn
+        self.oauthSignIn = oauthSignIn
         self.onPermissionStatusChanged = onPermissionStatusChanged
 
         let initialStep: Step
@@ -269,69 +269,23 @@ final class OnboardingFlowModel: ObservableObject {
         selectedProvider != .kargnasManaged || accountState.canContinue
     }
 
-    func showEmailAccountForm() {
-        cancelAccountFlow()
-        accountState.showEmailForm()
-    }
-
-    func hideEmailAccountForm() {
-        cancelAccountFlow(hideEmailForm: true)
-    }
-
-    func selectEmailMode(_ mode: CctransOnboardingAccountState.EmailMode) {
-        cancelAccountFlow()
-        accountState.selectEmailMode(mode)
-    }
-
     func continueWithoutAccount() {
         cancelAccountFlow()
         accountState.continueAnonymously()
     }
 
-    func submitEmailAccount() {
-        guard !accountState.isLoading,
-              let submission = accountState.beginEmailSubmission() else { return }
-        cancelAccountFlow()
-        accountTask = Task { [weak self] in
-            guard let self else { return }
-            do {
-                let session: CctransAccountSession
-                switch submission.mode {
-                case .login:
-                    session = try await accountClient.login(
-                        email: submission.email,
-                        password: submission.password
-                    )
-                case .register:
-                    let name = submission.email.split(separator: "@").first.map(String.init) ?? submission.email
-                    session = try await accountClient.register(
-                        name: name,
-                        email: submission.email,
-                        password: submission.password,
-                        passwordConfirmation: submission.password
-                    )
-                }
-                guard !Task.isCancelled else { return }
-                accountState.succeed(session.account)
-            } catch {
-                guard !Task.isCancelled else { return }
-                accountState.fail(Self.accountFailure(for: error))
-            }
-        }
-    }
-
-    func signInWithApple() {
+    func signInWithBrowser() {
         guard !accountState.isLoading else { return }
         cancelAccountFlow()
-        accountState.beginAppleAuthentication()
+        accountState.beginAuthentication()
         accountTask = Task { [weak self] in
             guard let self else { return }
             do {
-                let credential = try await appleSignIn.authorize()
-                let session = try await accountClient.signInWithApple(
-                    identityToken: credential.identityToken,
-                    nonce: credential.nonce,
-                    name: credential.name
+                let credential = try await oauthSignIn.authorize()
+                let session = try await accountClient.signInWithOAuth(
+                    code: credential.code,
+                    codeVerifier: credential.codeVerifier,
+                    redirectURI: credential.redirectURI
                 )
                 guard !Task.isCancelled else { return }
                 accountState.succeed(session.account)
@@ -343,19 +297,9 @@ final class OnboardingFlowModel: ObservableObject {
     }
 
     private static func accountFailure(for error: any Error) -> CctransOnboardingAccountState.Failure {
-        if let appleError = error as? CctransAppleSignInError,
-           case .cancelled = appleError {
+        if let oauthError = error as? CctransOAuthError,
+           case .cancelled = oauthError {
             return .cancelled
-        }
-        if let accountError = error as? CctransAccountError {
-            switch accountError {
-            case .api(_, .accountLinkRequired):
-                return .accountLinkRequired
-            case .api(_, .invalidCredentials):
-                return .request("The email or password is incorrect.")
-            default:
-                break
-            }
         }
         return .request(error.localizedDescription)
     }
@@ -404,11 +348,11 @@ final class OnboardingFlowModel: ObservableObject {
         tryItGate.deactivate()
     }
 
-    private func cancelAccountFlow(hideEmailForm: Bool = false) {
+    private func cancelAccountFlow() {
         accountTask?.cancel()
         accountTask = nil
-        appleSignIn.cancel()
-        accountState.cancelAuthentication(hideEmailForm: hideEmailForm)
+        oauthSignIn.cancel()
+        accountState.cancelAuthentication()
     }
 
     @discardableResult

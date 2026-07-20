@@ -44,7 +44,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         store: CctransAppTransactionProvider.shared,
         claimer: accountClient
     )
-    private let appleSignIn = CctransAppleSignIn()
+    private let oauthSignIn = CctransOAuthSignIn()
     private let translationService = TranslationService(
         appleBackend: AppleTranslationHost.shared,
         // CCTrans Cloud client. MAS prefers the signed StoreKit AppTransaction and
@@ -294,23 +294,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func accountRequestDispatcher() -> CctransAccountRequestDispatcher {
         CctransAccountRequestDispatcher(
-            appleLogin: { [weak self] request in
+            browserLogin: { [weak self] request in
                 guard let self else {
-                    return .error(title: "Apple Sign In", message: "CCTrans is shutting down.")
+                    return .error(title: "Browser Sign In", message: "CCTrans is shutting down.")
                 }
                 let directoryURL = AppDelegate.accountRequestsDirectoryURL
                 do {
                     let response: @Sendable (CctransAccountSession) -> CctransAccountActionResponse = { session in
                         .success(
-                            title: "Apple Sign In",
+                            title: "Browser Sign In",
                             message: "Signed in as \(session.account.email)."
                         )
                     }
-                    let credential = try await appleSignIn.authorize()
-                    let session = try await accountClient.signInWithApple(
-                        identityToken: credential.identityToken,
-                        nonce: credential.nonce,
-                        name: credential.name,
+                    let credential = try await oauthSignIn.authorize()
+                    let session = try await accountClient.signInWithOAuth(
+                        code: credential.code,
+                        codeVerifier: credential.codeVerifier,
+                        redirectURI: credential.redirectURI,
                         shouldCommit: {
                             FileManager.default.fileExists(atPath: request.requestURL.path)
                         },
@@ -324,7 +324,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     )
                     return response(session)
                 } catch {
-                    return .error(title: "Apple Sign In", message: error.localizedDescription)
+                    return .error(title: "Browser Sign In", message: error.localizedDescription)
                 }
             },
             logout: { [weak self] _ in
@@ -2098,7 +2098,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             progressStore: onboardingProgressStore,
             resumeProgress: resumeProgress,
             accountClient: accountClient,
-            appleSignIn: appleSignIn,
+            oauthSignIn: oauthSignIn,
             existingAccount: loadExistingAccountSummary(),
             onPermissionStatusChanged: { [weak self] in self?.writePermissionStatusCache() }
         )

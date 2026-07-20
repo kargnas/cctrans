@@ -5,13 +5,13 @@ import Testing
 struct CctransAccountRequestBridgeTests {
     @Test func dispatcherRoutesNativeActionsAndRejectsUnknownAction() async {
         let dispatcher = CctransAccountRequestDispatcher(
-            appleLogin: { _ in .success(title: "Apple", message: "apple") },
+            browserLogin: { _ in .success(title: "Browser", message: "browser") },
             logout: { _ in .success(title: "Logout", message: "logout") },
             refresh: { _ in .success(title: "Refresh", message: "refresh") }
         )
-        let request = pendingRequest(action: .appleLogin)
+        let request = pendingRequest(action: .browserLogin)
 
-        #expect(await dispatcher.response(for: request).message == "apple")
+        #expect(await dispatcher.response(for: request).message == "browser")
         #expect(await dispatcher.response(for: pendingRequest(action: .logout)).message == "logout")
         #expect(await dispatcher.response(for: pendingRequest(action: .refresh)).message == "refresh")
         #expect(await dispatcher.response(for: pendingRequest(action: .unknown("missing"))).code == .error)
@@ -19,7 +19,7 @@ struct CctransAccountRequestBridgeTests {
 
     @Test func missingStoreKitHandlerReturnsTypedNotAvailableResponse() async {
         let dispatcher = CctransAccountRequestDispatcher(
-            appleLogin: { _ in .success(title: "Apple", message: "apple") },
+            browserLogin: { _ in .success(title: "Browser", message: "browser") },
             logout: { _ in .success(title: "Logout", message: "logout") },
             refresh: { _ in .success(title: "Refresh", message: "refresh") }
         )
@@ -104,7 +104,7 @@ struct CctransAccountRequestBridgeTests {
     @Test func claimedRequestDisappearsWhenRequesterCancelsIt() throws {
         let directoryURL = temporaryDirectory()
         let requestURL = directoryURL.appendingPathComponent("req-cancelled.json")
-        try Data(#"{"action":"appleLogin","nonce":"cancelled","createdAt":100}"#.utf8)
+        try Data(#"{"action":"browserLogin","nonce":"cancelled","createdAt":100}"#.utf8)
             .write(to: requestURL)
         let request = try #require(CctransAccountRequestFiles.pendingRequests(
             in: directoryURL,
@@ -127,7 +127,7 @@ struct CctransAccountRequestBridgeTests {
     @Test func freshClaimedRequestFromPreviousHostReloadsCurrentAccountState() throws {
         let directoryURL = temporaryDirectory()
         let claimedURL = directoryURL.appendingPathComponent("claimed-interrupted.json")
-        try Data(#"{"action":"appleLogin","nonce":"interrupted","createdAt":100}"#.utf8)
+        try Data(#"{"action":"browserLogin","nonce":"interrupted","createdAt":100}"#.utf8)
             .write(to: claimedURL)
 
         let requests = try CctransAccountRequestFiles.pendingRequests(
