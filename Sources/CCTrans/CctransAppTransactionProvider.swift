@@ -29,18 +29,31 @@ final class CctransAppTransactionProvider: CctransStoreKitProviding, @unchecked 
 
     func signedAppTransaction() async -> String? {
         #if MAS_BUILD
-        do {
-            let result = try await AppTransaction.shared
-            guard case .verified = result else {
-                print("CCTrans Cloud: StoreKit AppTransaction verification failed.")
+        // AppTransaction.shared has no built-in timeout and does an implicit App Store
+        // network fetch when its result isn't cached; on a stalled connection it blocks
+        // forever. Because translate() awaits this BEFORE any network request, a hang here
+        // freezes the whole managed translation — the URLSession request timeout never
+        // applies, so the toast stays on "Translating…" indefinitely. Cap it so a hang
+        // returns nil and falls through to the appReceipt path. Scope is the StoreKit
+        // signature ONLY; the translation/image-generation request runs afterwards on the
+        // network and is untouched (image mode legitimately takes up to ~3 min there).
+        let signed: String? = await withAsyncTimeout(seconds: 10, fallback: nil, onTimeout: {
+            print("CCTrans Cloud: StoreKit AppTransaction timed out after 10s; falling back to receipt.")
+        }) {
+            do {
+                let result = try await AppTransaction.shared
+                guard case .verified = result else {
+                    print("CCTrans Cloud: StoreKit AppTransaction verification failed.")
+                    return nil
+                }
+                let jws = result.jwsRepresentation.trimmingCharacters(in: .whitespacesAndNewlines)
+                return jws.isEmpty ? nil : jws
+            } catch {
+                print("CCTrans Cloud: StoreKit AppTransaction unavailable: \(error)")
                 return nil
             }
-            let jws = result.jwsRepresentation.trimmingCharacters(in: .whitespacesAndNewlines)
-            return jws.isEmpty ? nil : jws
-        } catch {
-            print("CCTrans Cloud: StoreKit AppTransaction unavailable: \(error)")
-            return nil
         }
+        return signed
         #else
         return nil
         #endif
