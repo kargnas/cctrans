@@ -13,7 +13,6 @@ export type TranslationPreviewState = {
   model: string;
   modelWarning: string | null;
   costCredits: number | null;
-  permissionAction?: "screenRecording" | null;
   toastDuration: number;
   requestSequence?: number;
 };

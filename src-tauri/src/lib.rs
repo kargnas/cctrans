@@ -942,8 +942,6 @@ struct TranslationPreviewState {
     model_warning: Option<String>,
     #[serde(rename = "costCredits")]
     cost_credits: Option<f64>,
-    #[serde(rename = "permissionAction")]
-    permission_action: Option<String>,
     #[serde(rename = "toastDuration", default = "default_toast_duration_value")]
     toast_duration: f64,
     #[serde(rename = "requestSequence", default)]
@@ -1179,11 +1177,6 @@ fn perform_settings_action(
         "requestScreenRecording" => request_host_permission(&app, "screen"),
         _ => Err(format!("Unknown settings action: {action}")),
     }
-}
-
-#[tauri::command]
-fn open_screen_recording_settings(app: AppHandle) -> Result<ActionResult, String> {
-    request_host_permission(&app, "screen")
 }
 
 #[tauri::command]
@@ -1831,7 +1824,6 @@ pub fn run() {
             translate_preview_to_language,
             translate_preview_to_model,
             save_translation_preview_position,
-            open_screen_recording_settings,
             close_translation_preview,
             resize_translation_preview,
             open_translation_image_in_preview,
@@ -2414,7 +2406,6 @@ fn sample_translation_preview(settings: &Settings) -> TranslationPreviewState {
         model: selected_model_title(settings),
         model_warning: None,
         cost_credits: None,
-        permission_action: None,
         toast_duration: settings.toast_duration,
         request_sequence: 0,
         caret_x: None,
@@ -5751,7 +5742,7 @@ mod tests {
         let legacy = r#"{
             "mode":"translated","sourceLanguage":"English","targetLanguage":"Korean",
             "originalText":"hi","translatedText":"안녕","errorText":null,
-            "providerTitle":"Local Model","model":"m","costCredits":null,"permissionAction":null
+            "providerTitle":"Local Model","model":"m","costCredits":null
         }"#;
         let state: TranslationPreviewState = serde_json::from_str(legacy).unwrap();
         assert_eq!(state.request_sequence, 0);
@@ -5768,7 +5759,7 @@ mod tests {
         let json = r#"{
             "mode":"translated","sourceLanguage":"English","targetLanguage":"Korean",
             "originalText":"hi","translatedText":"안녕","errorText":null,
-            "providerTitle":"Local Model","model":"m","costCredits":null,"permissionAction":null,
+            "providerTitle":"Local Model","model":"m","costCredits":null,
             "didReverseBecauseLanguagesMatched":true,
             "translatedImageURL":"data:image/png;base64,abc",
             "modelWarning":"Vision model used","requestSequence":7,

@@ -22,7 +22,6 @@ struct TranslationPreviewPayload: Encodable {
     var model: String
     var modelWarning: String? = nil
     var costCredits: Double?
-    var permissionAction: String? = nil
     var requestSequence: Int = 0
 }
 
@@ -1432,6 +1431,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         inputText: String? = nil,
         settings: TranslatorSettings? = nil
     ) {
+        // Screen Recording was revoked after onboarding. A dead-end error toast
+        // ("permission required" + an Open-Settings button) is the wrong recovery:
+        // a revoked grant no longer re-prompts through CGRequestScreenCaptureAccess,
+        // so send the user back to the Getting Started permission page instead —
+        // its live status + System Settings deep link is the only actionable path.
+        // surfaceLaunchWindow() picks that page here (its final Settings branch is
+        // unreachable: we only reach this line because the capture preflight just
+        // failed, so requiredPermissionsMissing() is guaranteed true).
+        if let screenshotError = error as? ScreenshotCaptureError,
+           case .permissionDenied = screenshotError {
+            surfaceLaunchWindow()
+            return
+        }
+
         showTranslationError(
             error,
             sourceTitle: title,
@@ -1702,8 +1715,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             errorText: error.localizedDescription,
             providerTitle: settings.provider.title,
             model: activeModelTitle(settings: settings),
-            costCredits: nil,
-            permissionAction: permissionAction(for: error)
+            costCredits: nil
         ), sourceTitle: sourceTitle, settings: settings)
     }
 
@@ -1825,14 +1837,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // Server picks the model; the client never knows which (§4). Show the brand.
             TranslationProvider.kargnasManaged.title
         }
-    }
-
-    private func permissionAction(for error: Error) -> String? {
-        guard let screenshotError = error as? ScreenshotCaptureError,
-              case .permissionDenied = screenshotError else {
-            return nil
-        }
-        return "screenRecording"
     }
 
     private func localWarmupModel(settings: TranslatorSettings) -> LocalModelSpec? {

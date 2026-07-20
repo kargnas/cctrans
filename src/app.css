@@ -1418,11 +1418,6 @@ kbd {
   gap: 2px;
 }
 
-.permission-request-button {
-  flex: 0 0 auto;
-  gap: 6px;
-}
-
 .language {
   display: inline-flex;
   align-items: center;

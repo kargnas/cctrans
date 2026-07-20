@@ -2,7 +2,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { onMount } from "svelte";
-  import { ArrowLeftRight, Check, Copy, Cpu, ExternalLink, Eye, Languages, Pin, ShieldCheck, TriangleAlert, X } from "@lucide/svelte";
+  import { ArrowLeftRight, Check, Copy, Cpu, ExternalLink, Eye, Languages, Pin, TriangleAlert, X } from "@lucide/svelte";
   import { fallbackTranslationState, type ShowToastResult, type TranslationMode, type TranslationPreviewState } from "./lib/translation";
   import { fallbackState, type OpenRouterModelOption, type SettingsState, type TranslationProvider } from "./lib/settings";
 
@@ -78,7 +78,6 @@
     close: "Close",
     copyCurrent: "Copy",
     copied: "Copied",
-    requestPermission: "Request Permission",
     openInPreview: "Preview로 열기",
     pin: "Pin translation",
     unpin: "Unpin translation",
@@ -109,10 +108,6 @@
   const countdownLabel = $derived(`${countdownRemaining.toFixed(1)}s`);
   const countdownProgressValue = $derived(Math.max(0, Math.min(1, countdownRemaining / countdownDuration)));
   const countdownProgress = $derived(`${countdownProgressValue * 100}%`);
-  const screenRecordingPermissionError = $derived(
-    preview.permissionAction === "screenRecording" ||
-      (preview.errorText ?? "").toLowerCase().includes("screen recording permission")
-  );
 
   type PreviewModelOption = {
     label: string;
@@ -732,15 +727,6 @@
     await closePopover();
   }
 
-  async function requestScreenRecordingPermission() {
-    if (!isTauri) return;
-    try {
-      await invoke("open_screen_recording_settings");
-    } finally {
-      await closePopover();
-    }
-  }
-
   function scheduleAutoDismiss() {
     // Streaming partials, the 200ms result poll, and the final cost write all call this for the SAME
     // translation. Each call used to reset countdownStartedAt, so the countdown never ticked down and a
@@ -904,11 +890,6 @@
             </select>
           </label>
           <div class="action-row">
-            {#if screenRecordingPermissionError}
-              <button class="small-button permission-request-button" onclick={requestScreenRecordingPermission}>
-                <ShieldCheck size={14} />{uiStrings.requestPermission}
-              </button>
-            {/if}
             {#if modelOptions.length > 1}
               <label class="model-select-shell" aria-label="Model">
                 <Cpu size={16} />
