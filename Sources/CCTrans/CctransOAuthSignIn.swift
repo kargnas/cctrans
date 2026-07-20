@@ -12,13 +12,12 @@ final class CctransOAuthSignIn: NSObject, ASWebAuthenticationPresentationContext
         let redirectURI: String
     }
 
-    // The ASWebAuthenticationSession completion fires on a background XPC thread
-    // and must resume the continuation from there — hopping with
-    // `Task { @MainActor in }` from that thread trips
-    // swift_task_checkIsolatedSwift's queue assertion (EXC_BREAKPOINT crash).
-    // The box is nonisolated + Sendable (Mutex-guarded) so the completion
-    // closure can capture it safely; cancel() on the main actor serializes
-    // through the same Mutex, so the continuation resumes exactly once.
+    // The ASWebAuthenticationSession completion fires on a background XPC thread.
+    // The @Sendable completion closure (see below) must NOT be MainActor-isolated,
+    // or the Swift 6 runtime asserts the wrong executor and crashes. It resumes the
+    // continuation through this box: nonisolated + Sendable (Mutex-guarded) so the
+    // XPC-thread completion can touch it safely, while cancel() on the main actor
+    // serializes through the same Mutex — the continuation resumes exactly once.
     // ASWebAuthenticationSession itself is non-Sendable and stays on the actor.
     private final class StateBox: Sendable {
         let continuation = Mutex<CheckedContinuation<URL, any Error>?>(nil)
@@ -63,10 +62,17 @@ final class CctransOAuthSignIn: NSObject, ASWebAuthenticationPresentationContext
     private func callbackURL(for authorizationURL: URL) async throws -> URL {
         try await withCheckedThrowingContinuation { continuation in
             state.continuation.withLock { $0 = continuation }
+            // @Sendable strips the MainActor isolation this closure would
+            // otherwise inherit from the enclosing @MainActor method. Without it,
+            // ASWebAuthenticationSession invoking the handler on its background XPC
+            // thread trips the Swift 6 executor precondition
+            // (swift_task_checkIsolatedSwift → dispatch_assert_queue_fail →
+            // EXC_BREAKPOINT). It captures only the Sendable StateBox, so the
+            // Mutex inside handles the cross-thread resume.
             let session = ASWebAuthenticationSession(
                 url: authorizationURL,
                 callbackURLScheme: "cctrans"
-            ) { [state] callbackURL, error in
+            ) { @Sendable [state] callbackURL, error in
                 let result: Result<URL, any Error>
                 if let callbackURL {
                     result = .success(callbackURL)
