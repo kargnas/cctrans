@@ -113,10 +113,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // app itself; it drops a request file in the shared app-group dir and this
     // watcher serves it. See serveLoginRequests() / src-tauri request_login_item().
     private var loginRequestWatcher: DispatchSourceFileSystemObject?
-    // The toast's "Translate Screenshot" action drops a trigger file here; the host
-    // runs the capture as the outer app (correct Screen Recording attribution).
-    private var screenshotRequestWatcher: DispatchSourceFileSystemObject?
     #endif
+    // The toast's "Translate Screenshot" / "Translate as Image" actions drop a trigger
+    // file here; the host runs the capture — or the retained-PNG image re-run — as the
+    // outer app (correct Screen Recording attribution). Active in ALL builds: it is the
+    // only way the separate toast process can reach the resident host that holds the
+    // last capture, and in dev the capture path itself works via the Carbon hotkey.
+    private var screenshotRequestWatcher: DispatchSourceFileSystemObject?
     #if !MAS_BUILD
     // Sparkle needs a strong reference for the whole app lifetime; menu-bar apps
     // must keep this in AppDelegate, not in a transient controller.
@@ -149,13 +152,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settingsStore.onExternalChange = { [weak self] in
             self?.rebuildMenu()
         }
+        // Route the toast's screenshot-translate / image-upgrade actions to THIS process
+        // so capture and the retained-PNG re-run are attributed to the outer CCTrans.app.
+        // Needed in all builds — the "Translate as Image" toast button signals here.
+        startScreenshotRequestWatcher()
         #if MAS_BUILD
         // Serve "Open at Login" toggles from the sandboxed toast here, so
         // SMAppService registers the outer CCTrans.app rather than the inner helper.
         startLoginRequestWatcher()
-        // Route the toast's screenshot-translate action to THIS process so the
-        // capture is attributed to the outer CCTrans.app, not the inner helper.
-        startScreenshotRequestWatcher()
         // Seed the status cache before the toast can read it, so its first
         // settings load is a plain file read, not an IPC round-trip.
         writeLoginStateCache(LoginItemController.status())
@@ -237,9 +241,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         accountRequestTask?.cancel()
         storeKitTransactionUpdatesTask?.cancel()
         storeKitTransactionRetryTask?.cancel()
+        screenshotRequestWatcher?.cancel()
         #if MAS_BUILD
         loginRequestWatcher?.cancel()
-        screenshotRequestWatcher?.cancel()
         #endif
     }
 
@@ -753,6 +757,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             try? FileManager.default.removeItem(at: url)
         }
     }
+    #endif
 
     private struct ScreenshotRequest: Decodable {
         let createdAt: Double
@@ -829,7 +834,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             translateScreenshot()
         }
     }
-    #endif
 
     private struct PermissionRequest: Decodable {
         let action: String

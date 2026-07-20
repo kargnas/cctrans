@@ -950,6 +950,11 @@
             <span class="model-warning"><TriangleAlert size={11} />{modelWarning}</span>
           {/if}
         </div>
+        {#if showUpgradeToImage}
+          <button class="upgrade-image-button" onclick={upgradeToImage}>
+            <Camera size={14} />{uiStrings.translateAsImage}
+          </button>
+        {/if}
         <footer class="bubble-footer">
           <label class="language-select-shell" aria-label="Target language">
             <Languages size={14} />
@@ -961,11 +966,6 @@
             </select>
           </label>
           <div class="action-row">
-            {#if showUpgradeToImage}
-              <button class="small-button" onclick={upgradeToImage}>
-                <Camera size={14} />{uiStrings.translateAsImage}
-              </button>
-            {/if}
             {#if resultImageURL}
               <div class="image-size-control" role="group" aria-label="Image size">
                 {#each imageSizeOptions as option}

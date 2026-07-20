@@ -1685,6 +1685,29 @@ kbd {
   border-radius: 8px;
 }
 
+/* Full-width CTA row (own line above the footer) so the label stays readable without
+   crowding the icon action-row — a wide labeled button there pushed the close button off. */
+.upgrade-image-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 30px;
+  padding: 0 12px;
+  border: 1px solid var(--glass-border);
+  border-radius: 9px;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 560;
+  cursor: pointer;
+}
+
+.upgrade-image-button:hover {
+  background: color-mix(in srgb, var(--text) 6%, transparent);
+}
+
 .preview-switcher {
   display: inline-flex;
   gap: 4px;

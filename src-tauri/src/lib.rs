@@ -4571,10 +4571,11 @@ fn write_screenshot_request(
 // mode (nano-banana). No fresh selection — the host reuses its retained PNG. Fire-and-forget
 // like request_screenshot_translation; the host owns the result toast.
 #[tauri::command]
-fn retranslate_screenshot_as_image() -> Result<ActionResult, String> {
-    let Some(dir) = screenshot_requests_dir() else {
-        return Err("Image translation needs the CCTrans host app running.".to_string());
-    };
+fn retranslate_screenshot_as_image(app: AppHandle) -> Result<ActionResult, String> {
+    // shared_data_dir (unlike screenshot_requests_dir, which is MAS-sandbox only) resolves
+    // in every build, so the toast can reach the resident host in dev too. The host watches
+    // this same dir (SharedAppStorage/screenshot-requests) in all builds.
+    let dir = shared_data_dir(&app)?.join("screenshot-requests");
     write_screenshot_request(&dir, Some("image"), true)?;
     Ok(action_result(
         "Translate as Image",
