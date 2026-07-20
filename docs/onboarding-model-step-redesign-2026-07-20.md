@@ -33,13 +33,16 @@ viable. Auth must happen on the web.
 - Auth: **remove ALL native auth UI from the app** (onboarding email form,
   onboarding Apple button, Tauri Settings email login/register, Rust
   `cctrans_account_email_login` / `cctrans_account_email_register` commands).
-  Replaced by a single **"Sign in at kargn.as"** button that opens
+  Replaced by a single **"Continue in Browser"** button that opens
   `ASWebAuthenticationSession` against the kargn.as OAuth page, which hosts
   Google / Apple / email sign-in itself.
-- Token handoff: server redirects to the custom scheme
-  `cctrans://auth/callback?token=...`; the app stores the token. (PKCE deferred
-  — the app is a public client on the user's own machine; the threat model is
-  the same as the current bearer-token-in-keychain model.)
+- Token handoff: **PKCE authorization-code flow** — found already implemented
+  in the working tree (`CctransOAuthAuthorizationRequest`,
+  `CctransOAuthSignIn`, `CctransAccountClient.signInWithOAuth`). The server
+  redirects to `cctrans://oauth/callback?code=...&state=...` and the app
+  exchanges the code + verifier at `/auth/oauth/token`. (Supersedes the
+  earlier "token in the custom scheme" idea — code exchange is strictly
+  better and already built.)
 - Anonymous button: **hidden via `#if MAS_BUILD`** on the choice panel. On
   direct builds the button does not exist (dead UI per `.attestUnavailable`).
 - Window stays fixed 760×520; no resizable window, no step split.
