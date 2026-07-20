@@ -60,6 +60,10 @@
   let countdownPaused = $state(false);
   let imageSize = $state<ImageSize>(readStoredImageSize());
   let isOpeningPreview = $state(false);
+  // A result image whose src fails to load (e.g. a dead/expired server URL) would otherwise
+  // show only the <img> alt text — a blank-looking "success" toast. Track the failure so the
+  // UI can say so explicitly instead.
+  let imageLoadFailed = $state(false);
   let pinned = $state(false);
   let outsideDismissAllowedAt = $state(Number.POSITIVE_INFINITY);
   let lastDismissGuardKey = "";
@@ -83,7 +87,8 @@
     pin: "Pin translation",
     unpin: "Unpin translation",
     autoReversed: "Auto-reversed because source matched target",
-    imageExpenseWarning: "이미지 번역 결과는 비싸기 때문에 자동으로 이 번역결과 창을 닫지 않고 유저가 직접 닫을 때 까지 기다립니다."
+    imageExpenseWarning: "이미지 번역 결과는 비싸기 때문에 자동으로 이 번역결과 창을 닫지 않고 유저가 직접 닫을 때 까지 기다립니다.",
+    imageLoadFailed: "Couldn't load the translated image."
   };
   const targetLanguage = $derived(preview.targetLanguage);
   const languageWasAutoReversed = $derived(preview.didReverseBecauseLanguagesMatched);
@@ -239,6 +244,13 @@
       refreshUnlisten?.();
       flushMovedPosition();
     };
+  });
+
+  // Clear the load-failure flag whenever a new result image arrives, so a fresh URL gets a
+  // real load attempt instead of inheriting the previous result's failure.
+  $effect(() => {
+    void resultImageURL;
+    imageLoadFailed = false;
   });
 
   $effect(() => {
@@ -939,12 +951,20 @@
           <figure class="translation-image-result">
             <!-- The image's height is unknown until it loads, so re-measure once it does, otherwise
                  the window stays sized to the pre-load (too short) bubble and clips the footer. -->
-            <img src={resultImageURL} alt="Translated screenshot result" onload={syncWindowHeight} />
+            {#if imageLoadFailed}
+              <!-- ponytail: reuse image-expense-warning styling — no scoped <style> in this file,
+                   and this keeps the failure line visible without inventing a new global class. -->
+              <p class="image-expense-warning">{uiStrings.imageLoadFailed}</p>
+            {:else}
+              <img src={resultImageURL} alt="Translated screenshot result" onload={syncWindowHeight} onerror={() => (imageLoadFailed = true)} />
+            {/if}
             {#if bodyText && bodyText !== "Image result"}
               <figcaption>{bodyText}</figcaption>
             {/if}
           </figure>
-          <p class="image-expense-warning">{uiStrings.imageExpenseWarning}</p>
+          {#if !imageLoadFailed}
+            <p class="image-expense-warning">{uiStrings.imageExpenseWarning}</p>
+          {/if}
         {:else}
           <p bind:this={translationTextEl} class:original={visibleMode === "original"} class="translation-text">{bodyText}</p>
         {/if}
