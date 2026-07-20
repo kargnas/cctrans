@@ -12,7 +12,7 @@ struct CctransAccountTests {
         let summaryStore = CctransAccountSummaryStore(fileURL: summaryURL)
         let client = CctransAccountClient(
             session: makeAccountSession { request in
-                #expect(request.url?.path.hasSuffix("/auth/login") == true)
+                #expect(request.url?.path.hasSuffix("/auth/oauth/token") == true)
                 return .response(200, accountSessionJSON(token: "secret-sanctum-token"))
             },
             tokenStore: tokenStore,
@@ -21,7 +21,7 @@ struct CctransAccountTests {
             appTransactionProvider: { "signed-app-transaction" }
         )
 
-        let session = try await client.login(email: "user@example.com", password: "password")
+        let session = try await oauthSignIn(client)
 
         #expect(session.token == "secret-sanctum-token")
         #expect(try tokenStore.load() == "secret-sanctum-token")
@@ -29,6 +29,39 @@ struct CctransAccountTests {
         let storedJSON = try String(contentsOf: summaryURL, encoding: .utf8)
         #expect(!storedJSON.contains("secret-sanctum-token"))
         #expect(!storedJSON.contains("token"))
+    }
+
+    @Test func browserOAuthExchangesAuthorizationCodeWithPKCE() async throws {
+        let tokenStore = MockAccountTokenStore()
+        let summaryStore = CctransAccountSummaryStore(fileURL: temporarySummaryURL())
+        let client = CctransAccountClient(
+            session: makeAccountSession { request in
+                #expect(request.url?.path.hasSuffix("/auth/oauth/token") == true)
+                guard let data = request.httpBodyData,
+                      let body = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                    Issue.record("OAuth token request body is missing or invalid.")
+                    return .response(400, Data())
+                }
+                #expect(body["grant_type"] as? String == "authorization_code")
+                #expect(body["client_id"] as? String == CctransOAuthAuthorizationRequest.clientID)
+                #expect(body["redirect_uri"] as? String == CctransOAuthAuthorizationRequest.redirectURI)
+                #expect(body["code"] as? String == "one-time-code")
+                #expect(body["code_verifier"] as? String == String(repeating: "v", count: 64))
+                return .response(200, accountSessionJSON(token: "oauth-token"))
+            },
+            tokenStore: tokenStore,
+            summaryStore: summaryStore,
+            lockFileURL: accountLockURL(for: summaryStore)
+        )
+
+        let session = try await client.signInWithOAuth(
+            code: "one-time-code",
+            codeVerifier: String(repeating: "v", count: 64),
+            redirectURI: CctransOAuthAuthorizationRequest.redirectURI
+        )
+
+        #expect(session.token == "oauth-token")
+        #expect(try tokenStore.load() == "oauth-token")
     }
 
     @Test func loginPropagatesTokenSaveFailureWithoutReplacingSummary() async throws {
@@ -49,7 +82,7 @@ struct CctransAccountTests {
         )
 
         await #expect(throws: MockAccountTokenStoreError.saveFailed) {
-            try await client.login(email: "replacement@example.com", password: "password")
+            try await oauthSignIn(client)
         }
 
         #expect(tokenStore.storedToken == "previous-token")
@@ -132,7 +165,7 @@ struct CctransAccountTests {
             )
 
             do {
-                _ = try await client.login(email: "user@example.com", password: "password")
+                _ = try await oauthSignIn(client)
                 Issue.record("손상된 generation 파일을 거부해야 합니다.")
             } catch let error as CocoaError {
                 #expect(error.code == .fileReadCorruptFile)
@@ -155,7 +188,7 @@ struct CctransAccountTests {
             lockFileURL: accountLockURL(for: summaryStore)
         )
 
-        _ = try await client.login(email: "user@example.com", password: "password")
+        _ = try await oauthSignIn(client)
 
         let generation = try Data(contentsOf: directoryURL.appendingPathComponent(
             "account-session.generation"
@@ -252,9 +285,9 @@ struct CctransAccountTests {
         let clientA = CctransAccountClient(session: session, sessionCoordinator: coordinatorA)
         let clientB = CctransAccountClient(session: session, sessionCoordinator: coordinatorB)
 
-        let loginA = Task { try await clientA.login(email: "a@example.com", password: "password") }
+        let loginA = Task { try await oauthSignIn(clientA) }
         await saveGate.waitUntilBlocked()
-        let loginB = Task { try await clientB.login(email: "b@example.com", password: "password") }
+        let loginB = Task { try await oauthSignIn(clientB) }
         try await Task.sleep(for: .milliseconds(50))
 
         #expect(tokenStore.storedToken == "token-a")
@@ -304,9 +337,9 @@ struct CctransAccountTests {
         let clientA = CctransAccountClient(session: session, sessionCoordinator: coordinatorA)
         let clientB = CctransAccountClient(session: session, sessionCoordinator: coordinatorB)
 
-        let loginA = Task { try await clientA.login(email: "a@example.com", password: "password") }
+        let loginA = Task { try await oauthSignIn(clientA) }
         await gate.waitUntilStarted()
-        let loginB = try await clientB.login(email: "b@example.com", password: "password")
+        let loginB = try await oauthSignIn(clientB)
         await gate.open()
 
         #expect(loginB.token == "token-b")
@@ -317,7 +350,7 @@ struct CctransAccountTests {
         #expect(try summaryStore.load()?.email == "b@example.com")
     }
 
-    @Test func cancelledAppleRequestDoesNotCommitReturnedSession() async throws {
+    @Test func cancelledOAuthRequestDoesNotCommitReturnedSession() async throws {
         let tokenStore = MockAccountTokenStore()
         let summaryStore = CctransAccountSummaryStore(fileURL: temporarySummaryURL())
         let client = CctransAccountClient(
@@ -330,9 +363,10 @@ struct CctransAccountTests {
         )
 
         await #expect(throws: CctransAccountError.operationSuperseded) {
-            try await client.signInWithApple(
-                identityToken: "identity-token",
-                nonce: "nonce",
+            try await client.signInWithOAuth(
+                code: "authorization-code",
+                codeVerifier: "code-verifier",
+                redirectURI: CctransOAuthAuthorizationRequest.redirectURI,
                 shouldCommit: { false }
             )
         }
@@ -373,7 +407,7 @@ struct CctransAccountTests {
 
         let clearA = Task { try coordinatorA.clearIfTokenMatches("token-a") }
         await deleteGate.waitUntilBlocked()
-        let loginB = Task { try await clientB.login(email: "b@example.com", password: "password") }
+        let loginB = Task { try await oauthSignIn(clientB) }
         try await Task.sleep(for: .milliseconds(50))
 
         #expect(tokenStore.storedToken == "token-a")
@@ -468,7 +502,7 @@ struct CctransAccountTests {
         let client = CctransAccountClient(
             session: makeAccountSession { request in
                 switch request.url?.path {
-                case let path? where path.hasSuffix("/auth/login"):
+                case let path? where path.hasSuffix("/auth/oauth/token"):
                     await gate.markStartedAndWait()
                     return .response(200, accountSessionJSON(token: "login-token"))
                 case let path? where path.hasSuffix("/attest/challenge"):
@@ -487,7 +521,7 @@ struct CctransAccountTests {
         )
 
         let login = Task {
-            try await client.login(email: "user@example.com", password: "password")
+            try await oauthSignIn(client)
         }
         await gate.waitUntilStarted()
         let claimedForAccount = try await client.submitStoreKitTransaction(
@@ -852,10 +886,10 @@ struct CctransAccountTests {
         )
 
         let loginA = Task {
-            try await client.login(email: "a@example.com", password: "password")
+            try await oauthSignIn(client)
         }
         await gate.waitUntilStarted()
-        let loginB = try await client.login(email: "b@example.com", password: "password")
+        let loginB = try await oauthSignIn(client)
         await gate.open()
 
         #expect(loginB.token == "token-b")
@@ -1266,6 +1300,21 @@ private func accountSessionJSON(
         "token": token,
         "account": accountObject(plan: "pro", lifetime: false, name: name, email: email),
     ])
+}
+
+// Session-coordinator tests exercise the shared authenticate() path; the
+// production entry point is browser OAuth (email login/register were removed),
+// so tests go through signInWithOAuth with a fixed code/verifier pair.
+private func oauthSignIn(
+    _ client: CctransAccountClient,
+    shouldCommit: @escaping @Sendable () -> Bool = { true }
+) async throws -> CctransAccountSession {
+    try await client.signInWithOAuth(
+        code: "authorization-code",
+        codeVerifier: "code-verifier",
+        redirectURI: CctransOAuthAuthorizationRequest.redirectURI,
+        shouldCommit: shouldCommit
+    )
 }
 
 private func accountSummaryJSON(plan: String, lifetime: Bool) -> Data {

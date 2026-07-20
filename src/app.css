@@ -1085,15 +1085,6 @@ input {
   animation: account-spin 900ms linear infinite;
 }
 
-.account-auth-tabs {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
-  padding: 10px 11px 0;
-}
-
-.account-auth-tabs button,
-.account-form button,
 .account-auth-footer button,
 .account-logout button {
   display: inline-flex;
@@ -1107,24 +1098,6 @@ input {
   color: var(--control-ink);
   font-size: 11px;
   font-weight: 540;
-}
-
-.account-auth-tabs button.active {
-  border-color: var(--accent-line);
-  background: var(--accent-soft);
-  color: var(--blue);
-}
-
-.account-form {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
-  padding: 10px 11px;
-  border-bottom: 1px solid var(--border);
-}
-
-.account-form button {
-  grid-column: 1 / -1;
 }
 
 .account-auth-footer {

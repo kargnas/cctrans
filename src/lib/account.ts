@@ -20,7 +20,7 @@ export type CctransAccountState = {
   account: CctransAccountSummary | null;
 };
 
-export type AccountShellAction = "appleLogin" | "logout" | "refresh" | "purchase" | "restore";
+export type AccountShellAction = "browserLogin" | "logout" | "refresh" | "purchase" | "restore";
 
 export type ActionResult = {
   title: string;
@@ -38,19 +38,6 @@ export const fallbackAccountState: CctransAccountState = {
 
 export function loadCctransAccount(isTauri: boolean) {
   return isTauri ? invoke<CctransAccountState>("load_cctrans_account") : Promise.resolve(fallbackAccountState);
-}
-
-export function loginCctransAccount(email: string, password: string) {
-  return invoke<CctransAccountState>("cctrans_account_email_login", { email, password });
-}
-
-export function registerCctransAccount(name: string, email: string, password: string, passwordConfirmation: string) {
-  return invoke<CctransAccountState>("cctrans_account_email_register", {
-    name,
-    email,
-    password,
-    passwordConfirmation
-  });
 }
 
 export function runCctransAccountAction(action: AccountShellAction) {

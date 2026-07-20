@@ -54,41 +54,22 @@ public actor CctransAccountClient: CctransStoreKitTransactionClaiming {
         self.appReceiptProvider = appReceiptProvider
     }
 
-    public func register(
-        name: String,
-        email: String,
-        password: String,
-        passwordConfirmation: String
-    ) async throws -> CctransAccountSession {
-        try await authenticate(path: "/auth/register", body: [
-            "name": name,
-            "email": email,
-            "password": password,
-            "password_confirmation": passwordConfirmation,
-        ])
-    }
-
-    public func login(email: String, password: String) async throws -> CctransAccountSession {
-        try await authenticate(path: "/auth/login", body: [
-            "email": email,
-            "password": password,
-        ])
-    }
-
-    public func signInWithApple(
-        identityToken: String,
-        nonce: String,
-        name: String? = nil,
+    public func signInWithOAuth(
+        code: String,
+        codeVerifier: String,
+        redirectURI: String,
         shouldCommit: @escaping @Sendable () -> Bool = { true },
         didCommit: @escaping @Sendable (CctransAccountSession) throws -> Void = { _ in }
     ) async throws -> CctransAccountSession {
-        var body = ["identity_token": identityToken, "nonce": nonce]
-        if let name, !name.isEmpty {
-            body["name"] = name
-        }
-        return try await authenticate(
-            path: "/auth/apple",
-            body: body,
+        try await authenticate(
+            path: "/auth/oauth/token",
+            body: [
+                "grant_type": "authorization_code",
+                "client_id": CctransOAuthAuthorizationRequest.clientID,
+                "redirect_uri": redirectURI,
+                "code": code,
+                "code_verifier": codeVerifier,
+            ],
             shouldCommit: shouldCommit,
             didCommit: didCommit
         )

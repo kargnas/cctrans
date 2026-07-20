@@ -1,13 +1,11 @@
 <script lang="ts">
   import {
-    Apple,
     CheckCircle2,
     CreditCard,
     ExternalLink,
     LoaderCircle,
     LogIn,
     LogOut,
-    Mail,
     RefreshCcw,
     RotateCcw,
     ShieldAlert,
@@ -17,9 +15,7 @@
   import {
     fallbackAccountState,
     loadCctransAccount,
-    loginCctransAccount,
     openCctransAccountWebSettings,
-    registerCctransAccount,
     runCctransAccountAction,
     type AccountShellAction,
     type CctransAccountState,
@@ -32,11 +28,6 @@
   let isTauri = $state(false);
   let isLoading = $state(true);
   let isWorking = $state(false);
-  let mode: "login" | "register" = $state("login");
-  let name = $state("");
-  let email = $state("");
-  let password = $state("");
-  let passwordConfirmation = $state("");
   let message: { text: string; ok: boolean } | null = $state(null);
 
   onMount(() => {
@@ -53,27 +44,6 @@
       message = { text: formatError(error), ok: false };
     } finally {
       isLoading = false;
-    }
-  }
-
-  async function submitEmailAuth(event: SubmitEvent) {
-    event.preventDefault();
-    if (!isTauri) {
-      message = { text: "Preview mode cannot sign in.", ok: false };
-      return;
-    }
-    isWorking = true;
-    try {
-      accountState = mode === "login"
-        ? await loginCctransAccount(email, password)
-        : await registerCctransAccount(name, email, password, passwordConfirmation);
-      password = "";
-      passwordConfirmation = "";
-      message = { text: "Account saved on this Mac.", ok: true };
-    } catch (error) {
-      message = { text: formatError(error), ok: false };
-    } finally {
-      isWorking = false;
     }
   }
 
@@ -188,7 +158,7 @@
       <div class="setting-row">
         <span class="setting-copy">
           <strong>Login</strong>
-          <span>{accountState.account.apple_linked ? "Apple linked" : "Email account"}</span>
+          <span>Browser sign-in</span>
         </span>
         <span class="last-result">{accountState.account.email_verified ? "Email verified" : "Email verification needed"}</span>
         <span class="reset-row spacer"></span>
@@ -207,67 +177,22 @@
   {#if !accountState.account}
     <h2>Sign In</h2>
     <div class="setting-group account-auth-group">
-      <div class="account-auth-tabs" role="tablist" aria-label="Account sign in mode">
-        <button type="button" class:active={mode === "login"} onclick={() => (mode = "login")}>
-          <LogIn size={13} />Login
-        </button>
-        <button type="button" class:active={mode === "register"} onclick={() => (mode = "register")}>
-          <Mail size={13} />Register
-        </button>
+      <div class="setting-row">
+        <span class="setting-copy">
+          <strong>Browser sign-in</strong>
+          <span>Continue with Apple, Google, or email.</span>
+        </span>
+        <span class="reset-row spacer"></span>
       </div>
-      <form class="account-form" onsubmit={submitEmailAuth}>
-        {#if mode === "register"}
-          <input
-            aria-label="Name"
-            autocomplete="name"
-            placeholder="Name"
-            required
-            value={name}
-            oninput={(event) => (name = event.currentTarget.value)}
-          />
-        {/if}
-        <input
-          aria-label="Email"
-          autocomplete="email"
-          placeholder="Email"
-          required
-          type="email"
-          value={email}
-          oninput={(event) => (email = event.currentTarget.value)}
-        />
-        <input
-          aria-label="Password"
-          autocomplete={mode === "login" ? "current-password" : "new-password"}
-          placeholder="Password"
-          required
-          type="password"
-          value={password}
-          oninput={(event) => (password = event.currentTarget.value)}
-        />
-        {#if mode === "register"}
-          <input
-            aria-label="Confirm password"
-            autocomplete="new-password"
-            placeholder="Confirm password"
-            required
-            type="password"
-            value={passwordConfirmation}
-            oninput={(event) => (passwordConfirmation = event.currentTarget.value)}
-          />
-        {/if}
-        <button type="submit" disabled={isWorking}>
-          <Mail size={13} />{mode === "login" ? "Continue with Email" : "Create Account"}
-        </button>
-      </form>
       <div class="account-auth-footer">
         <button
           type="button"
-          title="Continue with Apple"
-          aria-label="Continue with Apple"
+          title="Continue in browser"
+          aria-label="Continue in browser"
           disabled={isWorking}
-          onclick={() => runShellAction("appleLogin")}
+          onclick={() => runShellAction("browserLogin")}
         >
-          <Apple size={13} />Continue with Apple
+          <LogIn size={13} />Continue in Browser
         </button>
       </div>
     </div>

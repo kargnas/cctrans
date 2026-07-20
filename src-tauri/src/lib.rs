@@ -747,7 +747,6 @@ struct AccountActionResult {
     code: String,
 }
 
-const CCTRANS_ACCOUNT_API_BASE_URL: &str = "https://kargn.as/v1/cctrans";
 const CCTRANS_ACCOUNT_WEB_SETTINGS_URL: &str = "https://kargn.as/settings";
 const CCTRANS_ACCOUNT_SUMMARY_FILE: &str = "account-summary.json";
 const CCTRANS_ACCOUNT_TOKEN_SERVICE: &str = "as.kargn.cctrans.account";
@@ -797,6 +796,7 @@ struct CctransAccountState {
     account: Option<CctransAccountSummary>,
 }
 
+#[cfg(test)]
 #[derive(Clone, Debug, Deserialize)]
 struct CctransAccountSessionResponse {
     token: String,
@@ -1108,58 +1108,6 @@ fn clear_openrouter_api_key() -> Result<OpenRouterAPIKeyState, String> {
 
 #[tauri::command]
 fn load_cctrans_account(app: AppHandle) -> Result<CctransAccountState, String> {
-    cctrans_account_state(&app)
-}
-
-#[tauri::command]
-async fn cctrans_account_email_login(
-    app: AppHandle,
-    email: String,
-    password: String,
-) -> Result<CctransAccountState, String> {
-    let summary_path = account_summary_path(&app)?;
-    let lock_path = account_session_lock_path(&app)?;
-    tauri::async_runtime::spawn_blocking(move || {
-        authenticate_cctrans_account(
-            &summary_path,
-            &lock_path,
-            "/auth/login",
-            serde_json::json!({
-                "email": email.trim(),
-                "password": password,
-            }),
-        )
-    })
-    .await
-    .map_err(|error| format!("Account login task failed: {error}"))??;
-    cctrans_account_state(&app)
-}
-
-#[tauri::command]
-async fn cctrans_account_email_register(
-    app: AppHandle,
-    name: String,
-    email: String,
-    password: String,
-    password_confirmation: String,
-) -> Result<CctransAccountState, String> {
-    let summary_path = account_summary_path(&app)?;
-    let lock_path = account_session_lock_path(&app)?;
-    tauri::async_runtime::spawn_blocking(move || {
-        authenticate_cctrans_account(
-            &summary_path,
-            &lock_path,
-            "/auth/register",
-            serde_json::json!({
-                "name": name.trim(),
-                "email": email.trim(),
-                "password": password,
-                "password_confirmation": password_confirmation,
-            }),
-        )
-    })
-    .await
-    .map_err(|error| format!("Account registration task failed: {error}"))??;
     cctrans_account_state(&app)
 }
 
@@ -1870,8 +1818,6 @@ pub fn run() {
             save_openrouter_api_key,
             clear_openrouter_api_key,
             load_cctrans_account,
-            cctrans_account_email_login,
-            cctrans_account_email_register,
             cctrans_account_shell_action,
             open_cctrans_account_web_settings,
             perform_settings_action,
@@ -3851,72 +3797,19 @@ fn decode_account_summary(data: &str) -> Result<CctransAccountSummary, String> {
     serde_json::from_str(data).map_err(|error| format!("Could not parse account summary: {error}"))
 }
 
-fn authenticate_cctrans_account(
-    summary_path: &Path,
-    lock_path: &Path,
-    path: &str,
-    body: serde_json::Value,
-) -> Result<(), String> {
-    let generation =
-        begin_account_session_operation(&PlatformAccountTokenStore, summary_path, lock_path)?;
-    let base_url = std::env::var("CCTRANS_ACCOUNT_API_BASE_URL")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| CCTRANS_ACCOUNT_API_BASE_URL.to_string());
-    let url = format!("{}{}", base_url.trim_end_matches('/'), path);
-    let agent = ureq::AgentBuilder::new()
-        .timeout_connect(Duration::from_secs(10))
-        .timeout_read(Duration::from_secs(15))
-        .timeout_write(Duration::from_secs(15))
-        .build();
-    let response = agent
-        .post(&url)
-        .set("Accept", "application/json")
-        .set("Content-Type", "application/json")
-        .send_json(body)
-        .map_err(account_http_error)?;
-    let session: CctransAccountSessionResponse = response
-        .into_json()
-        .map_err(|error| format!("Could not decode account response: {error}"))?;
-    store_cctrans_account_session(
-        &PlatformAccountTokenStore,
-        summary_path,
-        lock_path,
-        generation,
-        session,
-    )
-}
-
-fn account_http_error(error: ureq::Error) -> String {
-    match error {
-        ureq::Error::Status(status, response) => {
-            let message = response
-                .into_json::<serde_json::Value>()
-                .ok()
-                .and_then(|value| {
-                    value
-                        .get("error")
-                        .or_else(|| value.get("message"))
-                        .and_then(|message| message.as_str())
-                        .map(str::to_string)
-                })
-                .unwrap_or_else(|| "request_failed".to_string());
-            format!("CCTrans account request failed with HTTP {status}: {message}")
-        }
-        ureq::Error::Transport(error) => {
-            format!("Could not reach CCTrans account server: {error}")
-        }
-    }
-}
-
 trait AccountTokenStore {
     fn load(&self) -> Result<Option<String>, String>;
+    // Session writes moved to the main app (OAuth sign-in happens there); the
+    // helper only reads + crash-recovers. Save/delete stay for the test fakes.
+    #[cfg(test)]
     fn save(&self, token: &str) -> Result<(), String>;
+    #[cfg(test)]
     fn delete(&self) -> Result<(), String>;
 }
 
 struct PlatformAccountTokenStore;
 
+#[cfg(test)]
 fn store_cctrans_account_session<S: AccountTokenStore + ?Sized>(
     token_store: &S,
     summary_path: &Path,
@@ -3947,6 +3840,7 @@ fn store_cctrans_account_session<S: AccountTokenStore + ?Sized>(
     })
 }
 
+#[cfg(test)]
 fn begin_account_session_operation<S: AccountTokenStore + ?Sized>(
     token_store: &S,
     summary_path: &Path,
@@ -3958,6 +3852,7 @@ fn begin_account_session_operation<S: AccountTokenStore + ?Sized>(
     })
 }
 
+#[cfg(test)]
 fn account_session_generation_path(lock_path: &Path) -> PathBuf {
     lock_path.with_file_name("account-session.generation")
 }
@@ -3966,6 +3861,7 @@ fn account_session_transaction_path(lock_path: &Path) -> PathBuf {
     lock_path.with_file_name("account-session-transaction.json")
 }
 
+#[cfg(test)]
 fn read_account_session_generation(lock_path: &Path) -> Result<u64, String> {
     let path = account_session_generation_path(lock_path);
     if !path.exists() {
@@ -3982,6 +3878,7 @@ fn read_account_session_generation(lock_path: &Path) -> Result<u64, String> {
     Ok(u64::from_le_bytes(bytes))
 }
 
+#[cfg(test)]
 fn advance_account_session_generation(lock_path: &Path) -> Result<u64, String> {
     let next = read_account_session_generation(lock_path)?.wrapping_add(1);
     replace_private_file_bytes(
@@ -3991,6 +3888,7 @@ fn advance_account_session_generation(lock_path: &Path) -> Result<u64, String> {
     Ok(next)
 }
 
+#[cfg(test)]
 fn commit_account_session<S: AccountTokenStore + ?Sized>(
     token_store: &S,
     summary_path: &Path,
@@ -4086,6 +3984,7 @@ fn recover_account_session<S: AccountTokenStore + ?Sized>(
     remove_file_if_exists(&transaction_path)
 }
 
+#[cfg(test)]
 fn write_account_session_transaction(
     lock_path: &Path,
     transaction: &AccountSessionTransaction,
@@ -4213,7 +4112,7 @@ fn account_password_options() -> security_framework::passwords::PasswordOptions 
     options
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(test, target_os = "macos"))]
 fn account_password_options_for_new_item() -> security_framework::passwords::PasswordOptions {
     use core_foundation::base::TCFType;
     use core_foundation::string::{CFString, CFStringRef};
@@ -4252,6 +4151,7 @@ impl AccountTokenStore for PlatformAccountTokenStore {
         }
     }
 
+    #[cfg(test)]
     fn save(&self, token: &str) -> Result<(), String> {
         use security_framework::passwords::{generic_password, set_generic_password_options};
         use security_framework_sys::base::errSecItemNotFound;
@@ -4274,6 +4174,7 @@ impl AccountTokenStore for PlatformAccountTokenStore {
             .map_err(|error| format!("Could not save account token to Keychain: {error}"))
     }
 
+    #[cfg(test)]
     fn delete(&self) -> Result<(), String> {
         use security_framework::passwords::delete_generic_password_options;
         use security_framework_sys::base::errSecItemNotFound;
@@ -4294,10 +4195,12 @@ impl AccountTokenStore for PlatformAccountTokenStore {
         Ok(None)
     }
 
+    #[cfg(test)]
     fn save(&self, _token: &str) -> Result<(), String> {
         Err("Account token Keychain storage is only available on macOS.".to_string())
     }
 
+    #[cfg(test)]
     fn delete(&self) -> Result<(), String> {
         Ok(())
     }
@@ -4315,7 +4218,7 @@ fn request_account_shell_action(
     timeout: Duration,
 ) -> Result<AccountActionResult, String> {
     match action {
-        "appleLogin" | "logout" | "refresh" => {}
+        "browserLogin" | "logout" | "refresh" => {}
         "purchase" | "restore" if variant == AppVariant::MacAppStore => {}
         "purchase" | "restore" => {
             return Err(
@@ -4326,8 +4229,11 @@ fn request_account_shell_action(
         _ => return Err(format!("Unknown account action: {action}")),
     }
     let request = publish_account_shell_request(directory, action)?;
-    let claimed_timeout =
-        matches!(action, "purchase" | "restore").then_some(Duration::from_secs(15 * 60));
+    let claimed_timeout = match action {
+        "browserLogin" => Some(Duration::from_secs(10 * 60)),
+        "purchase" | "restore" => Some(Duration::from_secs(15 * 60)),
+        _ => None,
+    };
     wait_for_account_shell_response(&request, lock_path, timeout, claimed_timeout)
 }
 
@@ -5315,7 +5221,7 @@ mod tests {
     #[test]
     fn account_request_timeout_cancels_host_claim() {
         let directory = account_test_directory("account-request-claimed-timeout");
-        let request = publish_account_shell_request(&directory, "appleLogin").unwrap();
+        let request = publish_account_shell_request(&directory, "browserLogin").unwrap();
         fs::rename(&request.request_path, &request.claimed_path).unwrap();
         let lock_path = directory.join("account-session.lock");
 
@@ -5391,7 +5297,7 @@ mod tests {
     #[test]
     fn account_request_timeout_cannot_overtake_locked_host_commit() {
         let directory = account_test_directory("account-request-locked-commit");
-        let request = publish_account_shell_request(&directory, "appleLogin").unwrap();
+        let request = publish_account_shell_request(&directory, "browserLogin").unwrap();
         fs::rename(&request.request_path, &request.claimed_path).unwrap();
         let lock_path = directory.join("account-session.lock");
         let host_request = request.clone();
@@ -5402,7 +5308,7 @@ mod tests {
                 acquired_tx.send(()).unwrap();
                 std::thread::sleep(Duration::from_millis(100));
                 let response = AccountShellResponse {
-                    title: "Apple Sign In".to_string(),
+                    title: "Browser Sign In".to_string(),
                     message: "Signed in.".to_string(),
                     ok: true,
                     code: "success".to_string(),
