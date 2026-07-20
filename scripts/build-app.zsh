@@ -95,6 +95,17 @@ cat > "$CONTENTS_DIR/Info.plist" <<PLIST
   <string>APPL</string>
   <key>CFBundleIconFile</key>
   <string>AppIcon</string>
+  <key>CFBundleURLTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleURLName</key>
+      <string>as.kargn.cctrans.oauth</string>
+      <key>CFBundleURLSchemes</key>
+      <array>
+        <string>cctrans</string>
+      </array>
+    </dict>
+  </array>
   <key>CFBundleShortVersionString</key>
   <string>$APP_VERSION</string>
   <key>CFBundleVersion</key>

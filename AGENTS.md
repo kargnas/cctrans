@@ -62,13 +62,12 @@ After completed development or documentation work is verified and committed, run
 ## Defaults And Behavior
 
 - Default UI language: English.
-- Default translation target: Korean.
-- Default translation model: app-recommended local Hugging Face Hy-MT2.
+- Default translation target: User System Language.
 - The `appleTranslation` provider uses Apple's on-device Translation framework
   through `AppleTranslationHost` (SwiftUI session host in the keep-alive
   window). It is the only local provider in the MAS variant; the direct build
   offers it alongside Hy-MT2.
-- OpenRouter handles non-local LLM translation and screenshot translation.
+- OpenRouter and CCTrans Cloud handles non-local LLM translation and screenshot translation.
 - Image-output screenshot translation is best-effort on image-generation
   models. Prompts must ask for exact sharp UI text, valid Unicode Hangul
   syllables, native Korean system fonts (`Apple SD Gothic Neo` / `Noto Sans KR`),
