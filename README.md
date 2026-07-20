@@ -22,6 +22,18 @@ Press `Cmd+C` twice in any app — the copied text pops up as a translation toas
 - **Run it all locally if you want** — fast, accurate AI translation on your own machine, from a local model that takes just ~1.3 GB of memory (970 MB on disk).
 - **Or run it all on the smartest LLMs** — CCTrans captures your screen along with the copied text, so the model sees the surrounding context and translates what you actually mean.
 
+## From install to first translation
+
+<p align="center">
+  <img src="docs/media/onboarding-flow.gif" width="640" alt="CCTrans onboarding flow: choose a translation model, grant macOS permissions, and complete the Try It translation test">
+</p>
+
+<p align="center">
+  <strong>Choose Model</strong> → <strong>Grant Permissions</strong> → <strong>Try It</strong>
+  <br>
+  <sub>CCTrans saves your progress at every step, so onboarding resumes where you left off after macOS asks you to <strong>Quit &amp; Reopen</strong> the app.</sub>
+</p>
+
 ## Install
 
 The easiest way to install CCTrans is from the [Mac App Store](https://apps.apple.com/app/cctrans/id6779669255).
