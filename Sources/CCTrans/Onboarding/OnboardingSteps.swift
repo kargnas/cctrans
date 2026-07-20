@@ -132,10 +132,8 @@ private struct ModelOption: Identifiable {
 struct ModelStepView: View {
     @ObservedObject var model: OnboardingFlowModel
 
-    private let columns = [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)]
-
     // Local Model (Python-backed Hy-MT2) cannot run under the App Sandbox, so the
-    // MAS build drops that card entirely (compile-gated so it never links).
+    // MAS build drops that row entirely (compile-gated so it never links).
     private var options: [ModelOption] {
         var rows: [ModelOption] = [
             ModelOption(provider: .appleTranslation, symbol: "apple.logo",
@@ -161,9 +159,13 @@ struct ModelStepView: View {
                         subtitle: "Pick how CCTrans translates. You can fine-tune the model in Settings later."
                     )
 
-                    LazyVGrid(columns: columns, spacing: 12) {
+                    // Vertical rows instead of a 2×2 card grid: the grid's
+                    // minHeight-108 cards pushed the cloud follow-up panel past the
+                    // fixed 520pt window, which hid the anonymous button and
+                    // soft-locked Next. Rows keep the model area ~150pt.
+                    VStack(spacing: 6) {
                         ForEach(options) { option in
-                            ModelCardView(
+                            ModelRowView(
                                 option: option,
                                 isSelected: model.selectedProvider == option.provider,
                                 action: {
@@ -217,31 +219,37 @@ struct ModelStepView: View {
     }
 }
 
-private struct ModelCardView: View {
+private struct ModelRowView: View {
     let option: ModelOption
     let isSelected: Bool
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Image(systemName: option.symbol)
-                        .font(.title3)
-                        .foregroundStyle(isSelected ? Color.accentColor : .primary)
-                    Spacer()
-                    // Checkmark pops in on selection with a little momentum bounce.
-                    if isSelected {
-                        Image(systemName: "checkmark.circle.fill")
-                            .foregroundStyle(Color.accentColor)
-                            .transition(.scale(scale: 0.2).combined(with: .opacity))
-                    }
-                }
-                Text(option.provider.title).font(.headline)
+            HStack(spacing: 10) {
+                // Radio indicator: ring unselected, accent "dot" (thick border,
+                // clear center) when selected — mirrors NSButton radio style.
+                Circle()
+                    .strokeBorder(isSelected ? Color.accentColor : Color.secondary.opacity(0.6),
+                                  lineWidth: isSelected ? 5 : 1.5)
+                    .frame(width: 16, height: 16)
+                    .animation(.spring(response: 0.25, dampingFraction: 0.9), value: isSelected)
+
+                Image(systemName: option.symbol)
+                    .font(.body)
+                    .foregroundStyle(isSelected ? Color.accentColor : .primary)
+                    .frame(width: 22)
+
+                Text(option.provider.title)
+                    .font(.callout.weight(.semibold))
                 Text(option.subtitle)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+
+                Spacer(minLength: 8)
+
                 HStack(spacing: 4) {
                     ForEach(option.badges, id: \.self) { badge in
                         BadgeView(text: badge, tint: .secondary)
@@ -250,17 +258,21 @@ private struct ModelCardView: View {
                         BadgeView(text: "Recommended", tint: .accentColor)
                     }
                 }
+                .fixedSize()
             }
-            .frame(maxWidth: .infinity, minHeight: 108, alignment: .topLeading)
-            .padding(12)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .background(Color(NSColor.controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
             .overlay(
                 RoundedRectangle(cornerRadius: 8)
                     .stroke(isSelected ? Color.accentColor : Color(NSColor.separatorColor),
                             lineWidth: isSelected ? 2 : 1)
             )
+            .contentShape(RoundedRectangle(cornerRadius: 8))
         }
         .buttonStyle(.plain)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 }
 
@@ -332,25 +344,17 @@ private struct OpenRouterKeyField: View {
 }
 
 private struct CloudAccountFollowUp: View {
-    private enum Field: Hashable {
-        case email
-        case password
-    }
-
     @ObservedObject var model: OnboardingFlowModel
-    @FocusState private var focusedField: Field?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             if let account = model.accountState.account {
                 signedInContent(account)
-            } else if model.accountState.isShowingEmailForm {
-                emailContent
             } else {
                 choiceContent
             }
         }
-        .frame(maxWidth: .infinity, minHeight: 210, alignment: .topLeading)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
         .padding(12)
         .background(Color(NSColor.controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
         .overlay(
@@ -363,72 +367,30 @@ private struct CloudAccountFollowUp: View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Use CCTrans Cloud")
                 .font(.caption.weight(.semibold))
-            Button(action: model.signInWithApple) {
-                Label("Continue with Apple", systemImage: "apple.logo")
+            Text("Sign in securely in your browser with Apple, Google, or email.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Button(action: model.signInWithBrowser) {
+                Label("Continue in Browser", systemImage: "safari.fill")
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
             .disabled(model.accountState.isLoading)
-            .accessibilityLabel("Continue with Apple")
+            .accessibilityLabel("Continue in Browser")
 
-            Button(action: model.showEmailAccountForm) {
-                Label("Continue with Email", systemImage: "envelope.fill")
-                    .frame(maxWidth: .infinity)
-            }
-            .disabled(model.accountState.isLoading)
-            .accessibilityLabel("Continue with Email")
-
+            // MAS-only: anonymous cloud translation needs a server-verifiable device
+            // (AppTransaction / App Store receipt on MAS, dev token in QA). Direct
+            // builds have neither — translate() throws .attestUnavailable — so the
+            // button would be dead UI there.
+            #if MAS_BUILD
             Button("Start Free Without an Account", action: model.continueWithoutAccount)
                 .buttonStyle(.link)
                 .disabled(model.accountState.isLoading)
+            #endif
 
             accountStatus
         }
-    }
-
-    private var emailContent: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("Continue with Email")
-                    .font(.caption.weight(.semibold))
-                Spacer()
-                Button(action: model.hideEmailAccountForm) {
-                    Image(systemName: "xmark")
-                }
-                .buttonStyle(.plain)
-                .help("Back to account choices")
-                .accessibilityLabel("Back to account choices")
-            }
-
-            Picker("Email mode", selection: emailModeBinding) {
-                Text("Login").tag(CctransOnboardingAccountState.EmailMode.login)
-                Text("Register").tag(CctransOnboardingAccountState.EmailMode.register)
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .disabled(model.accountState.isLoading)
-
-            TextField("Email", text: $model.accountState.email)
-                .textFieldStyle(.roundedBorder)
-                .focused($focusedField, equals: .email)
-                .onSubmit { focusedField = .password }
-                .disabled(model.accountState.isLoading)
-                .accessibilityLabel("Email address")
-
-            SecureField("Password", text: $model.accountState.password)
-                .textFieldStyle(.roundedBorder)
-                .focused($focusedField, equals: .password)
-                .onSubmit(model.submitEmailAccount)
-                .disabled(model.accountState.isLoading)
-                .accessibilityLabel("Password")
-
-            Button(emailSubmitTitle, action: model.submitEmailAccount)
-                .keyboardShortcut(.defaultAction)
-                .disabled(model.accountState.isLoading)
-
-            accountStatus
-        }
-        .onAppear { focusedField = .email }
     }
 
     private func signedInContent(_ account: CctransAccountSummary) -> some View {
@@ -473,33 +435,25 @@ private struct CloudAccountFollowUp: View {
                     .foregroundStyle(failure == .cancelled ? Color.secondary : Color.red)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
+                #if MAS_BUILD
                 Text("Choose an account option to continue with CCTrans Cloud.")
                     .foregroundStyle(.secondary)
+                #else
+                Text("Sign in to continue with CCTrans Cloud.")
+                    .foregroundStyle(.secondary)
+                #endif
             }
         }
         .font(.caption)
-        .frame(maxWidth: .infinity, minHeight: 34, alignment: .topLeading)
-    }
-
-    private var emailModeBinding: Binding<CctransOnboardingAccountState.EmailMode> {
-        Binding(
-            get: { model.accountState.emailMode },
-            set: { model.selectEmailMode($0) }
-        )
-    }
-
-    private var emailSubmitTitle: String {
-        model.accountState.emailMode == .login ? "Login" : "Register"
+        .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
     private func failureMessage(_ failure: CctransOnboardingAccountState.Failure) -> String {
         switch failure {
-        case let .validation(message), let .request(message):
+        case let .request(message):
             message
         case .cancelled:
-            "Sign in with Apple was cancelled."
-        case .accountLinkRequired:
-            "This Apple email already has an account. Continue with Email, then link Apple in Settings."
+            "Browser sign-in was cancelled."
         }
     }
 
@@ -507,9 +461,7 @@ private struct CloudAccountFollowUp: View {
         switch failure {
         case .cancelled:
             "xmark.circle"
-        case .accountLinkRequired:
-            "person.crop.circle.badge.exclamationmark"
-        case .validation, .request:
+        case .request:
             "exclamationmark.triangle.fill"
         }
     }
