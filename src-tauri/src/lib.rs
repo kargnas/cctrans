@@ -942,6 +942,8 @@ struct TranslationPreviewState {
     model_warning: Option<String>,
     #[serde(rename = "costCredits")]
     cost_credits: Option<f64>,
+    #[serde(rename = "canUpgradeToImage", default)]
+    can_upgrade_to_image: bool,
     #[serde(rename = "toastDuration", default = "default_toast_duration_value")]
     toast_duration: f64,
     #[serde(rename = "requestSequence", default)]
@@ -1824,6 +1826,7 @@ pub fn run() {
             translate_preview_to_language,
             translate_preview_to_model,
             save_translation_preview_position,
+            retranslate_screenshot_as_image,
             close_translation_preview,
             resize_translation_preview,
             open_translation_image_in_preview,
@@ -2406,6 +2409,7 @@ fn sample_translation_preview(settings: &Settings) -> TranslationPreviewState {
         model: selected_model_title(settings),
         model_warning: None,
         cost_credits: None,
+        can_upgrade_to_image: false,
         toast_duration: settings.toast_duration,
         request_sequence: 0,
         caret_x: None,
@@ -4498,6 +4502,11 @@ fn request_host_permission(app: &AppHandle, action: &str) -> Result<ActionResult
 #[serde(rename_all = "camelCase")]
 struct ScreenshotRequest {
     created_at: f64,
+    // Image-upgrade markers: reuse_last + mode=="image" re-runs the retained capture in
+    // image mode instead of a new selection. Omitted (None) on plain capture requests.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mode: Option<String>,
+    reuse_last: bool,
 }
 
 // Screenshot translation must capture the screen as the OUTER CCTrans.app for TCC
@@ -4520,27 +4529,56 @@ fn request_screenshot_translation(
         );
     };
 
-    fs::create_dir_all(&dir)
+    write_screenshot_request(&dir, None, false)?;
+    Ok(action_result(
+        "Screenshot Translation",
+        "Screenshot translation started in CCTrans.",
+        true,
+    ))
+}
+
+// Publish a screenshot trigger for the Swift host, atomically so the watcher never reads
+// a half-written file. mode=Some("image")+reuse_last upgrades the LAST capture in place.
+fn write_screenshot_request(
+    dir: &std::path::Path,
+    mode: Option<&str>,
+    reuse_last: bool,
+) -> Result<(), String> {
+    fs::create_dir_all(dir)
         .map_err(|error| format!("Could not create screenshot-requests dir: {error}"))?;
     let created_at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|error| format!("Clock error: {error}"))?
         .as_secs_f64();
     let nonce = login_request_nonce();
-    let body = serde_json::to_string_pretty(&ScreenshotRequest { created_at })
-        .map_err(|error| format!("Could not encode screenshot request: {error}"))?;
+    let body = serde_json::to_string_pretty(&ScreenshotRequest {
+        created_at,
+        mode: mode.map(str::to_string),
+        reuse_last,
+    })
+    .map_err(|error| format!("Could not encode screenshot request: {error}"))?;
 
-    // Atomic temp + rename so the host watcher never reads a half-written trigger.
     let tmp_path = dir.join(format!(".tmp-req-{nonce}.json"));
     let request_path = dir.join(format!("req-{nonce}.json"));
     fs::write(&tmp_path, &body)
         .map_err(|error| format!("Could not write screenshot request: {error}"))?;
     fs::rename(&tmp_path, &request_path)
         .map_err(|error| format!("Could not publish screenshot request: {error}"))?;
+    Ok(())
+}
 
+// Toast "Translate as Image" upgrade: signal the host to re-run the LAST capture in image
+// mode (nano-banana). No fresh selection — the host reuses its retained PNG. Fire-and-forget
+// like request_screenshot_translation; the host owns the result toast.
+#[tauri::command]
+fn retranslate_screenshot_as_image() -> Result<ActionResult, String> {
+    let Some(dir) = screenshot_requests_dir() else {
+        return Err("Image translation needs the CCTrans host app running.".to_string());
+    };
+    write_screenshot_request(&dir, Some("image"), true)?;
     Ok(action_result(
-        "Screenshot Translation",
-        "Screenshot translation started in CCTrans.",
+        "Translate as Image",
+        "Image translation started in CCTrans.",
         true,
     ))
 }

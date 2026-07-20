@@ -13,6 +13,7 @@ export type TranslationPreviewState = {
   model: string;
   modelWarning: string | null;
   costCredits: number | null;
+  canUpgradeToImage?: boolean;
   toastDuration: number;
   requestSequence?: number;
 };

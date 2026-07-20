@@ -8,6 +8,7 @@ enum ScreenshotCaptureError: LocalizedError {
     case encodingFailed
     case selectionCancelled
     case selectionInProgress
+    case noRetainedScreenshot
     case commandFailed(String)
 
     var errorDescription: String? {
@@ -16,6 +17,8 @@ enum ScreenshotCaptureError: LocalizedError {
             "Screen Recording permission is required for screenshot translation."
         case .captureFailed:
             "Could not capture the screenshot."
+        case .noRetainedScreenshot:
+            "No screenshot to translate. Capture one with ⇧⌘2 first."
         case .encodingFailed:
             "Could not encode the screenshot as PNG."
         case .selectionCancelled:

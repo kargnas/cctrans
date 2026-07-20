@@ -219,15 +219,58 @@ struct OpenRouterScreenContextTests {
             }
         )
 
+        // Image output is now the explicit upgrade path (.image), not the ⇧⌘2 default
+        // (which is cheap vision/text). This exercises the "Translate as Image" upgrade.
+        let result = try await service.translateImage(
+            pngData: Data([0x89, 0x50, 0x4E, 0x47]),
+            settings: settings,
+            credentials: TranslatorCredentials(openRouterAPIKey: "test-key", huggingFaceToken: nil),
+            mode: .image
+        )
+
+        #expect(result.text == "Slack 대화의 맥락상 OKR과 대시보드 운영 방식에 대한 후속 설명입니다.")
+        #expect(result.imageURL == imageURL)
+        #expect(result.model == "google/gemini-3.1-flash-image-preview")
+    }
+
+    // Design C: ⇧⌘2 defaults to cheap vision (text) even for an image-capable model. Edited
+    // image output happens only on the explicit "Translate as Image" upgrade (mode: .image).
+    @Test func screenshotDefaultsToVisionTextEvenWhenModelCanGenerateImages() async throws {
+        let settings = TranslatorSettings(
+            provider: .openRouter,
+            openRouterTextModel: "google/gemini-3.1-flash-image-preview",
+            openRouterVisionModel: "google/gemini-3.1-flash-lite"
+        )
+        let capabilities = OpenRouterModelCapabilities(
+            inputModalities: ["text", "image"],
+            outputModalities: ["image", "text"]
+        )
+        let service = TranslationService(
+            session: stubbedOpenRouterSession { request in
+                let body = try #require(request.jsonBody)
+                // Vision path: structured text output, never image modalities.
+                #expect(body["modalities"] == nil)
+                #expect(body["response_format"] != nil)
+                let messages = try #require(body["messages"] as? [[String: Any]])
+                let content = try #require((messages.last?["content"]) as? [[String: Any]])
+                let prompt = try #require(content.compactMap { $0["text"] as? String }.first)
+                #expect(!prompt.contains("by generating a new image"))
+                #expect(content.contains { $0["type"] as? String == "image_url" })
+                return openRouterResponse("스크린샷 텍스트 번역")
+            },
+            openRouterModelCapabilities: { modelID in
+                modelID == "google/gemini-3.1-flash-image-preview" ? capabilities : nil
+            }
+        )
+
         let result = try await service.translateImage(
             pngData: Data([0x89, 0x50, 0x4E, 0x47]),
             settings: settings,
             credentials: TranslatorCredentials(openRouterAPIKey: "test-key", huggingFaceToken: nil)
         )
 
-        #expect(result.text == "Slack 대화의 맥락상 OKR과 대시보드 운영 방식에 대한 후속 설명입니다.")
-        #expect(result.imageURL == imageURL)
-        #expect(result.model == "google/gemini-3.1-flash-image-preview")
+        #expect(result.text == "스크린샷 텍스트 번역")
+        #expect(result.imageURL == nil)
     }
 
     @Test func screenshotImageOutputRequestOmitsTemperatureAndClampsMaxTokensToCachedLimit() async throws {
@@ -263,7 +306,8 @@ struct OpenRouterScreenContextTests {
         _ = try await service.translateImage(
             pngData: Data([0x89, 0x50, 0x4E, 0x47]),
             settings: settings,
-            credentials: TranslatorCredentials(openRouterAPIKey: "test-key", huggingFaceToken: nil)
+            credentials: TranslatorCredentials(openRouterAPIKey: "test-key", huggingFaceToken: nil),
+            mode: .image
         )
     }
 

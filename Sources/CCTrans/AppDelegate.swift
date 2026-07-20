@@ -22,6 +22,9 @@ struct TranslationPreviewPayload: Encodable {
     var model: String
     var modelWarning: String? = nil
     var costCredits: Double?
+    // A screenshot's text (vision) result offers a one-tap upgrade to an edited image
+    // (nano-banana). Only set for screenshot vision results on image-capable providers.
+    var canUpgradeToImage: Bool = false
     var requestSequence: Int = 0
 }
 
@@ -83,6 +86,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var currentTextTranslationTask: Task<Void, Never>?
     private var currentScreenshotTranslationTask: Task<Void, Never>?
     private var isScreenshotSelectionActive = false
+    // Last ⇧⌘2 capture, kept so the toast's "Translate as Image" upgrade can re-run the
+    // same pixels in image mode without a new region selection.
+    private var lastScreenshotPNG: Data?
     private var didRegisterScreenshotHotKey = false
     private var currentTextTranslationUsesLocalBackend = false
     private var lastReadyLocalModelID: String?
@@ -750,6 +756,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private struct ScreenshotRequest: Decodable {
         let createdAt: Double
+        // Upgrade markers (absent on plain capture requests): reuseLast + mode=="image"
+        // re-runs the retained capture in image mode instead of opening a new selection.
+        let mode: String?
+        let reuseLast: Bool?
     }
 
     private static var screenshotRequestsDirectoryURL: URL {
@@ -794,6 +804,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         let now = Date().timeIntervalSince1970
         var shouldCapture = false
+        var shouldReimage = false
         for url in entries
         where url.lastPathComponent.hasPrefix("req-") && url.pathExtension == "json" {
             defer { try? FileManager.default.removeItem(at: url) }
@@ -804,9 +815,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                   now - request.createdAt <= 30 else {
                 continue
             }
-            shouldCapture = true
+            if request.reuseLast == true, request.mode == "image" {
+                shouldReimage = true
+            } else {
+                shouldCapture = true
+            }
         }
-        if shouldCapture {
+        // An image upgrade and a fresh capture never coexist in one real batch; prefer the
+        // upgrade so it never gets cancelled by a stray capture in the same drain.
+        if shouldReimage {
+            retranslateLastScreenshotAsImage()
+        } else if shouldCapture {
             translateScreenshot()
         }
     }
@@ -1271,39 +1290,72 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 return
             }
 
-            do {
-                let imageInfo = Self.imageInfo(for: data)
-                showTranslationLoading(originalText: "[selected screenshot]", sourceTitle: "Screenshot")
-                let requestSeq = translationRequestSequence
-                onboardingController?.flowModel?.noteTranslationStarted(
-                    requestID: requestSeq,
-                    isEligible: false
-                )
-                let result = try await translationService.translateImage(
-                    pngData: data,
-                    settings: settingsStore.settings,
-                    credentials: credentialsProvider.credentials()
-                )
-                guard !Task.isCancelled else {
-                    return
-                }
-                show(
-                    result: result,
-                    title: "Screenshot",
-                    inputText: "[selected screenshot]",
-                    imageInfo: imageInfo,
-                    requestSeq: requestSeq
-                )
-            } catch is CancellationError {
-                return
-            } catch {
-                guard !Task.isCancelled else {
-                    return
-                }
-                show(error: error, title: "Screenshot", inputText: "[selected screenshot]")
-            }
+            // Retain the capture so a later "Translate as Image" upgrade re-runs on the
+            // SAME pixels — the user never re-selects the region.
+            lastScreenshotPNG = data
+            await runScreenshotTranslation(pngData: data, mode: .vision)
         }
         currentScreenshotTranslationTask = task
+    }
+
+    // Toast "Translate as Image" upgrade: re-run the retained capture in image mode
+    // (nano-banana) without a fresh selection. Drained from a screenshot-request whose
+    // reuseLast+mode=="image" flags mark it as an upgrade rather than a new capture.
+    private func retranslateLastScreenshotAsImage() {
+        guard let pngData = lastScreenshotPNG else {
+            // The button implies a prior capture; if it is gone (e.g. relaunch) surface it
+            // instead of dropping the request silently.
+            show(error: ScreenshotCaptureError.noRetainedScreenshot, title: "Screenshot", inputText: "[selected screenshot]")
+            return
+        }
+        currentTextTranslationTask?.cancel()
+        currentScreenshotTranslationTask?.cancel()
+        let task = Task { [weak self] in
+            guard let self else { return }
+            await runScreenshotTranslation(pngData: pngData, mode: .image)
+        }
+        currentScreenshotTranslationTask = task
+    }
+
+    @MainActor
+    private func runScreenshotTranslation(pngData: Data, mode: ImageTranslationMode) async {
+        do {
+            let imageInfo = Self.imageInfo(for: pngData)
+            showTranslationLoading(originalText: "[selected screenshot]", sourceTitle: "Screenshot")
+            let requestSeq = translationRequestSequence
+            onboardingController?.flowModel?.noteTranslationStarted(
+                requestID: requestSeq,
+                isEligible: false
+            )
+            let result = try await translationService.translateImage(
+                pngData: pngData,
+                settings: settingsStore.settings,
+                credentials: credentialsProvider.credentials(),
+                mode: mode
+            )
+            guard !Task.isCancelled else {
+                return
+            }
+            // Only a text (vision) result can be upgraded, and only when the provider can
+            // actually emit an image; an image result has nothing left to upgrade to.
+            let canUpgradeToImage = mode == .vision
+                && translationService.providerSupportsImageOutput(settingsStore.settings)
+            show(
+                result: result,
+                title: "Screenshot",
+                inputText: "[selected screenshot]",
+                imageInfo: imageInfo,
+                requestSeq: requestSeq,
+                canUpgradeToImage: canUpgradeToImage
+            )
+        } catch is CancellationError {
+            return
+        } catch {
+            guard !Task.isCancelled else {
+                return
+            }
+            show(error: error, title: "Screenshot", inputText: "[selected screenshot]")
+        }
     }
 
     private func performTextTranslation(
@@ -1413,14 +1465,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         inputText: String,
         imageInfo: String?,
         requestSeq: Int,
-        settings: TranslatorSettings? = nil
+        settings: TranslatorSettings? = nil,
+        canUpgradeToImage: Bool = false
     ) {
         requestLogStore.add(source: title, input: inputText, result: result, imageInfo: imageInfo)
         showTranslationResult(
             result,
             inputText: inputText,
             requestSeq: requestSeq,
-            settings: settings ?? settingsStore.settings
+            settings: settings ?? settingsStore.settings,
+            canUpgradeToImage: canUpgradeToImage
         )
     }
 
@@ -1645,7 +1699,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         _ result: TranslationResult,
         inputText: String,
         requestSeq: Int,
-        settings: TranslatorSettings? = nil
+        settings: TranslatorSettings? = nil,
+        canUpgradeToImage: Bool = false
     ) {
         onboardingController?.flowModel?.noteTranslationSucceeded(requestID: requestSeq)
         let settings = settings ?? settingsStore.settings
@@ -1662,7 +1717,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             providerTitle: result.providerTitle,
             model: TranslationPreviewMetadata.modelTitle(for: result, settings: settings),
             modelWarning: TranslationPreviewMetadata.modelWarning(for: result, inputText: inputText, settings: settings),
-            costCredits: result.usage?.costCredits
+            costCredits: result.usage?.costCredits,
+            canUpgradeToImage: canUpgradeToImage
         ), sourceTitle: result.providerTitle, settings: settings)
     }
 

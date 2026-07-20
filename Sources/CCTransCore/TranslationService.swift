@@ -94,6 +94,14 @@ public enum TranslationError: LocalizedError, Sendable, Equatable {
     }
 }
 
+public enum ImageTranslationMode: Sendable {
+    /// Read the text inside the image and return translated TEXT (OCR-style, cheap/fast).
+    case vision
+    /// Edit the image itself and return a translated IMAGE (server nano-banana /
+    /// OpenRouter image output — slow/expensive, only on explicit user upgrade).
+    case image
+}
+
 public final class TranslationService: @unchecked Sendable {
     private let session: URLSession
     private let localBackendGate = LocalBackendExecutionGate()
@@ -247,15 +255,16 @@ public final class TranslationService: @unchecked Sendable {
     public func translateImage(
         pngData: Data,
         settings: TranslatorSettings,
-        credentials: TranslatorCredentials
+        credentials: TranslatorCredentials,
+        mode: ImageTranslationMode = .vision
     ) async throws -> TranslationResult {
         guard !pngData.isEmpty else {
             throw TranslationError.invalidImageData
         }
         if settings.provider == .kargnasManaged {
-            // Screenshot via the managed cloud uses vision mode: the server reads the
-            // image and returns translated text. Same /translate path as text — only the
-            // payload differs — so there is no separate screenshot code path to drift.
+            // Managed cloud reads the image over the same /translate path as text — only
+            // the payload differs. `mode` chooses the server behavior: "vision" returns
+            // translated text, "image" returns an edited (translated) image.
             let languages = TranslationLanguageResolver.resolve(
                 text: "",
                 sourceLanguage: settings.sourceLanguage,
@@ -264,7 +273,7 @@ public final class TranslationService: @unchecked Sendable {
             return try await translateWithManaged(
                 text: nil,
                 imageDataURL: "data:image/png;base64,\(pngData.base64EncodedString())",
-                mode: "vision",
+                mode: mode == .image ? "image" : "vision",
                 languages: languages,
                 credentials: credentials
             )
@@ -275,8 +284,21 @@ public final class TranslationService: @unchecked Sendable {
             throw TranslationError.unsupportedImageModel(selectedModel.id)
         }
 
+        // The requested mode drives output, not just model capability. `.vision` always
+        // returns text; `.image` demands a model that can emit an image (else there is
+        // nothing to upgrade to), so reject up front rather than silently returning text.
+        let wantsImageOutput: Bool
+        switch mode {
+        case .vision:
+            wantsImageOutput = false
+        case .image:
+            guard !selectedModel.usesFallback, modelCapabilities?.supportsImageOutput == true else {
+                throw TranslationError.unsupportedImageModel(selectedModel.id)
+            }
+            wantsImageOutput = true
+        }
+
         let key = try require(credentials.openRouterAPIKey, named: "OPENROUTER_API_KEY")
-        let wantsImageOutput = !selectedModel.usesFallback && modelCapabilities?.supportsImageOutput == true
         let prompt = wantsImageOutput
             ? openRouterScreenshotImagePrompt(targetLanguage: settings.targetLanguage)
             : openRouterScreenshotTextPrompt(targetLanguage: settings.targetLanguage)
@@ -332,6 +354,21 @@ public final class TranslationService: @unchecked Sendable {
             usage: response.usage,
             imageURL: response.imageURL
         )
+    }
+
+    /// Whether the active provider can return a translated IMAGE (not just text) for a
+    /// screenshot. Gates the toast's "Translate as Image" upgrade button so it only shows
+    /// when the upgrade can actually succeed. Mirrors the `.image` guard in translateImage.
+    public func providerSupportsImageOutput(_ settings: TranslatorSettings) -> Bool {
+        switch settings.provider {
+        case .kargnasManaged:
+            return true
+        case .openRouter:
+            let model = openRouterImageTranslationModel(settings: settings)
+            return !model.usesFallback && openRouterModelCapabilities(model.id)?.supportsImageOutput == true
+        default:
+            return false
+        }
     }
 
     private func openRouterImageTranslationModel(settings: TranslatorSettings) -> (id: String, usesFallback: Bool) {

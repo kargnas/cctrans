@@ -2,7 +2,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { onMount } from "svelte";
-  import { ArrowLeftRight, Check, Copy, Cpu, ExternalLink, Eye, Languages, Pin, TriangleAlert, X } from "@lucide/svelte";
+  import { ArrowLeftRight, Camera, Check, Copy, Cpu, ExternalLink, Eye, Languages, Pin, TriangleAlert, X } from "@lucide/svelte";
   import { fallbackTranslationState, type ShowToastResult, type TranslationMode, type TranslationPreviewState } from "./lib/translation";
   import { fallbackState, type OpenRouterModelOption, type SettingsState, type TranslationProvider } from "./lib/settings";
 
@@ -78,6 +78,7 @@
     close: "Close",
     copyCurrent: "Copy",
     copied: "Copied",
+    translateAsImage: "Translate as Image",
     openInPreview: "Preview로 열기",
     pin: "Pin translation",
     unpin: "Unpin translation",
@@ -104,7 +105,18 @@
   const pinVisible = $derived(visibleMode === "translated" || visibleMode === "original");
   const imageResultPersistent = $derived(hasTranslatedImage && pinVisible);
   const autoDismissSuppressed = $derived(pinned || imageResultPersistent);
-  const showCountdown = $derived(!debugMode && visibleMode !== "loading" && !autoDismissSuppressed);
+  const isScreenshotResult = $derived(
+    preview.originalText === "[screen screenshot]" || preview.originalText === "[selected screenshot]"
+  );
+  // A text (vision) screenshot result the provider can turn into an edited image. Hidden
+  // once an image result shows (nothing left to upgrade) and off image-incapable providers.
+  const showUpgradeToImage = $derived(
+    isScreenshotResult && (preview.canUpgradeToImage ?? false) && visibleMode === "translated" && !resultImageURL
+  );
+  // Keep the toast alive while the upgrade is offered so the choice never auto-dismisses.
+  const showCountdown = $derived(
+    !debugMode && visibleMode !== "loading" && !autoDismissSuppressed && !showUpgradeToImage
+  );
   const countdownLabel = $derived(`${countdownRemaining.toFixed(1)}s`);
   const countdownProgressValue = $derived(Math.max(0, Math.min(1, countdownRemaining / countdownDuration)));
   const countdownProgress = $derived(`${countdownProgressValue * 100}%`);
@@ -702,6 +714,21 @@
     }
   }
 
+  // "Translate as Image" upgrade: ask the native host to re-run the retained capture in
+  // image mode. The host owns the result — it writes a new loading→image payload that the
+  // preview-update effect renders — so this only signals and optimistically shows loading.
+  async function upgradeToImage() {
+    if (!isTauri || visibleMode === "loading") return;
+    const previous = visibleMode;
+    visibleMode = "loading";
+    try {
+      await invoke("retranslate_screenshot_as_image");
+    } catch {
+      // Request could not be published; keep the text result and its upgrade button.
+      visibleMode = previous;
+    }
+  }
+
   function canDismissFromOutsideClick() {
     if (visibleMode === "loading") return false;
     if (pinned || imageResultPersistent) return false;
@@ -890,6 +917,11 @@
             </select>
           </label>
           <div class="action-row">
+            {#if showUpgradeToImage}
+              <button class="small-button" onclick={upgradeToImage}>
+                <Camera size={14} />{uiStrings.translateAsImage}
+              </button>
+            {/if}
             {#if modelOptions.length > 1}
               <label class="model-select-shell" aria-label="Model">
                 <Cpu size={16} />
