@@ -548,7 +548,7 @@
           translatedText: `${preview.originalText} (${option.label})`
         };
       }
-      visibleMode = preview.mode === "error" ? "error" : "translated";
+      visibleMode = preview.mode === "error" ? "error" : preview.mode === "loading" ? "loading" : "translated";
       await loadModelOptions();
     } catch (error) {
       preview = {
@@ -561,7 +561,9 @@
       visibleMode = "error";
     } finally {
       isChangingModel = false;
-      if (visibleMode === "loading") {
+      // A screenshot re-run deliberately returns a loading state (the image re-translates async and
+      // the 200ms poll fills it in). Only revert loading when it wasn't that intentional reroute.
+      if (visibleMode === "loading" && preview.mode !== "loading") {
         visibleMode = previousMode;
       }
       syncSelectedModel();
@@ -593,7 +595,7 @@
           translatedText: `${preview.originalText} (${option.label})`
         };
       }
-      visibleMode = preview.mode === "error" ? "error" : "translated";
+      visibleMode = preview.mode === "error" ? "error" : preview.mode === "loading" ? "loading" : "translated";
       await loadModelOptions();
     } catch (error) {
       preview = {
@@ -605,7 +607,9 @@
       visibleMode = "error";
     } finally {
       isChangingLanguage = false;
-      if (visibleMode === "loading") {
+      // A screenshot re-run deliberately returns a loading state (the image re-translates async and
+      // the 200ms poll fills it in). Only revert loading when it wasn't that intentional reroute.
+      if (visibleMode === "loading" && preview.mode !== "loading") {
         visibleMode = previousMode;
       }
       syncSelectedTargetLanguage();

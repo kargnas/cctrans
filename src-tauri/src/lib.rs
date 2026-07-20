@@ -1242,6 +1242,13 @@ struct PreviewStreamEvent {
     final_text: Option<String>,
 }
 
+// A screenshot result's `original_text` is only a placeholder (the input was an image, not text).
+// Mirrors the Swift source of truth `TranslationPreviewMetadata.isScreenshotPlaceholder` so both
+// sides agree on which previews have no real source text to re-run through the text translator.
+fn is_screenshot_placeholder(text: &str) -> bool {
+    matches!(text.trim(), "[selected screenshot]" | "[screen screenshot]")
+}
+
 fn retranslate_preview(
     app: &AppHandle,
     settings: Settings,
@@ -1249,8 +1256,35 @@ fn retranslate_preview(
 ) -> Result<TranslationPreviewState, String> {
     let mut state = read_translation_preview_state(app)?
         .unwrap_or_else(|| sample_translation_preview(&settings));
+    // Screenshot results have no real source text — only a placeholder. Capture the result kind
+    // BEFORE prepare_translation_preview_for_retranslate() clears translated_image_url below.
+    let was_image_result = state.translated_image_url.is_some();
+    let is_screenshot = is_screenshot_placeholder(&state.original_text);
     prepare_translation_preview_for_retranslate(&mut state, &settings, target_language);
-    if state.original_text.trim().is_empty() || state.original_text == "[screen screenshot]" {
+    if is_screenshot {
+        if was_image_result {
+            // Re-run the retained screenshot in image mode instead of translating the placeholder
+            // string. The command wrapper already wrote the new language/model to settings, so the
+            // Swift host re-runs with them — the same proven path as the "Translate as Image" button.
+            state.mode = "loading".to_string();
+            state.translated_text = String::new();
+            state.translated_image_url = None;
+            state.error_text = None;
+            write_translation_preview_state(app, &state)?;
+            let dir = shared_data_dir(app)?.join("screenshot-requests");
+            write_screenshot_request(&dir, Some("image"), true)?;
+        } else {
+            // Vision (text) screenshot result: the only "source" is the placeholder, so there is
+            // nothing to re-run here. Surface an honest error instead of translating "[selected
+            // screenshot]" into garbage.
+            state.mode = "error".to_string();
+            state.error_text =
+                Some("Take a new screenshot to translate into another language.".to_string());
+            write_translation_preview_state(app, &state)?;
+        }
+        return Ok(state);
+    }
+    if state.original_text.trim().is_empty() {
         state.mode = "error".to_string();
         state.error_text = Some("Cannot retranslate this preview without source text.".to_string());
         write_translation_preview_state(app, &state)?;
