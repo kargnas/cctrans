@@ -1,6 +1,7 @@
 .build/
 .build-mas/
 .build-mas-check/
+.build-mas-review/
 .swiftpm/
 DerivedData/
 dist/
