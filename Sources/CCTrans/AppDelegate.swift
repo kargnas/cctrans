@@ -1439,6 +1439,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             } catch is CancellationError {
                 return
             } catch {
+                // URLSession reports a cancelled request as URLError(.cancelled), not CancellationError.
+                guard !Task.isCancelled else {
+                    return
+                }
                 if shouldAnnounceWarmup, let warmupModel {
                     localModelWarmupNotifier.failed(modelTitle: warmupModel.title, error: error)
                 }
