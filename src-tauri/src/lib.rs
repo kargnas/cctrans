@@ -927,6 +927,8 @@ struct TranslationPreviewState {
     target_language: String,
     #[serde(rename = "didReverseBecauseLanguagesMatched", default)]
     did_reverse_because_languages_matched: bool,
+    #[serde(rename = "targetLanguageWasManuallySelected", default)]
+    target_language_was_manually_selected: bool,
     #[serde(rename = "originalText")]
     original_text: String,
     #[serde(rename = "translatedText")]
@@ -2434,6 +2436,7 @@ fn sample_translation_preview(settings: &Settings) -> TranslationPreviewState {
         source_language: "English".to_string(),
         target_language: settings.target_language.clone(),
         did_reverse_because_languages_matched: false,
+        target_language_was_manually_selected: false,
         original_text: "The future belongs to those who believe in the beauty of their dreams."
             .to_string(),
         translated_text: "미래는 자신의 꿈의 아름다움을 믿는 사람들의 것이다.".to_string(),
@@ -2505,6 +2508,10 @@ fn prepare_translation_preview_for_retranslate(
     target_language: Option<String>,
 ) {
     let explicit_target_language = target_language.is_some();
+    // A manual choice belongs to this persisted preview only. A new Swift translation replaces the
+    // preview without this marker, restoring normal automatic target reversal for the next request.
+    let target_language_was_manually_selected =
+        explicit_target_language || state.target_language_was_manually_selected;
     let target_language = target_language
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
@@ -2517,14 +2524,16 @@ fn prepare_translation_preview_for_retranslate(
             }
         });
 
-    let (resolved_target, did_reverse) =
-        if !explicit_target_language && state.did_reverse_because_languages_matched {
-            (target_language, true)
-        } else {
-            resolve_preview_target_language(&state.source_language, &target_language)
-        };
+    let (resolved_target, did_reverse) = if target_language_was_manually_selected {
+        (target_language, false)
+    } else if state.did_reverse_because_languages_matched {
+        (target_language, true)
+    } else {
+        resolve_preview_target_language(&state.source_language, &target_language)
+    };
     state.target_language = resolved_target;
     state.did_reverse_because_languages_matched = did_reverse;
+    state.target_language_was_manually_selected = target_language_was_manually_selected;
     state.toast_duration = settings.toast_duration;
     state.provider_title = provider_title(&settings.provider).to_string();
     state.model = selected_model_title(settings);
@@ -5824,6 +5833,7 @@ mod tests {
         assert!(state.model_warning.is_none());
         assert!(state.translated_image_url.is_none());
         assert!(!state.did_reverse_because_languages_matched);
+        assert!(!state.target_language_was_manually_selected);
         assert!(!state.anchor_bottom);
     }
 
@@ -5834,6 +5844,7 @@ mod tests {
             "originalText":"hi","translatedText":"안녕","errorText":null,
             "providerTitle":"Local Model","model":"m","costCredits":null,
             "didReverseBecauseLanguagesMatched":true,
+            "targetLanguageWasManuallySelected":true,
             "translatedImageURL":"data:image/png;base64,abc",
             "modelWarning":"Vision model used","requestSequence":7,
             "caretX":10.0,"caretY":20.0,"caretW":2.0,"caretH":18.0,"anchorBottom":true
@@ -5843,6 +5854,7 @@ mod tests {
         assert_eq!(state.caret_x, Some(10.0));
         assert_eq!(state.model_warning.as_deref(), Some("Vision model used"));
         assert!(state.did_reverse_because_languages_matched);
+        assert!(state.target_language_was_manually_selected);
         assert_eq!(
             state.translated_image_url.as_deref(),
             Some("data:image/png;base64,abc")
@@ -5852,6 +5864,7 @@ mod tests {
         assert!(encoded.contains("\"modelWarning\":\"Vision model used\""));
         assert!(encoded.contains("\"translatedImageURL\":\"data:image/png;base64,abc\""));
         assert!(encoded.contains("\"didReverseBecauseLanguagesMatched\":true"));
+        assert!(encoded.contains("\"targetLanguageWasManuallySelected\":true"));
         assert!(encoded.contains("\"requestSequence\":7"));
         assert!(encoded.contains("\"anchorBottom\":true"));
     }
@@ -6353,6 +6366,28 @@ mod tests {
 
         assert_eq!(state.target_language, "English");
         assert!(state.did_reverse_because_languages_matched);
+    }
+
+    #[test]
+    fn preview_manual_target_language_disables_auto_reverse_for_current_preview() {
+        let settings = default_settings();
+        let mut state = sample_translation_preview(&settings);
+        state.source_language = "Korean".to_string();
+        state.target_language = "English".to_string();
+
+        prepare_translation_preview_for_retranslate(
+            &mut state,
+            &settings,
+            Some("Korean".to_string()),
+        );
+
+        assert_eq!(state.target_language, "Korean");
+        assert!(!state.did_reverse_because_languages_matched);
+
+        prepare_translation_preview_for_retranslate(&mut state, &settings, None);
+
+        assert_eq!(state.target_language, "Korean");
+        assert!(!state.did_reverse_because_languages_matched);
     }
 
     #[test]
