@@ -37,6 +37,10 @@ struct ScreenContextCaptureResult {
 }
 
 enum ScreenshotCapture {
+    // ponytail: 700 KiB keeps base64 JSON below the observed HTTP/3 upload stall;
+    // raise this only after the managed API accepts binary/multipart image bodies.
+    private static let maximumTranslationPNGBytes = 700 * 1024
+
     static func captureMainDisplayPNG() async throws -> Data {
         try await captureMainDisplayPNG(outputScale: .point1x)
     }
@@ -95,17 +99,10 @@ enum ScreenshotCapture {
         filter.includeMenuBar = true
 
         let configuration = SCStreamConfiguration()
-        switch outputScale {
-        case .native:
-            configuration.width = display.width
-            configuration.height = display.height
-            configuration.scalesToFit = false
-        case .point1x, .contextCrop:
-            let bounds = CGDisplayBounds(display.displayID)
-            configuration.width = max(1, Int(bounds.width.rounded()))
-            configuration.height = max(1, Int(bounds.height.rounded()))
-            configuration.scalesToFit = true
-        }
+        let bounds = CGDisplayBounds(display.displayID)
+        configuration.width = max(1, Int(bounds.width.rounded()))
+        configuration.height = max(1, Int(bounds.height.rounded()))
+        configuration.scalesToFit = true
         configuration.showsCursor = false
 
         let image = try await captureImage(filter: filter, configuration: configuration)
@@ -120,7 +117,9 @@ enum ScreenshotCapture {
     private static func captureSelectedRegionWithSystemScreencapture() throws -> Data {
         try captureWithSystemScreencapture(
             arguments: ["-i", "-s", "-x", "-t", "png"],
-            outputScale: .native,
+            // Retina native pixels can push the base64 JSON body past Vapor's request limit.
+            // Start at one logical pixel per point; the shared byte cap may shrink it further.
+            outputScale: .point1x,
             treatsMissingOutputAsCancellation: true
         )
     }
@@ -196,10 +195,21 @@ enum ScreenshotCapture {
         }
 
         let bounds = CGDisplayBounds(CGMainDisplayID())
-        let targetWidth = max(1, Int(bounds.width.rounded()))
-        let targetHeight = max(1, Int(bounds.height.rounded()))
-        let image: CGImage
-        if source.width > targetWidth || source.height > targetHeight {
+        let displayScale = min(
+            1,
+            bounds.width / CGFloat(source.width),
+            bounds.height / CGFloat(source.height)
+        )
+        let byteScale = data.count > maximumTranslationPNGBytes
+            ? min(0.9, sqrt(Double(maximumTranslationPNGBytes) / Double(data.count)) * 0.9)
+            : 1
+        var scale = min(displayScale, CGFloat(byteScale))
+        var image = source
+        var resized = data
+
+        while scale < 1 {
+            let targetWidth = max(1, Int((CGFloat(image.width) * scale).rounded()))
+            let targetHeight = max(1, Int((CGFloat(image.height) * scale).rounded()))
             guard let context = CGContext(
                 data: nil,
                 width: targetWidth,
@@ -218,14 +228,17 @@ enum ScreenshotCapture {
                 throw ScreenshotCaptureError.encodingFailed
             }
             image = resizedImage
-        } else {
-            image = source
+
+            let bitmap = NSBitmapImageRep(cgImage: image)
+            guard let encoded = bitmap.representation(using: .png, properties: [:]) else {
+                throw ScreenshotCaptureError.encodingFailed
+            }
+            resized = encoded
+            scale = resized.count > maximumTranslationPNGBytes
+                ? min(0.9, CGFloat(sqrt(Double(maximumTranslationPNGBytes) / Double(resized.count)) * 0.9))
+                : 1
         }
 
-        let bitmap = NSBitmapImageRep(cgImage: image)
-        guard let resized = bitmap.representation(using: .png, properties: [:]) else {
-            throw ScreenshotCaptureError.encodingFailed
-        }
         return resized
     }
 
@@ -273,7 +286,6 @@ enum ScreenshotCapture {
     }
 
     private enum OutputScale {
-        case native
         case point1x
         case contextCrop
     }
