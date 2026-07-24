@@ -138,6 +138,7 @@ public enum TranslationLanguageDetector {
         var japanese = 0
         var chinese = 0
         var arabic = 0
+        var latin = 0
 
         for scalar in text.unicodeScalars {
             switch scalar.value {
@@ -149,11 +150,17 @@ public enum TranslationLanguageDetector {
                 chinese += 1
             case 0x0600...0x06FF, 0x0750...0x077F:
                 arabic += 1
+            case 0x0041...0x005A, 0x0061...0x007A, 0x00C0...0x024F:
+                latin += 1
             default:
                 continue
             }
         }
 
+        // A CJK/Arabic script only wins when it is the majority of the
+        // letter-bearing characters. Without the Latin count, a single Korean
+        // word inside an English sentence ("I love 김치") would flip detection
+        // to Korean; NLLanguageRecognizer handles the mixed-script remainder.
         let counts = [
             ("Korean", korean),
             ("Japanese", japanese),
@@ -161,7 +168,8 @@ public enum TranslationLanguageDetector {
             ("Arabic", arabic),
         ]
         guard let maxCount = counts.max(by: { $0.1 < $1.1 }),
-              maxCount.1 >= 2 else {
+              maxCount.1 >= 2,
+              maxCount.1 > latin else {
             return nil
         }
         return maxCount.0

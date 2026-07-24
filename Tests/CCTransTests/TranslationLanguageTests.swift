@@ -40,6 +40,30 @@ import Testing
     #expect(languages.didReverseBecauseLanguagesMatched)
 }
 
+@Test func detectsEnglishWhenKoreanIsMinority() {
+    let languages = TranslationLanguageResolver.resolve(
+        text: "I love 김치 very much",
+        sourceLanguage: TranslationLanguage.auto,
+        targetLanguage: "Korean"
+    )
+
+    #expect(languages.sourceLanguage == "English")
+    #expect(languages.targetLanguage == "Korean")
+    #expect(languages.detectedSourceLanguage == "English")
+    #expect(!languages.didReverseBecauseLanguagesMatched)
+}
+
+@Test func detectsEnglishWhenSingleKoreanCharInLongText() {
+    let languages = TranslationLanguageResolver.resolve(
+        text: "Hello world 김",
+        sourceLanguage: TranslationLanguage.auto,
+        targetLanguage: "Korean"
+    )
+
+    #expect(languages.sourceLanguage == "English")
+    #expect(languages.targetLanguage == "Korean")
+}
+
 @Test func registryExposesDefaultAndBenchmarkModels() {
     let model = LocalModelRegistry.defaultModel()
     #expect(model.id == LocalModelRegistry.defaultModelID)
