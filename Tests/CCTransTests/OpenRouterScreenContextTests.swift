@@ -21,6 +21,10 @@ struct OpenRouterScreenContextTests {
             #expect(sort["partition"] as? String == "none")
 
             let messages = try #require(body["messages"] as? [[String: Any]])
+            let systemMessage = try #require(messages.first)
+            let systemPrompt = try #require(systemMessage["content"] as? String)
+            #expect(systemPrompt.contains("<translation_contract>"))
+            #expect(systemPrompt.contains(#"<target_language_persona code="ko">"#))
             let userMessage = try #require(messages.last)
             let content = try #require(userMessage["content"] as? [[String: Any]])
             #expect(content.contains { $0["type"] as? String == "image_url" })
@@ -28,8 +32,10 @@ struct OpenRouterScreenContextTests {
             let imageURL = try #require(image["image_url"] as? [String: Any])
             #expect(imageURL["detail"] as? String == "low")
             let prompt = try #require(content.compactMap { $0["text"] as? String }.first)
-            #expect(prompt.contains("Do not translate the full sentence visible in the screen image."))
-            #expect(prompt.contains("Translate exactly the text inside <selected_text>."))
+            let promptData = try #require(prompt.data(using: .utf8))
+            let payload = try #require(JSONSerialization.jsonObject(with: promptData) as? [String: Any])
+            #expect(payload["selected_text"] as? String == "Translate this.")
+            #expect(payload["target_language"] as? String == "Korean")
 
             let responseFormat = try #require(body["response_format"] as? [String: Any])
             let jsonSchema = try #require(responseFormat["json_schema"] as? [String: Any])
@@ -64,13 +70,11 @@ struct OpenRouterScreenContextTests {
         let service = TranslationService(session: stubbedOpenRouterSession { request in
             let body = try #require(request.jsonBody)
             let messages = try #require(body["messages"] as? [[String: Any]])
-            let userMessage = try #require(messages.last)
-            let content = try #require(userMessage["content"] as? [[String: Any]])
-            let prompt = try #require(content.compactMap { $0["text"] as? String }.first)
-            #expect(prompt.contains("translate the pronoun \"it\" literally as \"그것\""))
-            #expect(prompt.contains("Treat the text inside <selected_text> as the only source text."))
-            #expect(prompt.contains("Write every returned string value in Korean"))
-            #expect(!prompt.contains("Copy this brand new sentence twice to translate it."))
+            let systemMessage = try #require(messages.first)
+            let prompt = try #require(systemMessage["content"] as? String)
+            #expect(prompt.contains("Use standard forms such as 두 번."))
+            #expect(prompt.contains("Omit recoverable subjects and pronouns"))
+            #expect(!prompt.contains("translate the pronoun \"it\" literally as \"그것\""))
             return openRouterResponse(
                 "그것",
                 description: "이 문장에서 '그것'은 복사하려는 문장 전체를 의미합니다."
@@ -86,6 +90,38 @@ struct OpenRouterScreenContextTests {
 
         #expect(result.text == "그것")
         #expect(result.description == "이 문장에서 '그것'은 복사하려는 문장 전체를 의미합니다.")
+    }
+
+    @Test func openRouterTextAppliesStyleOverlayWithoutChangingResponseContract() async throws {
+        let settings = TranslatorSettings(
+            provider: .openRouter,
+            openRouterTextModel: "openrouter/text-model",
+            sourceLanguage: "English",
+            targetLanguage: "Korean"
+        )
+        let service = TranslationService(session: stubbedOpenRouterSession { request in
+            let body = try #require(request.jsonBody)
+            let messages = try #require(body["messages"] as? [[String: Any]])
+            let systemMessage = try #require(messages.first)
+            let prompt = try #require(systemMessage["content"] as? String)
+            #expect(prompt.contains("Style applies only to the translation; keep description neutral."))
+            let userMessage = try #require(messages.last)
+            let request = try #require(userMessage["content"] as? String)
+            let requestData = try #require(request.data(using: .utf8))
+            let payload = try #require(JSONSerialization.jsonObject(with: requestData) as? [String: Any])
+            #expect(payload["style_instructions"] as? [String] == ["Use a cheeky but non-insulting voice."])
+            #expect(body["response_format"] != nil)
+            return openRouterResponse("토큰 또 만료됐네.")
+        })
+
+        let result = try await service.translateText(
+            "The token expired again.",
+            settings: settings,
+            credentials: TranslatorCredentials(openRouterAPIKey: "test-key", huggingFaceToken: nil),
+            style: TranslationStyle(instructions: ["Use a cheeky but non-insulting voice."])
+        )
+
+        #expect(result.text == "토큰 또 만료됐네.")
     }
 
     @Test func openRouterTextRejectsKnownTextOnlyModelWhenScreenContextIsProvided() async throws {
@@ -120,12 +156,18 @@ struct OpenRouterScreenContextTests {
             #expect(body["models"] == nil)
 
             let messages = try #require(body["messages"] as? [[String: Any]])
+            let systemMessage = try #require(messages.first)
+            let systemPrompt = try #require(systemMessage["content"] as? String)
+            #expect(systemPrompt.contains("Read and translate all visible human-readable text"))
+            #expect(systemPrompt.contains(#"<target_language_persona code="ko">"#))
             let userMessage = try #require(messages.last)
             let content = try #require(userMessage["content"] as? [[String: Any]])
             #expect(content.contains { $0["type"] as? String == "image_url" })
-            let prompt = try #require(content.compactMap { $0["text"] as? String }.first)
-            #expect(prompt.contains("description: short Korean context note"))
-            #expect(prompt.contains("Write every returned string value in Korean"))
+            let request = try #require(content.compactMap { $0["text"] as? String }.first)
+            let requestData = try #require(request.data(using: .utf8))
+            let payload = try #require(JSONSerialization.jsonObject(with: requestData) as? [String: Any])
+            #expect(payload["operation"] as? String == "translate_visible_text")
+            #expect(payload["target_language"] as? String == "Korean")
 
             return openRouterResponse("선택 영역 번역")
         })
@@ -189,27 +231,21 @@ struct OpenRouterScreenContextTests {
                 #expect(body["modalities"] as? [String] == ["image", "text"])
 
                 let messages = try #require(body["messages"] as? [[String: Any]])
+                let systemMessage = try #require(messages.first)
+                let systemPrompt = try #require(systemMessage["content"] as? String)
+                #expect(systemPrompt.contains("Return an edited version of the supplied screenshot"))
+                #expect(systemPrompt.contains("Preserve layout, spacing, line wrapping, colors, icons, avatars, hierarchy, and app chrome"))
+                #expect(systemPrompt.contains("Render exact Unicode text in a real UI font"))
+                #expect(systemPrompt.contains("valid Unicode Hangul"))
+                #expect(systemPrompt.contains("Apple SD Gothic Neo"))
+                #expect(systemPrompt.contains("If only one output can be returned, return the edited image"))
                 let userMessage = try #require(messages.last)
                 let content = try #require(userMessage["content"] as? [[String: Any]])
-                let prompt = try #require(content.compactMap { $0["text"] as? String }.first)
-                #expect(prompt.contains("by generating a new image"))
-                #expect(prompt.contains("return the edited screenshot image"))
-                #expect(prompt.contains("Do not satisfy this request with text-only"))
-                #expect(prompt.contains("Return an edited screenshot image, not OCR text."))
-                #expect(prompt.contains("do not redraw, reinterpret, or recompose the app UI"))
-                #expect(prompt.contains("separate text layer for every translated phrase"))
-                #expect(prompt.contains("real Korean font rasterizer"))
-                #expect(prompt.contains("No misspellings, no extra words, no distorted letters"))
-                #expect(prompt.contains("valid Unicode Hangul syllable"))
-                #expect(prompt.contains("Apple SD Gothic Neo Regular, Noto Sans KR Regular"))
-                #expect(prompt.contains("rasterized app text from a font file"))
-                #expect(prompt.contains("Body paragraphs must be Regular 400"))
-                #expect(prompt.contains("visibly thinner than usernames"))
-                #expect(prompt.contains("AI-looking smeared characters"))
-                #expect(prompt.contains("Do not make the text heavier"))
-                #expect(prompt.contains("short Korean context note"))
-                #expect(prompt.contains("do not leave the text content empty"))
-                #expect(prompt.contains("do not write English or the source language"))
+                let request = try #require(content.compactMap { $0["text"] as? String }.first)
+                let requestData = try #require(request.data(using: .utf8))
+                let payload = try #require(JSONSerialization.jsonObject(with: requestData) as? [String: Any])
+                #expect(payload["operation"] as? String == "translate_visible_text_and_edit_image")
+                #expect(payload["target_language"] as? String == "Korean")
                 #expect(content.contains { $0["type"] as? String == "image_url" })
 
                 return openRouterImageResponse(content: "Slack 대화의 맥락상 OKR과 대시보드 운영 방식에 대한 후속 설명입니다.", imageURL: imageURL)
@@ -252,9 +288,14 @@ struct OpenRouterScreenContextTests {
                 #expect(body["modalities"] == nil)
                 #expect(body["response_format"] != nil)
                 let messages = try #require(body["messages"] as? [[String: Any]])
+                let systemPrompt = try #require(messages.first?["content"] as? String)
+                #expect(systemPrompt.contains("Read and translate all visible human-readable text"))
+                #expect(!systemPrompt.contains("Return an edited version of the supplied screenshot"))
                 let content = try #require((messages.last?["content"]) as? [[String: Any]])
-                let prompt = try #require(content.compactMap { $0["text"] as? String }.first)
-                #expect(!prompt.contains("by generating a new image"))
+                let request = try #require(content.compactMap { $0["text"] as? String }.first)
+                let requestData = try #require(request.data(using: .utf8))
+                let payload = try #require(JSONSerialization.jsonObject(with: requestData) as? [String: Any])
+                #expect(payload["operation"] as? String == "translate_visible_text")
                 #expect(content.contains { $0["type"] as? String == "image_url" })
                 return openRouterResponse("스크린샷 텍스트 번역")
             },
@@ -366,13 +407,15 @@ struct OpenRouterScreenContextTests {
             let body = try #require(request.jsonBody)
             let messages = try #require(body["messages"] as? [[String: Any]])
             let systemMessage = try #require(messages.first)
-            #expect(!(systemMessage["content"] as? String ?? "").contains("Return only"))
+            let systemPrompt = try #require(systemMessage["content"] as? String)
+            #expect(!systemPrompt.contains("Return only"))
+            #expect(systemPrompt.contains("Preserve meaning, facts, intent"))
+            #expect(systemPrompt.contains("paragraph breaks, and line breaks"))
             let userMessage = try #require(messages.last)
-            let prompt = try #require(userMessage["content"] as? String)
-            #expect(prompt.contains("Preserve source paragraph breaks and line breaks"))
-            #expect(prompt.contains("first line\nsecond line"))
-            #expect(!prompt.contains("Only output"))
-            #expect(!prompt.contains("additional explanation"))
+            let request = try #require(userMessage["content"] as? String)
+            let requestData = try #require(request.data(using: .utf8))
+            let payload = try #require(JSONSerialization.jsonObject(with: requestData) as? [String: Any])
+            #expect(payload["selected_text"] as? String == "first line\nsecond line")
             return openRouterResponse("첫 줄\n둘째 줄")
         })
 
@@ -519,12 +562,14 @@ struct OpenRouterScreenContextTests {
             #expect(streamOptions["include_usage"] as? Bool == true)
 
             let messages = try #require(body["messages"] as? [[String: Any]])
+            let systemMessage = try #require(messages.first)
+            let systemPrompt = try #require(systemMessage["content"] as? String)
+            #expect(systemPrompt.contains("Return only the translated selected text"))
             let userMessage = try #require(messages.last)
-            let prompt = try #require(userMessage["content"] as? String)
-            #expect(prompt.contains("Translate <selected_text>."))
-            #expect(!prompt.contains("Only output"))
-            #expect(!prompt.contains("additional explanation"))
-            #expect(!prompt.contains("Translation:"))
+            let request = try #require(userMessage["content"] as? String)
+            let requestData = try #require(request.data(using: .utf8))
+            let payload = try #require(JSONSerialization.jsonObject(with: requestData) as? [String: Any])
+            #expect(payload["selected_text"] as? String == "Hello world")
 
             return openRouterStreamResponse(chunks: ["안녕", "하세요", " 세계"])
         })

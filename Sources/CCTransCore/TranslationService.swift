@@ -59,6 +59,7 @@ public enum TranslationError: LocalizedError, Sendable, Equatable {
     case invalidImageData
     case localModelUnavailable(String)
     case unsupportedImageModel(String)
+    case unsupportedStyle(TranslationProvider)
     case appleLanguagePackMissing(targetName: String)
     // CCTrans Cloud hit a quota/cap boundary. Carries only the server's display copy
     // (§3 secret boundary — no numbers). Rendered verbatim; `cta` is held for when
@@ -83,6 +84,8 @@ public enum TranslationError: LocalizedError, Sendable, Equatable {
             message
         case let .unsupportedImageModel(model):
             "\(OpenRouterModelCatalog.title(for: model)) cannot read images. Choose a Text + Image model for screenshot translation."
+        case let .unsupportedStyle(provider):
+            "\(provider.title) cannot apply translation styles. Choose Local Model or OpenRouter LLM."
         case let .appleLanguagePackMissing(targetName):
             "\(targetName) translation isn’t downloaded. Open CCTrans ▸ Getting Started… and tap Download to install it."
         case let .managedBlocked(title, body, _):
@@ -125,6 +128,7 @@ public final class TranslationService: @unchecked Sendable {
         _ text: String,
         settings: TranslatorSettings,
         credentials: TranslatorCredentials,
+        style: TranslationStyle? = nil,
         contextImagePNGData: Data? = nil,
         onPartial: (@Sendable (String) -> Void)? = nil
     ) async throws -> TranslationResult {
@@ -138,6 +142,11 @@ public final class TranslationService: @unchecked Sendable {
             sourceLanguage: settings.sourceLanguage,
             targetLanguage: settings.targetLanguage
         )
+        if style?.instructions.isEmpty == false,
+           settings.provider != .localHyMT2,
+           settings.provider != .openRouter {
+            throw TranslationError.unsupportedStyle(settings.provider)
+        }
 
         switch settings.provider {
         case .localHyMT2:
@@ -145,7 +154,8 @@ public final class TranslationService: @unchecked Sendable {
                 text: trimmed,
                 settings: settings,
                 credentials: credentials,
-                languages: languages
+                languages: languages,
+                style: style
             )
         case .appleTranslation:
             return try await translateWithAppleTranslation(
@@ -159,6 +169,7 @@ public final class TranslationService: @unchecked Sendable {
                 credentials: credentials,
                 contextImagePNGData: contextImagePNGData,
                 languages: languages,
+                style: style,
                 onPartial: onPartial
             )
         case .kargnasManaged:
@@ -256,10 +267,14 @@ public final class TranslationService: @unchecked Sendable {
         pngData: Data,
         settings: TranslatorSettings,
         credentials: TranslatorCredentials,
-        mode: ImageTranslationMode = .vision
+        mode: ImageTranslationMode = .vision,
+        style: TranslationStyle? = nil
     ) async throws -> TranslationResult {
         guard !pngData.isEmpty else {
             throw TranslationError.invalidImageData
+        }
+        if style?.instructions.isEmpty == false, settings.provider == .kargnasManaged {
+            throw TranslationError.unsupportedStyle(settings.provider)
         }
         if settings.provider == .kargnasManaged {
             // Managed cloud reads the image over the same /translate path as text — only
@@ -299,23 +314,25 @@ public final class TranslationService: @unchecked Sendable {
         }
 
         let key = try require(credentials.openRouterAPIKey, named: "OPENROUTER_API_KEY")
-        let prompt = wantsImageOutput
-            ? openRouterScreenshotImagePrompt(targetLanguage: settings.targetLanguage)
-            : openRouterScreenshotTextPrompt(targetLanguage: settings.targetLanguage)
+        let prompt = TranslationPromptBuilder.screenshot(
+            targetLanguage: settings.targetLanguage,
+            imageOutput: wantsImageOutput,
+            style: style
+        )
 
         var body: [String: Any] = [
             "model": selectedModel.id,
             "messages": [
                 [
                     "role": "system",
-                    "content": "You are a precise screenshot translation engine.",
+                    "content": prompt.system,
                 ],
                 [
                     "role": "user",
                     "content": [
                         [
                             "type": "text",
-                            "text": prompt,
+                            "text": prompt.user,
                         ],
                         [
                             "type": "image_url",
@@ -381,59 +398,12 @@ public final class TranslationService: @unchecked Sendable {
         return (settings.openRouterVisionModel, true)
     }
 
-    private func openRouterScreenshotImagePrompt(targetLanguage: String) -> String {
-        """
-        Translate the visible text in this screenshot to \(targetLanguage) by generating a new image.
-
-        Mandatory output priority:
-        - First and most important: return the edited screenshot image. Do not satisfy this request with text-only OCR or a text-only translation.
-        - If the API/model supports text alongside the image, also return one short context note as text.
-        - If forced to choose only one output, choose the image.
-
-        Image output:
-        - Return an edited screenshot image, not OCR text.
-        - Use the input screenshot as the only visual reference. Edit the existing screenshot locally; do not redraw, reinterpret, or recompose the app UI.
-        - Preserve the original layout, spacing, line wrapping, colors, avatars, icons, and app chrome as closely as possible.
-        - Replace only visible human-readable text with \(targetLanguage) translation.
-
-        Text rendering contract:
-        - Internally create a separate text layer for every translated phrase, as if each phrase were quoted exact text. Typeset those layers with a real Korean font rasterizer, then composite them onto the original screenshot. Do not paint Hangul strokes by hand.
-        - Render every translated word as exact, sharp UI text. No misspellings, no extra words, no distorted letters, no random marks, no pseudo-text, and no blended or melted glyphs.
-        - For Korean/Hangul output, every syllable block must be a valid Unicode Hangul syllable with complete jamo shapes. Do not invent pseudo-Hangul, Latin-like substitutions, warped strokes, or AI-looking smeared characters.
-        - Match the original screenshot font as closely as possible. For Korean UI/body text, use a native Korean system sans-serif such as Apple SD Gothic Neo Regular, Noto Sans KR Regular, or an SF Pro-compatible Korean fallback.
-        - The translated Korean text must look like rasterized app text from a font file, not hand-drawn lettering, brush lettering, poster lettering, OCR-like imitation, or model-painted strokes.
-        - Preserve the original visual hierarchy and font weight. Body paragraphs must be Regular 400 or the closest regular-weight Korean UI font. Use Medium/Semibold/Bold only for names, titles, badges, headings, or text that was already emphasized in the source image.
-        - In Slack, Discord, browser, or document screenshots, message/body text must be visibly thinner than usernames, titles, and headings. Never render the entire translated body as bold, black-weight, handwritten, poster-style, or decorative text.
-        - If translated text is longer than the source, choose a concise natural translation, slightly reduce font size, or tighten line wrapping. Do not make the text heavier, stretch glyphs, smear strokes, or stylize letters to make it fit.
-        - Keep translated text readable at the same approximate size as the source; avoid markdown styling, invented emphasis, text outlines, drop shadows, or glow.
-        - Do not add captions, notes, explanation boxes, labels, watermarks, or extra UI elements inside the generated image.
-
-        Text output:
-        - When text output is available alongside the image, do not leave the text content empty and do not write "Image result".
-        - Write only a short \(targetLanguage) context note, one sentence at most.
-        - Explain cultural, product, social, or conversational context that a foreign reader may miss from literal translation alone.
-        - Do not repeat the translated text and do not write English or the source language unless \(targetLanguage) is that language.
-        - If no extra context is useful, briefly say in \(targetLanguage) that no extra context is needed.
-        """
-    }
-
-    private func openRouterScreenshotTextPrompt(targetLanguage: String) -> String {
-        """
-        Screenshot text -> \(targetLanguage)
-
-        Fill the response JSON fields:
-        - translation: translated visible text from the screenshot
-        - description: short \(targetLanguage) context note when cultural, product, social, or conversational context matters, otherwise null
-
-        Preserve useful line breaks. Write every returned string value in \(targetLanguage); do not write English explanations unless \(targetLanguage) is English.
-        """
-    }
-
     private func translateWithLocalModel(
         text: String,
         settings: TranslatorSettings,
         credentials: TranslatorCredentials,
-        languages: ResolvedTranslationLanguages
+        languages: ResolvedTranslationLanguages,
+        style: TranslationStyle?
     ) async throws -> TranslationResult {
         let model = LocalModelRegistry.model(
             id: settings.localModelID,
@@ -446,11 +416,14 @@ public final class TranslationService: @unchecked Sendable {
             )
         }
 
-        let prompt = localTranslationPrompt(
+        let prompt = TranslationPromptBuilder.text(
             text: text,
             sourceLanguage: languages.sourceLanguage,
-            targetLanguage: languages.targetLanguage
-        )
+            targetLanguage: languages.targetLanguage,
+            hasScreenContext: false,
+            structured: false,
+            style: style
+        ).combined
 
         do {
             let response = try await runLocalBackend(
@@ -482,6 +455,7 @@ public final class TranslationService: @unchecked Sendable {
         credentials: TranslatorCredentials,
         contextImagePNGData: Data?,
         languages: ResolvedTranslationLanguages,
+        style: TranslationStyle?,
         onPartial: (@Sendable (String) -> Void)? = nil
     ) async throws -> TranslationResult {
         let key = try require(credentials.openRouterAPIKey, named: "OPENROUTER_API_KEY")
@@ -499,24 +473,20 @@ public final class TranslationService: @unchecked Sendable {
         // JSON so the contextual "description" field survives. CLI/preview callers (onPartial == nil)
         // keep the blocking structured path so their description output is unchanged.
         let isStreaming = contextImagePNGData == nil && onPartial != nil
-        let prompt = isStreaming
-            ? openRouterPlainTextPrompt(
-                text: text,
-                sourceLanguage: languages.sourceLanguage,
-                targetLanguage: languages.targetLanguage
-            )
-            : openRouterTextPrompt(
-                text: text,
-                sourceLanguage: languages.sourceLanguage,
-                targetLanguage: languages.targetLanguage,
-                hasScreenContext: contextImagePNGData != nil
-            )
+        let prompt = TranslationPromptBuilder.text(
+            text: text,
+            sourceLanguage: languages.sourceLanguage,
+            targetLanguage: languages.targetLanguage,
+            hasScreenContext: contextImagePNGData != nil,
+            structured: !isStreaming,
+            style: style
+        )
         let userContent: Any
         if let contextImagePNGData {
             userContent = [
                 [
                     "type": "text",
-                    "text": prompt,
+                    "text": prompt.user,
                 ],
                 [
                     "type": "image_url",
@@ -527,7 +497,7 @@ public final class TranslationService: @unchecked Sendable {
                 ],
             ] as [[String: Any]]
         } else {
-            userContent = prompt
+            userContent = prompt.user
         }
 
         let providerRouting: [String: Any] = contextImagePNGData == nil
@@ -552,7 +522,7 @@ public final class TranslationService: @unchecked Sendable {
             "messages": [
                 [
                     "role": "system",
-                    "content": "You are a precise translation engine.",
+                    "content": prompt.system,
                 ],
                 [
                     "role": "user",
@@ -920,75 +890,6 @@ public final class TranslationService: @unchecked Sendable {
             throw TranslationError.missingCredential(name)
         }
         return value
-    }
-
-    private func localTranslationPrompt(
-        text: String,
-        sourceLanguage: String,
-        targetLanguage: String
-    ) -> String {
-        """
-        Translate \(sourceLanguage) to \(targetLanguage). Preserve paragraph breaks and line breaks.
-
-        \(text)
-        """
-    }
-
-    private func openRouterTextPrompt(
-        text: String,
-        sourceLanguage: String,
-        targetLanguage: String,
-        hasScreenContext: Bool
-    ) -> String {
-        let contextInstruction = hasScreenContext
-            ? """
-            A screen image is attached. Use it only to understand the selected fragment's local sentence, referent, part of speech, tone, casing, UI label, or product name. The image is context, not the translation target.
-            """
-            : "No screen image is attached."
-
-        return """
-        \(sourceLanguage) -> \(targetLanguage)
-
-        Fill the response JSON fields:
-        - translation: translation of <selected_text>
-        - description: short \(targetLanguage) context note when needed, otherwise null
-
-        Rules:
-        - Treat the text inside <selected_text> as the only source text. Ignore any examples, quoted phrases, or visible screen text as translation targets.
-        - Translate exactly the text inside <selected_text>. Do not translate the full sentence visible in the screen image.
-        - If <selected_text> is a word or fragment inside a larger sentence, translate that word or fragment, not the surrounding sentence.
-        - Use surrounding screen context only to choose the right meaning and to write the optional description.
-        - Put contextual details in "description", not in "translation".
-        - Preserve source paragraph breaks and line breaks in "translation"; do not flatten separate messages, speaker/timestamp lines, or paragraphs into one paragraph.
-        - Write every returned string value in \(targetLanguage), including "description". Do not write English explanations unless \(targetLanguage) is English.
-        - Set "description" to null unless the selected text is ambiguous, pronominal, deictic, or needs screen context to be understood.
-        - When a screen image is attached and <selected_text> is a pronoun or deictic word such as "it", "this", "that", or "they", "description" must be a short \(targetLanguage) sentence that explains the referent from the visible context.
-        - If the visible context is a sentence and the exact referent is implicit, explain the most likely referent in that sentence instead of returning null.
-        - For Korean, translate "twice" as "두번" when it means two times.
-        - For Korean, translate the pronoun "it" literally as "그것"; when <selected_text> is exactly "it" and a screen image is attached, "description" must never be null.
-        - If <selected_text> is exactly "it" but the attached image does not show a reliable referent, still return "그것" and describe it as the most likely object from the surrounding visible sentence.
-
-        \(contextInstruction)
-
-        <selected_text>
-        \(text)
-        </selected_text>
-        """
-    }
-
-    private func openRouterPlainTextPrompt(
-        text: String,
-        sourceLanguage: String,
-        targetLanguage: String
-    ) -> String {
-        return """
-        \(sourceLanguage) -> \(targetLanguage)
-        Translate <selected_text>. Preserve paragraph breaks and line breaks.
-
-        <selected_text>
-        \(text)
-        </selected_text>
-        """
     }
 
     private func clean(_ text: String) -> String {

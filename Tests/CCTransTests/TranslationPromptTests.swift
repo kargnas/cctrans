@@ -127,4 +127,29 @@ struct TranslationPromptTests {
         #expect(prompt.system.contains("Korean often omits subjects"))
     }
 
+    @Test func providersWithoutPromptControlRejectStyleInsteadOfIgnoringIt() async {
+        let service = TranslationService()
+        let style = TranslationStyle(instructions: ["Be polite."])
+        let credentials = TranslatorCredentials(openRouterAPIKey: nil, huggingFaceToken: nil)
+
+        for provider in [TranslationProvider.appleTranslation, .kargnasManaged] {
+            await #expect(throws: TranslationError.unsupportedStyle(provider)) {
+                try await service.translateText(
+                    "Hello",
+                    settings: TranslatorSettings(provider: provider),
+                    credentials: credentials,
+                    style: style
+                )
+            }
+        }
+
+        await #expect(throws: TranslationError.unsupportedStyle(.kargnasManaged)) {
+            try await service.translateImage(
+                pngData: Data([0x89, 0x50, 0x4E, 0x47]),
+                settings: TranslatorSettings(provider: .kargnasManaged),
+                credentials: credentials,
+                style: style
+            )
+        }
+    }
 }
