@@ -4,7 +4,11 @@
 #   "accelerate",
 #   "protobuf",
 #   "sentencepiece",
-#   "torch",
+#   # torch 2.14 MPS matmul uses Metal 4 cooperative_tensor shaders. GitHub's
+#   # paravirtualized macOS GPU fails them with "unsupported deferred-static-alloca-size".
+#   # cp314 wheels exist from 2.9.1. uv's override-dependencies is ignored for
+#   # PEP 723 scripts, so `uv run` only sees a cap written here.
+#   "torch>=2.9.1,<2.14",
 #   "transformers>=4.56.0",
 # ]
 # ///
