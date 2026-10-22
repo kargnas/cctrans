@@ -36,6 +36,11 @@ env:
   # would not be expanded when uv reads the variable, so spell out the hosted
   # macOS runner home.
   UV_CACHE_DIR: /Users/runner/.cache/uv
+  # macos-26's default interpreter is CPython 3.15. torch publishes wheels
+  # through cp314 only, so uv's default discovery makes the transformers
+  # backend unsatisfiable. 3.14 is the newest ABI torch ships. The app copies
+  # this environment into `uv run`, so the smoke binary uses the same pin.
+  UV_PYTHON: "3.14"
 
 jobs:
   smoke:
@@ -71,9 +76,11 @@ jobs:
       - name: Cache uv environments
         uses: actions/cache@v4
         with:
-          path: ~/.cache/uv
-          key: model-ci-uv-${{ matrix.model }}-${{ hashFiles(matrix.backend-script) }}
-          restore-keys: model-ci-uv-${{ matrix.model }}-
+          path: |
+            ~/.cache/uv
+            ~/.local/share/uv/python
+          key: model-ci-uv-py314-${{ matrix.model }}-${{ hashFiles(matrix.backend-script) }}
+          restore-keys: model-ci-uv-py314-${{ matrix.model }}-
 
       - name: Cache Hugging Face model
         uses: actions/cache@v4
@@ -87,6 +94,13 @@ jobs:
         run: |
           curl -LsSf https://astral.sh/uv/install.sh | sh
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Install Python 3.14
+        # UV_PYTHON selects 3.14, but the image only guarantees 3.15. Install
+        # the pin before dependency resolution so torch can match cp314.
+        run: |
+          uv python install 3.14
+          uv python find
 
       - name: Pre-install backend Python dependencies
         # An empty payload makes the backend exit after uv resolves its PEP 723
