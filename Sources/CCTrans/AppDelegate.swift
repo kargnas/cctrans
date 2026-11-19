@@ -77,6 +77,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var pasteboardMonitor: PasteboardMonitor?
     private var screenshotHotKey: ScreenshotHotKey?
     private var keepAliveWindow: NSWindow?
+    // The persistent toast helper's PID once its launch completes, so a new translation can tell
+    // whether the helper has died since; the flag covers the window before the launch completes.
+    private var persistentToastPID: pid_t?
+    private var isLaunchingPersistentToast = false
     private var onboardingController: OnboardingWindowController?
     private var statusPulseTask: Task<Void, Never>?
     private var lastClipboardTriggerAt: Date?
@@ -1824,6 +1828,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // A new loading frame is a new user request; bumping the sequence tells the persistent
             // toast window to reposition and show, instead of only updating its text in place.
             translationRequestSequence += 1
+            ensurePersistentToastProcess()
         }
 
         var payload = payload
@@ -1868,11 +1873,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func startPersistentToastProcess() {
         // One hidden Tauri process is launched up front and reused for every translation, so the
         // WebView (and its CJK font cache) stays warm instead of cold-starting on each Cmd+C.
-        _ = launchTauriHelper(
+        persistentToastPID = nil
+        isLaunchingPersistentToast = launchTauriHelper(
             arguments: ["--translation-preview"],
             activate: false,
             replaceExistingMatching: "--translation-preview"
-        )
+        ) { [weak self] pid in
+            self?.persistentToastPID = pid
+            self?.isLaunchingPersistentToast = false
+        }
+    }
+
+    // Startup is the only other place that launches the toast helper, so a helper that dies later
+    // (crash, external kill) would leave every translation finishing with nothing on screen until
+    // CCTrans relaunches. Checking at each new request heals that; a relaunched helper shows the
+    // current preview state as soon as it boots.
+    private func ensurePersistentToastProcess() {
+        guard !isLaunchingPersistentToast else {
+            return
+        }
+        if let pid = persistentToastPID,
+           let helper = NSRunningApplication(processIdentifier: pid),
+           !helper.isTerminated {
+            return
+        }
+        startPersistentToastProcess()
     }
 
     private func resolvedLanguages(
@@ -1913,10 +1938,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ) ?? LocalModelRegistry.defaultModel(customModelsPath: settings.customLocalModelsPath)
     }
 
+    // onLaunch receives the launched helper's PID on the main actor, or nil when the launch failed.
     private func launchTauriHelper(
         arguments: [String],
         activate: Bool,
-        replaceExistingMatching match: String
+        replaceExistingMatching match: String,
+        onLaunch: (@MainActor @Sendable (pid_t?) -> Void)? = nil
     ) -> Bool {
         guard let appURL = resolveTauriHelperAppURL() else {
             return false
@@ -1950,9 +1977,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         configuration.activates = activate
         configuration.createsNewApplicationInstance = true
         configuration.arguments = launchArguments
-        NSWorkspace.shared.openApplication(at: appURL, configuration: configuration) { _, error in
+        NSWorkspace.shared.openApplication(at: appURL, configuration: configuration) { app, error in
             if let error {
                 print("Could not open Tauri helper app: \(error.localizedDescription)")
+            }
+            let pid = app?.processIdentifier
+            if let onLaunch {
+                Task { @MainActor in onLaunch(pid) }
             }
         }
         return true
@@ -2002,7 +2033,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
         process.arguments = ["-f", "cctrans-tauri.*\(match)"]
-        try? process.run()
+        // launchTauriHelper starts the replacement helper as soon as this returns, so pkill must have
+        // exited first: a pkill still scanning the process table (e.g. slowed by login-time load) would
+        // match the new helper too and SIGTERM it, leaving no toast process. Block on a semaphore
+        // instead of waitUntilExit(), which spins the main run loop and would let a translation
+        // re-enter launchTauriHelper mid-wait. pkill normally exits in about 20 ms.
+        let exited = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in exited.signal() }
+        do {
+            try process.run()
+            exited.wait()
+        } catch {
+            print("Could not run pkill for \(match): \(error.localizedDescription)")
+        }
     }
 
     private var isRunningInAppSandbox: Bool {

@@ -94,6 +94,7 @@ After completed development or documentation work is verified and committed, run
 - A loading-to-result update must show the toast again for the same request sequence, so a cold local model warmup cannot finish ready while silently skipping the translated result.
 - Do not bind hover or countdown state to `.translation-bubble` classes, inline styles, opacity, background, blur, transform, or transition. Keep countdown state on the countdown fill element so WebKit does not recompose the backdrop-filter layer on hover.
 - Rust owns global pointer hit-testing for the non-activating toast and emits `toast-hover` plus `toast-dismiss-request`; Svelte owns timer state and close decisions.
+- The Swift host owns the persistent toast helper's lifetime. A new translation relaunches the helper when it is no longer running, and every replacement launch waits for the old helper's `pkill` cleanup to exit first, so the cleanup cannot kill the new helper.
 
 ## Settings Contract
 
