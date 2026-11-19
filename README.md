@@ -31,7 +31,7 @@ Press `Cmd+C` twice in any app — the copied text pops up as a translation toas
 <p align="center">
   <strong>Choose Model</strong> → <strong>Grant Permissions</strong> → <strong>Try It</strong>
   <br>
-  <sub>CCTrans saves your progress at every step, so onboarding resumes where you left off after macOS asks you to <strong>Quit &amp; Reopen</strong> the app.</sub>
+  <sub>CCTrans saves your progress at every step, so onboarding resumes where you left off after macOS asks you to <strong>Quit &amp; Reopen</strong> the app. Closing the window ends onboarding; <strong>Getting Started...</strong> in the menu bar opens it again.</sub>
 </p>
 
 ## Install

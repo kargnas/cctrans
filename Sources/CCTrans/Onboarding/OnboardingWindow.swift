@@ -358,7 +358,19 @@ final class OnboardingFlowModel: ObservableObject {
     @discardableResult
     func completeAfterSuccessfulTranslation() -> Bool {
         guard mode == .fullFlow, step == .tryIt, hasTranslated else { return false }
+        return markCompleted()
+    }
 
+    // A user close from any step finishes onboarding. CCTrans is a login item,
+    // so an unfinished wizard would otherwise reopen at every login even after
+    // the user dismissed it. Returns false when finishing failed and the window
+    // must stay open to show progressError.
+    func completeOnClose() -> Bool {
+        guard mode == .fullFlow else { return true }
+        return markCompleted()
+    }
+
+    private func markCompleted() -> Bool {
         do {
             // Write-ahead marker: if the app dies before the settings write lands,
             // AppDelegate repairs the completion flag on the next launch.
@@ -377,7 +389,7 @@ final class OnboardingFlowModel: ObservableObject {
         guard OnboardingCompletionMarkerPolicy.canDismiss(
             sharedSettingsWriteSucceeded: sharedSettingsWriteSucceeded
         ) else {
-            progressError = "Onboarding is saved, but settings couldn’t be finalized. Click Done to retry."
+            progressError = "Onboarding is saved, but settings couldn’t be finalized. Try again."
             return false
         }
         if OnboardingCompletionMarkerPolicy.shouldClearMarker(
@@ -707,12 +719,17 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
         window?.makeKeyAndOrderFront(nil)
     }
 
+    // AppKit calls this only for a user close (the title-bar close button). App
+    // termination (Quit, logout, TCC's Quit & Reopen) and the programmatic
+    // close() behind Done skip it, so a relaunch still resumes the checkpoint.
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        flowModel?.completeOnClose() ?? true
+    }
+
     func windowWillClose(_ notification: Notification) {
         stopLivePermissionRefresh()
         flowModel?.deactivate()
         flowModel = nil
-        // Closing never advances or completes onboarding. The last successful
-        // forward checkpoint remains on disk, including across TCC termination.
     }
 
     // Grants happen OUTSIDE this app (System Settings toggles, OS dialogs), so the

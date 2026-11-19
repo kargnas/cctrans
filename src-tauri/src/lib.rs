@@ -1031,8 +1031,21 @@ fn refresh_openrouter_models(app: AppHandle) -> Result<SettingsState, String> {
 
 #[tauri::command]
 fn save_settings(app: AppHandle, settings: Settings) -> Result<SettingsState, String> {
+    let settings = keep_stored_onboarding_flag(&app, settings)?;
     write_settings(&app, normalize_settings(settings))?;
     state_from_disk(&app)
+}
+
+// Only the Swift host writes `hasCompletedOnboarding` (its onboarding wizard).
+// Settings windows load their snapshot once when they open, so a save from a
+// window opened before the wizard finished would write the old `false` back
+// and reopen the wizard at the next launch.
+fn keep_stored_onboarding_flag(
+    app: &AppHandle,
+    mut settings: Settings,
+) -> Result<Settings, String> {
+    settings.has_completed_onboarding = load_effective_settings(app)?.has_completed_onboarding;
+    Ok(settings)
 }
 
 #[tauri::command]
@@ -1653,7 +1666,7 @@ fn open_app_surface(app: AppHandle, surface: String) -> Result<ActionResult, Str
 
 #[tauri::command]
 fn complete_local_model_setup(app: AppHandle, settings: Settings) -> Result<SettingsState, String> {
-    let mut settings = normalize_settings(settings);
+    let mut settings = normalize_settings(keep_stored_onboarding_flag(&app, settings)?);
     settings.has_completed_local_model_selection = true;
     write_settings(&app, settings)?;
     state_from_disk(&app)

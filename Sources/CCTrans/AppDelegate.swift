@@ -2181,7 +2181,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func showOnboardingWindow() {
         // Explicit Getting Started is a durable restart, not only a one-window
-        // override. If the user closes and relaunches, model remains the checkpoint.
+        // override. If the app quits mid-flow (for example TCC's Quit & Reopen),
+        // the next launch resumes from the model checkpoint.
         var progressError: String?
         do {
             try onboardingProgressStore.save(.model)
